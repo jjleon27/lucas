@@ -1,0 +1,29 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+alembic==1.13.3
+pydantic[email]==2.9.2
+pydantic-settings==2.5.2
+email-validator==2.2.0
+python-multipart==0.0.12
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+pillow==10.4.0
+pytesseract==0.3.13
+opencv-python-headless==4.10.0.84
+numpy==2.1.1
+openai==1.51.0
+# Optional alternative providers — keep installed so users can swap by
+# setting AI_PROVIDER + the matching API key in .env. Remove if you want a
+# slimmer image.
+anthropic==0.34.2
+google-generativeai==0.8.3
+boto3==1.35.28
+httpx==0.27.2
+python-dotenv==1.0.1
+# Cartola (bank statement) PDF parsing — text PDFs (Santander, Falabella, BCI)
+# come with a real text layer, so pdfplumber works cleanly. We fall back to
+# vision_parse() for scanned/image-only PDFs.
+pdfplumber==0.11.4
+pdf2image>=1.33.3

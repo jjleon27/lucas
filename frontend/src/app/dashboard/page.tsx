@@ -1,0 +1,228 @@
+"use client";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
+} from "recharts";
+import StatCard from "@/components/StatCard";
+import VoiceButton from "@/components/VoiceButton";
+import BudgetPanel from "@/components/BudgetPanel";
+import { DashboardData, getDashboard, getToken, me, updateMe } from "@/lib/api";
+import { useT, formatMoney } from "@/lib/i18n";
+
+const CAT_COLORS = [
+  "#10b981", "#6366f1", "#f97316", "#ef4444",
+  "#a855f7", "#06b6d4", "#eab308", "#ec4899",
+];
+
+const CURRENCIES: { code: string; label: string }[] = [
+  { code: "CLP", label: "🇨🇱 CLP — Peso chileno" },
+  { code: "USD", label: "🇺🇸 USD — US Dollar" },
+  { code: "EUR", label: "🇪🇺 EUR — Euro" },
+  { code: "BRL", label: "🇧🇷 BRL — Real" },
+  { code: "MXN", label: "🇲🇽 MXN — Peso mexicano" },
+  { code: "ARS", label: "🇦🇷 ARS — Peso argentino" },
+  { code: "PEN", label: "🇵🇪 PEN — Sol" },
+  { code: "COP", label: "🇨🇴 COP — Peso colombiano" },
+  { code: "GBP", label: "🇬🇧 GBP — Pound" },
+];
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const { t, locale } = useT();
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [currency, setCurrency] = useState<string>("CLP");
+
+  const loadData = useCallback(async () => {
+    try {
+      const [d, user] = await Promise.all([getDashboard(), me()]);
+      setData(d);
+      const curr = (user.settings as any)?.currency || (locale === "es" ? "CLP" : "USD");
+      setCurrency(curr);
+    } catch {
+      router.replace("/");
+    } finally {
+      setLoading(false);
+    }
+  }, [router, locale]);
+
+  useEffect(() => {
+    if (!getToken()) { router.replace("/"); return; }
+    loadData();
+  }, [router, loadData]);
+
+  async function saveCurrency(code: string) {
+    setCurrency(code);
+    try {
+      await updateMe({ settings: { currency: code } as any });
+      setData(await getDashboard());
+    } catch { /* ignore */ }
+  }
+
+  if (loading || !data) return <div className="p-8 text-slate-500">{t("tx.loading")}</div>;
+
+  const tone: "good" | "warning" | "danger" = data.status as any;
+  const fmt = (v: number) => formatMoney(v, currency);
+  const LOCALE_BCP47: Record<string, string> = { es: "es-CL", en: "en-US", pt: "pt-BR" };
+  const monthLabel = new Date().toLocaleDateString(
+    LOCALE_BCP47[locale] || "es-CL",
+    { month: "long", year: "numeric" },
+  );
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-6 pb-24 md:pb-0">
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">{t("dashboard.title")}</h1>
+          <p className="text-slate-500 capitalize">{monthLabel}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-slate-500">{t("dashboard.currency")}</label>
+          <select
+            className="input w-44"
+            value={currency}
+            onChange={(e) => saveCurrency(e.target.value)}
+          >
+            {CURRENCIES.map((c) => (
+              <option key={c.code} value={c.code}>{c.label}</option>
+            ))}
+          </select>
+        </div>
+      </header>
+
+      {/* ── Alerts ─────────────────────────────────────────────────────────── */}
+      {data.alerts.length > 0 && (
+        <div className="space-y-2">
+          {data.alerts.map((a, i) => (
+            <div key={i} className="card text-sm">{a}</div>
+          ))}
+        </div>
+      )}
+
+      {(data.pending_review_count ?? 0) > 0 && (
+        <a
+          href="/review"
+          className="block bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl px-4 py-3 text-sm hover:bg-rose-100 flex items-center justify-between"
+        >
+          <span>
+            📬 Tienes <strong>{data.pending_review_count}</strong> gasto{data.pending_review_count !== 1 ? "s" : ""} del banco por revisar
+          </span>
+          <span className="font-semibold">Revisar →</span>
+        </a>
+      )}
+
+      {data.pending_transfers > 0 && (
+        <a
+          href="/transactions?transfers=pending"
+          className="block bg-sky-50 border border-sky-200 text-sky-800 rounded-2xl px-4 py-3 text-sm hover:bg-sky-100"
+        >
+          💳 Tienes <strong>{data.pending_transfers}</strong> pago(s) de tarjeta
+          sin enlazar con su cargo en la cuenta débito. Revísalos para que no
+          inflen tu saldo. →
+        </a>
+      )}
+
+      {/* ── Stat cards ─────────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          label={t("dashboard.spentThisMonth")}
+          value={fmt(data.total_spent)}
+          hint={
+            data.income_target > 0
+              ? t("dashboard.ofBudget", { budget: fmt(data.income_target) })
+              : t("dashboard.noBudgetSet")
+          }
+          tone={tone}
+        />
+        <StatCard
+          label={t("dashboard.incomeActual")}
+          value={fmt(data.income_actual)}
+          hint={
+            data.income_target > 0
+              ? `${Math.round((data.income_actual / data.income_target) * 100)}% de meta`
+              : "ingresos este mes"
+          }
+        />
+        <StatCard
+          label={t("dashboard.safeDailyActual")}
+          value={fmt(Math.round(data.safe_spend_actual))}
+          hint={t("dashboard.safeDailyActualHint")}
+        />
+        <StatCard
+          label={t("dashboard.projectedEOM")}
+          value={fmt(data.predicted_end_of_month)}
+          tone={tone}
+        />
+      </div>
+
+      {/* ── Main content grid ──────────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        {/* Category chart */}
+        <div className="card lg:col-span-2">
+          <h3 className="text-base font-semibold mb-4">{t("dashboard.categoryBreakdown")}</h3>
+          {data.by_category.length === 0 ? (
+            <p className="text-sm text-slate-500">{t("dashboard.noSpending")}</p>
+          ) : (
+            <div className="flex flex-col md:flex-row gap-6 items-center">
+              <div className="w-full md:w-1/2 h-52">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={data.by_category}
+                      dataKey="total"
+                      nameKey="category"
+                      innerRadius={50}
+                      outerRadius={80}
+                      paddingAngle={2}
+                    >
+                      {data.by_category.map((_, i) => (
+                        <Cell key={i} fill={CAT_COLORS[i % CAT_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(v: number) => fmt(v)} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <ul className="flex-1 w-full space-y-2 text-sm">
+                {data.by_category.map((c, i) => (
+                  <li key={c.category} className="flex justify-between">
+                    <span className="flex items-center gap-2">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full"
+                        style={{ backgroundColor: CAT_COLORS[i % CAT_COLORS.length] }}
+                      />
+                      {c.category}
+                    </span>
+                    <span className="font-mono">{fmt(c.total)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Right column: Budget panel + quick actions */}
+        <div className="space-y-4">
+          {/* Budget / income panel */}
+          <BudgetPanel data={data} currency={currency} onSaved={loadData} />
+
+          {/* Quick actions */}
+          <div className="card">
+            <h3 className="text-base font-semibold mb-3">{t("dashboard.quickActions")}</h3>
+            <div className="space-y-2">
+              <a href="/upload" className="btn-primary w-full">{t("dashboard.uploadScreenshot")}</a>
+              <a href="/cartola" className="btn-ghost w-full">Importar cartola (PDF)</a>
+              <a href="/chat" className="btn-ghost w-full">{t("dashboard.askLucas")}</a>
+              <a href="/split" className="btn-ghost w-full">{t("dashboard.splitBill")}</a>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <VoiceButton onSaved={() => { getDashboard().then(setData).catch(() => {}); }} />
+    </div>
+  );
+}

@@ -1,0 +1,298 @@
+"use client";
+/**
+ * TransactionList — shows transactions with inline edit + delete.
+ *
+ * - Click the pencil icon to expand an inline edit form
+ * - Delete with a confirmation prompt
+ * - Duplicate badge if a transaction shares date+amount+merchant with another
+ */
+import { useState, useMemo } from "react";
+import { Pencil, Trash2, Check, X, AlertTriangle } from "lucide-react";
+import { Transaction, updateTransaction, deleteTransaction } from "@/lib/api";
+import { useT, formatMoney } from "@/lib/i18n";
+import NumericInput from "@/components/NumericInput";
+
+interface Props {
+  txs: Transaction[];
+  onRefresh?: () => void;
+}
+
+export const CATEGORIES = [
+  "Alimentación", "Supermercado", "Transporte", "Compras",
+  "Entretenimiento", "Bares y Salidas", "Cuentas y Servicios",
+  "Salud", "Viajes", "Suscripciones", "Tecnología",
+  "Educación", "Hogar", "Ropa", "Ingresos", "Transferencia",
+  "Inversión", "Seguros", "Otros",
+];
+
+function isDuplicate(tx: Transaction, all: Transaction[]): boolean {
+  return all.some(
+    (other) =>
+      other.id !== tx.id &&
+      other.date === tx.date &&
+      Math.abs(other.amount - tx.amount) < 0.01 &&
+      other.merchant?.toLowerCase() === tx.merchant?.toLowerCase(),
+  );
+}
+
+interface EditState {
+  amount: number;
+  merchant: string;
+  category: string;
+  date: string;
+  notes: string;
+  is_income: boolean;
+}
+
+export default function TransactionList({ txs: initial, onRefresh }: Props) {
+  const { t } = useT();
+  const [txs, setTxs] = useState<Transaction[]>(initial);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editState, setEditState] = useState<EditState | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+
+  // Sync when parent refreshes
+  useState(() => { setTxs(initial); });
+
+  const dupeIds = useMemo(
+    () => new Set(txs.filter((tx) => isDuplicate(tx, txs)).map((tx) => tx.id)),
+    [txs],
+  );
+
+  function startEdit(tx: Transaction) {
+    setEditId(tx.id);
+    setEditState({
+      amount: Math.abs(tx.amount),
+      merchant: tx.merchant,
+      category: tx.category,
+      date: tx.date,
+      notes: tx.notes,
+      is_income: tx.is_income,
+    });
+    setConfirmDelete(null);
+  }
+
+  function cancelEdit() {
+    setEditId(null);
+    setEditState(null);
+  }
+
+  async function saveEdit(tx: Transaction) {
+    if (!editState) return;
+    setSaving(true);
+    try {
+      const updated = await updateTransaction(tx.id, {
+        amount: editState.amount,
+        merchant: editState.merchant,
+        category: editState.category,
+        date: editState.date,
+        notes: editState.notes,
+        is_income: editState.is_income,
+      });
+      setTxs((prev) => prev.map((t) => (t.id === tx.id ? updated : t)));
+      setEditId(null);
+      setEditState(null);
+      onRefresh?.();
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    setSaving(true);
+    try {
+      await deleteTransaction(id);
+      setTxs((prev) => prev.filter((t) => t.id !== id));
+      setConfirmDelete(null);
+      onRefresh?.();
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (txs.length === 0) {
+    return <div className="card text-center text-slate-500">{t("tx.empty")}</div>;
+  }
+
+  return (
+    <div className="space-y-1">
+      {txs.map((tx) => {
+        const isEditing = editId === tx.id;
+        const isDupe = dupeIds.has(tx.id);
+        const isDeleting = confirmDelete === tx.id;
+
+        return (
+          <div
+            key={tx.id}
+            className={`card p-0 overflow-hidden transition-colors ${
+              isDupe ? "border border-amber-300" : ""
+            }`}
+          >
+            {/* Main row */}
+            <div className="flex items-center gap-3 px-4 py-3">
+              {/* Date */}
+              <span className="text-xs text-slate-400 w-20 shrink-0 font-mono">{tx.date}</span>
+
+              {/* Merchant + category */}
+              <div className="flex-1 min-w-0">
+                <p className="font-medium truncate">{tx.merchant || "—"}</p>
+                <span className="inline-block px-1.5 py-0.5 rounded-full bg-slate-100 text-xs text-slate-500">
+                  {tx.category}
+                </span>
+                {isDupe && (
+                  <span className="ml-1.5 inline-flex items-center gap-0.5 text-amber-600 text-xs">
+                    <AlertTriangle size={11} />
+                    {t("tx.duplicateWarning")}
+                  </span>
+                )}
+              </div>
+
+              {/* Amount */}
+              <span
+                className={`font-mono text-sm shrink-0 ${
+                  tx.is_income ? "text-emerald-600" : ""
+                }`}
+              >
+                {tx.is_income ? "+" : "−"}{formatMoney(Math.abs(tx.amount), tx.currency)}
+              </span>
+
+              {/* Actions */}
+              <div className="flex gap-1 shrink-0">
+                <button
+                  onClick={() => (isEditing ? cancelEdit() : startEdit(tx))}
+                  className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
+                  title={isEditing ? t("tx.cancel") : t("tx.edit")}
+                >
+                  {isEditing ? <X size={14} /> : <Pencil size={14} />}
+                </button>
+                {!isEditing && (
+                  <button
+                    onClick={() =>
+                      isDeleting ? setConfirmDelete(null) : setConfirmDelete(tx.id)
+                    }
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      isDeleting
+                        ? "bg-rose-100 text-rose-600"
+                        : "hover:bg-slate-100 text-slate-400 hover:text-rose-500"
+                    }`}
+                    title={t("tx.delete")}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Delete confirmation bar */}
+            {isDeleting && !isEditing && (
+              <div className="bg-rose-50 border-t border-rose-100 px-4 py-2 flex items-center justify-between gap-3">
+                <span className="text-sm text-rose-700">{t("tx.deleteConfirm")}</span>
+                <div className="flex gap-2">
+                  <button
+                    className="text-xs px-3 py-1 rounded-lg bg-white border border-rose-200 text-rose-600 hover:bg-rose-50"
+                    onClick={() => setConfirmDelete(null)}
+                    disabled={saving}
+                  >
+                    {t("tx.cancel")}
+                  </button>
+                  <button
+                    className="text-xs px-3 py-1 rounded-lg bg-rose-600 text-white hover:bg-rose-700"
+                    onClick={() => handleDelete(tx.id)}
+                    disabled={saving}
+                  >
+                    {saving ? "…" : t("tx.delete")}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Inline edit form */}
+            {isEditing && editState && (
+              <div className="border-t border-slate-100 bg-slate-50 px-4 py-3 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-xs text-slate-500 uppercase">{t("tx.amount")}</span>
+                    <NumericInput
+                      className="input mt-0.5 font-mono"
+                      value={editState.amount}
+                      onChange={(v) => setEditState((s) => s && { ...s, amount: v })}
+                      allowDecimals
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-slate-500 uppercase">{t("tx.date")}</span>
+                    <input
+                      type="date"
+                      className="input mt-0.5"
+                      value={editState.date}
+                      onChange={(e) => setEditState((s) => s && { ...s, date: e.target.value })}
+                    />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="text-xs text-slate-500 uppercase">{t("tx.merchant")}</span>
+                  <input
+                    className="input mt-0.5"
+                    value={editState.merchant}
+                    onChange={(e) => setEditState((s) => s && { ...s, merchant: e.target.value })}
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-xs text-slate-500 uppercase">{t("tx.category")}</span>
+                    <select
+                      className="input mt-0.5"
+                      value={editState.category}
+                      onChange={(e) => setEditState((s) => s && { ...s, category: e.target.value })}
+                    >
+                      {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 mt-5">
+                    <input
+                      type="checkbox"
+                      checked={editState.is_income}
+                      onChange={(e) => setEditState((s) => s && { ...s, is_income: e.target.checked })}
+                      className="rounded"
+                    />
+                    <span className="text-sm">{t("upload.isIncome")}</span>
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="text-xs text-slate-500 uppercase">{t("tx.notes")}</span>
+                  <input
+                    className="input mt-0.5"
+                    value={editState.notes}
+                    onChange={(e) => setEditState((s) => s && { ...s, notes: e.target.value })}
+                  />
+                </label>
+                <div className="flex gap-2 pt-1">
+                  <button
+                    className="btn-primary flex-1 flex items-center justify-center gap-1"
+                    onClick={() => saveEdit(tx)}
+                    disabled={saving}
+                  >
+                    <Check size={14} />
+                    {saving ? "…" : t("tx.save")}
+                  </button>
+                  <button
+                    className="btn-ghost"
+                    onClick={cancelEdit}
+                    disabled={saving}
+                  >
+                    {t("tx.cancel")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

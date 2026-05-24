@@ -1,0 +1,274 @@
+"""
+Email inbound webhook — receives forwarded bank notification emails and creates
+pending_review transactions automatically.
+
+Setup:
+  1. Lucas generates a unique address: lucas-TOKEN@{EMAIL_DOMAIN}
+  2. User adds a Gmail filter: From:(banco OR notificacion OR pagos)
+     → Forward to that address.
+  3. Mailgun / SendGrid Inbound Parse POSTs to POST /email/inbound.
+  4. We parse the email, create a Transaction with status="pending_review".
+
+Configure EMAIL_DOMAIN in .env (e.g. lucas.jjleon.com).
+For local dev / testing, you can POST to /email/inbound directly with JSON.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+
+from .. import models, schemas, auth
+from ..ai.email_parser import parse_email
+from ..database import get_db
+from ..services import accounts as account_svc, dedupe as dedupe_svc
+
+# Domain used for the per-user forwarding addresses.
+# Set EMAIL_DOMAIN=lucas.jjleon.com in .env
+EMAIL_DOMAIN = os.getenv("EMAIL_DOMAIN", "notify.lucasapp.com")
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/email", tags=["email"])
+
+
+# ── Helper: resolve user from to-address token ────────────────────────────────
+def _user_from_token(db: Session, token: str) -> models.User | None:
+    """Look up user by their personal email_token (from the To: address)."""
+    return db.query(models.User).filter(models.User.email_token == token).first()
+
+
+def _extract_token_from_address(address: str) -> str | None:
+    """
+    'lucas-abc123@notify.lucasapp.com' → 'abc123'
+    Accepts bare tokens too (for testing).
+    """
+    import re
+    m = re.search(r"lucas-([A-Za-z0-9_\-]+)@", address)
+    if m:
+        return m.group(1)
+    # Also accept just the token directly
+    if re.fullmatch(r"[A-Za-z0-9_\-]{8,}", address.strip()):
+        return address.strip()
+    return None
+
+
+# ── Inbound webhook (SendGrid Inbound Parse format) ───────────────────────────
+@router.post("/inbound", status_code=200)
+async def email_inbound(request: Request, db: Session = Depends(get_db)):
+    """
+    Accepts either:
+      - multipart/form-data (SendGrid Inbound Parse)
+      - application/json  (testing / other providers)
+    """
+    ct = request.headers.get("content-type", "")
+
+    if "multipart" in ct or "form" in ct:
+        form = await request.form()
+        to_addr = form.get("to", "") or form.get("envelope", "")
+        from_addr = form.get("from", "")
+        subject = form.get("subject", "")
+        body_text = form.get("text", "")
+        body_html = form.get("html", "")
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(400, "Unrecognised content type")
+        to_addr = body.get("to", "")
+        from_addr = body.get("from", "")
+        subject = body.get("subject", "")
+        body_text = body.get("text", "")
+        body_html = body.get("html", "")
+
+    # Resolve user from token in the To: address
+    token = _extract_token_from_address(to_addr)
+    if not token:
+        logger.warning("email_inbound: no token in to=%s", to_addr)
+        return {"ok": False, "reason": "no_token"}
+
+    user = _user_from_token(db, token)
+    if not user:
+        logger.warning("email_inbound: unknown token %s", token)
+        return {"ok": False, "reason": "unknown_token"}
+
+    # Parse email
+    parsed = parse_email(
+        db, user.id,
+        subject=subject,
+        body_text=body_text,
+        body_html=body_html,
+    )
+    if not parsed:
+        return {"ok": True, "action": "skipped", "reason": "not_a_transaction"}
+
+    # Try to resolve account by card hint
+    account_id: int | None = None
+    card_last4 = parsed.get("card_last4", "")
+    if card_last4:
+        acc = db.query(models.Account).filter(
+            models.Account.user_id == user.id,
+            models.Account.name.ilike(f"%{card_last4}%"),
+            models.Account.archived.is_(False),
+        ).first()
+        if acc:
+            account_id = acc.id
+
+    # Duplicate check against existing transactions
+    from ..schemas import ParsedReceipt
+    proposal = ParsedReceipt(
+        amount=float(parsed["amount"]),
+        date=date.fromisoformat(parsed["date"]),
+        merchant=parsed.get("merchant", ""),
+        category=parsed.get("category", "Otros"),
+        currency=parsed.get("currency", "CLP"),
+        is_income=bool(parsed.get("is_income", False)),
+    )
+    existing = dedupe_svc.find_duplicate(db, user_id=user.id, account_id=account_id, proposed=proposal)
+    if existing:
+        logger.info("email_inbound: dupe of tx#%d for user#%d", existing.id, user.id)
+        return {"ok": True, "action": "duplicate", "existing_id": existing.id}
+
+    # Create pending_review transaction
+    tx = models.Transaction(
+        user_id=user.id,
+        account_id=account_id,
+        amount=float(parsed["amount"]),
+        currency=parsed.get("currency", "CLP"),
+        category=parsed.get("category", "Otros"),
+        date=date.fromisoformat(parsed["date"]),
+        merchant=parsed.get("merchant", ""),
+        notes=f"Importado desde email: {subject[:120]}",
+        is_income=bool(parsed.get("is_income", False)),
+        is_transfer=False,
+        image_url="",
+        status="pending_review",
+    )
+    db.add(tx)
+    db.commit()
+    db.refresh(tx)
+
+    logger.info(
+        "email_inbound: created pending tx#%d ($%.0f %s) for user#%d",
+        tx.id, tx.amount, tx.merchant, user.id,
+    )
+    return {"ok": True, "action": "created", "transaction_id": tx.id}
+
+
+# ── Review queue endpoints ─────────────────────────────────────────────────────
+@router.get("/pending", response_model=list[schemas.TransactionOut])
+def list_pending(
+    limit: int = 50,
+    current: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return all pending_review transactions for the current user, oldest first."""
+    return (
+        db.query(models.Transaction)
+        .filter(
+            models.Transaction.user_id == current.id,
+            models.Transaction.status == "pending_review",
+        )
+        .order_by(models.Transaction.date.asc(), models.Transaction.id.asc())
+        .limit(limit)
+        .all()
+    )
+
+
+@router.post("/review/{tx_id}", response_model=schemas.TransactionOut)
+def review_transaction(
+    tx_id: int,
+    payload: schemas.TransactionReviewAction,
+    current: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Act on a pending_review transaction:
+      - confirm    → set status="confirmed", optionally update fields
+      - skip       → leave as pending (just skip for now)
+      - not_expense → delete the transaction
+      - pending    → mark as Por Cobrar (keep pending, tag in notes)
+    """
+    from ..ai import categorizer
+
+    tx = db.query(models.Transaction).filter(
+        models.Transaction.id == tx_id,
+        models.Transaction.user_id == current.id,
+    ).first()
+    if not tx:
+        raise HTTPException(404, "Transaction not found")
+
+    action = payload.action
+
+    if action == "not_expense":
+        db.delete(tx)
+        db.commit()
+        return tx  # return last known state
+
+    if action == "skip":
+        # Don't change anything — client just moves to the next item
+        return tx
+
+    if action == "pending":
+        # "Por Cobrar" — stays pending_review but tagged
+        tx.notes = (tx.notes or "") + " [Por Cobrar]"
+        db.commit()
+        db.refresh(tx)
+        return tx
+
+    if action == "confirm":
+        # Apply any edits
+        if payload.category:
+            tx.category = payload.category
+        if payload.merchant:
+            tx.merchant = payload.merchant
+        if payload.amount is not None:
+            tx.amount = payload.amount
+        tx.status = "confirmed"
+        db.commit()
+        db.refresh(tx)
+
+        # Remember merchant→category for future auto-categorisation
+        if payload.remember and tx.merchant and tx.category:
+            categorizer.remember_correction(db, current.id, tx.merchant, tx.category)
+
+        # Attempt auto-link (CC payment detection)
+        account_svc.reconcile_new_transaction(db, current.id, tx)
+        db.refresh(tx)
+        return tx
+
+    raise HTTPException(400, f"Unknown action: {action}")
+
+
+@router.get("/forwarding-address")
+def forwarding_address(
+    current: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the user's personal forwarding address, generating a token if needed."""
+    import secrets
+    if not current.email_token:
+        # Lazy token generation for old users
+        while True:
+            token = secrets.token_urlsafe(9)
+            if not db.query(models.User).filter(models.User.email_token == token).first():
+                break
+        current.email_token = token
+        db.commit()
+        db.refresh(current)
+
+    forwarding_email = f"lucas-{current.email_token}@{EMAIL_DOMAIN}"
+    return {
+        "email": forwarding_email,
+        "token": current.email_token,
+        "instructions": (
+            "Agrega un filtro en Gmail:\n"
+            "  De: (banco OR notificaci OR cobro OR pago OR tarjeta)\n"
+            f"  → Reenviar a: {forwarding_email}\n\n"
+            "Cada email de tu banco se convertirá automáticamente en un gasto "
+            "pendiente de revisar en Lucas."
+        ),
+    }

@@ -1,0 +1,57 @@
+# One-command local dev: `docker compose up --build`
+# Brings up Postgres, the FastAPI backend, and the Next.js frontend.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lucas
+      POSTGRES_PASSWORD: lucas
+      POSTGRES_DB: lucas
+    ports:
+      - "5432:5432"
+    volumes:
+      - lucas_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lucas"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://lucas:lucas@db:5432/lucas
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - lucas_uploads:/app/uploads
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+      # Optional: paste your Google OAuth Web Client ID here to enable the
+      # "Continue with Google" button. Leave blank to hide it.
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm install && npm run dev"
+    depends_on:
+      - backend
+
+volumes:
+  lucas_pgdata:
+  lucas_uploads:
