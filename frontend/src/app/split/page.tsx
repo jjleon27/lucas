@@ -416,12 +416,27 @@ export default function SplitPage() {
   // ── Update / delete / add item ────────────────────────────
   async function handleUpdateItem(itemId: number, patch: { name?: string; price?: number }) {
     await updateSplitItem(itemId, patch);
-    if (txId) await refreshResult(txId);
+    // Optimistic update — keep items in their current order, no refetch
+    setResult((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        items: prev.items.map((it) => {
+          if (it.id !== itemId) return it;
+          const newPrice = patch.price ?? it.price;
+          const newName = patch.name ?? it.name;
+          return { ...it, name: newName, price: newPrice, line_total: newPrice * Math.max(it.quantity, 1) };
+        }),
+      };
+    });
   }
 
   async function handleDeleteItem(itemId: number) {
     await deleteSplitItem(itemId);
-    if (txId) await refreshResult(txId);
+    setResult((prev) => {
+      if (!prev) return prev;
+      return { ...prev, items: prev.items.filter((it) => it.id !== itemId) };
+    });
   }
 
   async function handleAddItem(name: string, price: number) {
@@ -573,27 +588,21 @@ export default function SplitPage() {
                   </div>
                 </div>
                 {propinaMode === "pct" ? (
-                  <div className="space-y-2">
-                    <div className="flex gap-2">
-                      {[5, 10, 15, 20].map((pct) => (
-                        <button
-                          key={pct}
-                          type="button"
-                          className={`flex-1 py-2 text-sm rounded-xl border-2 transition ${
-                            propinaPct === pct
-                              ? "border-indigo-600 bg-indigo-50 text-indigo-700 font-medium"
-                              : "border-slate-200 text-slate-600 hover:border-slate-300"
-                          }`}
-                          onClick={() => setPropinaPct(pct)}
-                        >
-                          {pct}%
-                        </button>
-                      ))}
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1 flex-1">
+                      <NumericInput
+                        className="input w-20 font-mono text-sm text-center"
+                        value={propinaPct}
+                        onChange={setPropinaPct}
+                        allowDecimals
+                        placeholder="10"
+                      />
+                      <span className="text-sm text-slate-500">%</span>
                     </div>
                     {base > 0 && (
-                      <p className="text-xs text-slate-500 text-right">
+                      <span className="text-sm text-slate-500">
                         = {formatMoney(clp, currency)}
-                      </p>
+                      </span>
                     )}
                   </div>
                 ) : (
