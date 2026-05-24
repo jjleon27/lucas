@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import NumericInput from "@/components/NumericInput";
+import { Trash2, Plus } from "lucide-react";
 import {
   createTransaction, me, ParsedReceipt, ParsedUpload, uploadImage,
   listAccounts, type Account,
@@ -325,6 +326,43 @@ export default function UploadPage() {
   );
 }
 
+// ---------- Add item row ----------
+function AddItemRow({ onAdd }: { onAdd: (name: string, price: number) => void }) {
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState(0);
+  function submit() {
+    if (!name.trim() || price <= 0) return;
+    onAdd(name.trim(), price);
+    setName(""); setPrice(0);
+  }
+  return (
+    <div className="flex gap-2 mt-2">
+      <input
+        className="input flex-1 text-sm py-1 px-2"
+        placeholder="Nuevo ítem"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+      />
+      <NumericInput
+        className="input w-28 font-mono text-sm py-1 px-2"
+        placeholder="Precio"
+        value={price}
+        onChange={setPrice}
+        allowDecimals
+      />
+      <button
+        type="button"
+        className="btn-primary px-3"
+        disabled={!name.trim() || price <= 0}
+        onClick={submit}
+      >
+        <Plus className="w-4 h-4" />
+      </button>
+    </div>
+  );
+}
+
 // ---------- Inline row editor ----------
 function EditRow({
   row, currency, onChange, showSelectable,
@@ -406,59 +444,69 @@ function EditRow({
         </div>
       </div>
 
-      {row.items.length > 0 && (
-        <div>
-          <span className="text-xs uppercase text-slate-500">{t("upload.lineItems")}</span>
-          <ul className="mt-1 text-sm divide-y">
-            {row.items.map((it, i) => (
-              <li key={i} className="py-2 flex items-center gap-2">
-                <input
-                  className="input flex-1 text-sm py-1 px-2"
-                  value={it.name}
-                  onChange={(e) => {
-                    const items = [...row.items];
-                    items[i] = { ...it, name: e.target.value };
+      <div>
+        <span className="text-xs uppercase text-slate-500">{t("upload.lineItems")}</span>
+        <ul className="mt-1 text-sm divide-y">
+          {row.items.map((it, i) => (
+            <li key={i} className="py-2 flex items-center gap-2">
+              <input
+                className="input flex-1 text-sm py-1 px-2"
+                value={it.name}
+                onChange={(e) => {
+                  const items = [...row.items];
+                  items[i] = { ...it, name: e.target.value };
+                  onChange({ items });
+                }}
+              />
+              <NumericInput
+                className="input w-28 font-mono text-sm py-1 px-2"
+                value={it.price}
+                onChange={(v) => {
+                  const items = [...row.items];
+                  items[i] = { ...it, price: v };
+                  onChange({ items });
+                }}
+                allowDecimals
+                placeholder="0"
+              />
+              {it.quantity > 1 && (
+                <button
+                  type="button"
+                  title={`Expandir en ${it.quantity} ítems separados`}
+                  className="text-xs text-indigo-600 border border-indigo-200 rounded-lg px-2 py-1 hover:bg-indigo-50 whitespace-nowrap shrink-0"
+                  onClick={() => {
+                    const expanded = Array.from({ length: Math.min(it.quantity, 20) }, () => ({
+                      name: it.name,
+                      price: it.price,
+                      quantity: 1,
+                    }));
+                    const items = [
+                      ...row.items.slice(0, i),
+                      ...expanded,
+                      ...row.items.slice(i + 1),
+                    ];
                     onChange({ items });
                   }}
-                />
-                <NumericInput
-                  className="input w-28 font-mono text-sm py-1 px-2"
-                  value={it.price}
-                  onChange={(v) => {
-                    const items = [...row.items];
-                    items[i] = { ...it, price: v };
-                    onChange({ items });
-                  }}
-                  allowDecimals
-                  placeholder="0"
-                />
-                {it.quantity > 1 && (
-                  <button
-                    type="button"
-                    title={`Expandir en ${it.quantity} ítems separados`}
-                    className="text-xs text-indigo-600 border border-indigo-200 rounded-lg px-2 py-1 hover:bg-indigo-50 whitespace-nowrap shrink-0"
-                    onClick={() => {
-                      const expanded = Array.from({ length: Math.min(it.quantity, 20) }, () => ({
-                        name: it.name,
-                        price: it.price,
-                        quantity: 1,
-                      }));
-                      const items = [
-                        ...row.items.slice(0, i),
-                        ...expanded,
-                        ...row.items.slice(i + 1),
-                      ];
-                      onChange({ items });
-                    }}
-                  >
-                    ×{it.quantity}
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+                >
+                  ×{it.quantity}
+                </button>
+              )}
+              <button
+                type="button"
+                className="text-slate-300 hover:text-rose-500 transition shrink-0"
+                onClick={() => {
+                  const items = row.items.filter((_, j) => j !== i);
+                  onChange({ items });
+                }}
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </li>
+          ))}
+        </ul>
+        {/* Agregar ítem */}
+        <AddItemRow onAdd={(name, price) => onChange({ items: [...row.items, { name, price, quantity: 1 }] })} />
+      </div>
     </div>
   );
 }
