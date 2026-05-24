@@ -20,6 +20,7 @@ interface Props {
   placeholder?: string;
   allowDecimals?: boolean;
   min?: number;
+  autoFocus?: boolean;
 }
 
 function formatDisplay(raw: string, allowDecimals: boolean): string {
@@ -45,6 +46,7 @@ export default function NumericInput({
   placeholder = "0",
   allowDecimals = false,
   min = 0,
+  autoFocus,
 }: Props) {
   // Track raw string so user can type freely; sync from prop when not focused
   const [display, setDisplay] = useState(() =>
@@ -109,6 +111,7 @@ export default function NumericInput({
       className={className}
       value={display}
       placeholder={placeholder}
+      autoFocus={autoFocus}
       onChange={handleChange}
       onFocus={handleFocus}
       onBlur={handleBlur}
