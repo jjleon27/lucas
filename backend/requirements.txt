@@ -26,4 +26,4 @@ python-dotenv==1.0.1
 # come with a real text layer, so pdfplumber works cleanly. We fall back to
 # vision_parse() for scanned/image-only PDFs.
 pdfplumber==0.11.4
-pdf2image>=1.33.3
+pdf2image==1.17.0
