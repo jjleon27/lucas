@@ -239,6 +239,7 @@ function ItemCard({
   onSaveAdjust,
   onUpdateItem,
   onDeleteItem,
+  onAssignAll,
 }: {
   item: ReceiptItemV2;
   people: Person[];
@@ -247,6 +248,7 @@ function ItemCard({
   onSaveAdjust: (itemId: number, assignees: AssigneeIn[]) => void;
   onUpdateItem: (itemId: number, patch: { name?: string; price?: number }) => void;
   onDeleteItem: (itemId: number) => void;
+  onAssignAll: (itemId: number, personIds: number[]) => void;
 }) {
   const { t } = useT();
   const [adjustOpen, setAdjustOpen] = useState(false);
@@ -355,15 +357,11 @@ function ItemCard({
           />
         ))}
 
-        {/* TODOS button — assign all unassigned people at once */}
+        {/* TODOS button — assign all people in one API call */}
         {assignedIds.size < people.length && people.length > 1 && (
           <button
             type="button"
-            onClick={() => {
-              people.forEach((p) => {
-                if (!assignedIds.has(p.id)) onTogglePerson(item.id, p.id);
-              });
-            }}
+            onClick={() => onAssignAll(item.id, people.map((p) => p.id))}
             className="text-[10px] font-bold px-2 py-0.5 rounded-full border border-slate-300 text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition"
           >
             TODOS
@@ -434,6 +432,7 @@ interface Props {
   onUpdateItem: (itemId: number, patch: { name?: string; price?: number }) => void;
   onDeleteItem: (itemId: number) => void;
   onAddItem: (name: string, price: number) => void;
+  onAssignAll: (itemId: number, personIds: number[]) => void;
 }
 
 export default function BillSplitter({
@@ -447,6 +446,7 @@ export default function BillSplitter({
   onUpdateItem,
   onDeleteItem,
   onAddItem,
+  onAssignAll,
 }: Props) {
   const { t } = useT();
   const [newName, setNewName] = useState("");
@@ -543,6 +543,7 @@ export default function BillSplitter({
               onSaveAdjust={onSaveAdjust}
               onUpdateItem={onUpdateItem}
               onDeleteItem={onDeleteItem}
+              onAssignAll={onAssignAll}
             />
           ))}
           {result.items.length === 0 && (

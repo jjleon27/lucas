@@ -358,6 +358,17 @@ export default function SplitPage() {
     if (txId) await refreshResult(txId);
   }
 
+  // ── Assign all people to one item in a single call ────────
+  async function handleAssignAll(itemId: number, personIds: number[]) {
+    const assignees: AssigneeIn[] = personIds.map((pid) => ({
+      person_id: pid,
+      split_type: "equal",
+      value: null,
+    }));
+    await assignItemV2(itemId, assignees);
+    if (txId) await refreshResult(txId);
+  }
+
   // ── Save adjusted split for one item ──────────────────────
   async function handleSaveAdjust(itemId: number, assignees: AssigneeIn[]) {
     await assignItemV2(itemId, assignees);
@@ -558,6 +569,7 @@ export default function SplitPage() {
             onUpdateItem={handleUpdateItem}
             onDeleteItem={handleDeleteItem}
             onAddItem={handleAddItem}
+            onAssignAll={handleAssignAll}
           />
 
           {/* ── Propina ─────────────────────────────────────────── */}
@@ -755,6 +767,21 @@ export default function SplitPage() {
             </ul>
           </div>
 
+          <button
+            type="button"
+            className="btn-ghost w-full flex items-center justify-center gap-2 text-sm"
+            onClick={() => {
+              const lines = ["💰 División de cuenta", ""];
+              result.people.forEach((p) => {
+                lines.push(`${p.person_name}: ${formatMoney(p.total, currency)}`);
+              });
+              lines.push(`\nTotal: ${formatMoney(result.total_amount, currency)}`);
+              navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
+            }}
+          >
+            📋 Copiar para WhatsApp
+          </button>
+
           <div className="flex gap-3">
             <button className="btn-ghost flex-1" onClick={() => setStep("assign")}>
               ← Editar
@@ -827,6 +854,31 @@ export default function SplitPage() {
               </p>
             )}
           </div>
+
+          <button
+            className="btn-ghost w-full flex items-center justify-center gap-2"
+            onClick={() => {
+              const payerIsMe = settlement.payer_person_id === null ||
+                people.find((p) => p.id === settlement.payer_person_id)?.is_me;
+              const lines = ["💰 División de cuenta"];
+              if (settlement.debts.length > 0) {
+                lines.push("");
+                settlement.debts.forEach((d) => {
+                  const who = payerIsMe
+                    ? `${d.person_name} te debe`
+                    : d.is_me
+                      ? `Tú le debes a ${settlement.payer_name}`
+                      : `${d.person_name} → ${settlement.payer_name}`;
+                  lines.push(`${who}: ${formatMoney(d.amount, currency)}`);
+                });
+              }
+              lines.push("");
+              lines.push(`Mi parte: ${formatMoney(settlement.my_total, currency)}`);
+              navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
+            }}
+          >
+            📋 Copiar para WhatsApp
+          </button>
 
           <button className="btn-ghost w-full" onClick={reset}>
             {t("split.splitAnother")}
