@@ -45,6 +45,8 @@ def _migrate_schema() -> None:
         "ALTER TABLE transactions ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'confirmed'",
         # users.email_token — unique token for personal forwarding email address
         "ALTER TABLE users ADD COLUMN email_token VARCHAR(64)",
+        # users.auth_provider — which provider created the account
+        "ALTER TABLE users ADD COLUMN auth_provider VARCHAR(32) NOT NULL DEFAULT 'password'",
     ]
     with engine.connect() as conn:
         for stmt in stmts:
