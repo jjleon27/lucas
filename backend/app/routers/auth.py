@@ -65,8 +65,15 @@ def _token_response(user: models.User) -> schemas.TokenOut:
 
 @router.post("/signup", response_model=schemas.TokenOut)
 def signup(payload: schemas.UserCreate, db: Session = Depends(get_db)):
-    if db.query(models.User).filter(models.User.email == payload.email).first():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email already registered")
+    existing = db.query(models.User).filter(models.User.email == payload.email).first()
+    if existing:
+        # Account exists with no password (created via quick/passwordless login) — set the password now
+        if existing.hashed_password is None:
+            existing.hashed_password = auth.hash_password(payload.password)
+            db.commit()
+            db.refresh(existing)
+            return _token_response(existing)
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email ya registrado. Usa 'Iniciar sesión'.")
     user = models.User(
         email=payload.email,
         hashed_password=auth.hash_password(payload.password),
@@ -77,8 +84,7 @@ def signup(payload: schemas.UserCreate, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
-    token = auth.create_access_token(user.id)
-    return schemas.TokenOut(access_token=token, user=schemas.UserOut.model_validate(user))
+    return _token_response(user)
 
 
 @router.post("/login", response_model=schemas.TokenOut)
