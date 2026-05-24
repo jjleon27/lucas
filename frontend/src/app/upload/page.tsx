@@ -411,9 +411,49 @@ function EditRow({
           <span className="text-xs uppercase text-slate-500">{t("upload.lineItems")}</span>
           <ul className="mt-1 text-sm divide-y">
             {row.items.map((it, i) => (
-              <li key={i} className="flex justify-between py-1.5">
-                <span>{it.name} {it.quantity > 1 ? `×${it.quantity}` : ""}</span>
-                <span className="font-mono">{formatMoney(it.price, currency)}</span>
+              <li key={i} className="py-2 flex items-center gap-2">
+                <input
+                  className="input flex-1 text-sm py-1 px-2"
+                  value={it.name}
+                  onChange={(e) => {
+                    const items = [...row.items];
+                    items[i] = { ...it, name: e.target.value };
+                    onChange({ items });
+                  }}
+                />
+                <NumericInput
+                  className="input w-28 font-mono text-sm py-1 px-2"
+                  value={it.price}
+                  onChange={(v) => {
+                    const items = [...row.items];
+                    items[i] = { ...it, price: v };
+                    onChange({ items });
+                  }}
+                  allowDecimals
+                  placeholder="0"
+                />
+                {it.quantity > 1 && (
+                  <button
+                    type="button"
+                    title={`Expandir en ${it.quantity} ítems separados`}
+                    className="text-xs text-indigo-600 border border-indigo-200 rounded-lg px-2 py-1 hover:bg-indigo-50 whitespace-nowrap shrink-0"
+                    onClick={() => {
+                      const expanded = Array.from({ length: Math.min(it.quantity, 20) }, () => ({
+                        name: it.name,
+                        price: it.price,
+                        quantity: 1,
+                      }));
+                      const items = [
+                        ...row.items.slice(0, i),
+                        ...expanded,
+                        ...row.items.slice(i + 1),
+                      ];
+                      onChange({ items });
+                    }}
+                  >
+                    ×{it.quantity}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

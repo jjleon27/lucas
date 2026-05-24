@@ -104,7 +104,10 @@ export default function SplitPage() {
   const [uploadErr, setUploadErr] = useState("");
   // Propina state
   const [propinaAmount, setPropinaAmount] = useState(0);
+  const [propinaPct, setPropinaPct] = useState(10);
+  const [propinaMode, setPropinaMode] = useState<"pct" | "clp">("pct");
   const [addingPropina, setAddingPropina] = useState(false);
+  const [addingIva, setAddingIva] = useState(false);
   // IVA info
   const [ivaIncluded, setIvaIncluded] = useState(false);
 
@@ -237,6 +240,17 @@ export default function SplitPage() {
         }
         // Case C: gap ≈ 0 → IVA already included in prices, do nothing
       }
+
+      // Expand items with quantity > 1 into individual units (capped at 20)
+      splitItems = splitItems.flatMap((it) =>
+        it.quantity > 1
+          ? Array.from({ length: Math.min(it.quantity, 20) }, () => ({
+              name: it.name,
+              price: it.price,
+              quantity: 1,
+            }))
+          : [it],
+      );
 
       // Validate we have something real to split
       if (totalAmount <= 0) {
@@ -379,16 +393,38 @@ export default function SplitPage() {
 
   // ── Add propina ────────────────────────────────────────────
   async function handleAddPropina() {
-    if (!txId || propinaAmount <= 0) return;
+    if (!txId || !result) return;
+    const base = result.items
+      .filter((it) => !/propina|tip|iva/i.test(it.name))
+      .reduce((s, it) => s + it.price * it.quantity, 0);
+    const amount = propinaMode === "pct" ? Math.round(base * propinaPct / 100) : propinaAmount;
+    if (amount <= 0) return;
     setAddingPropina(true);
     try {
-      await addSplitItem(txId, { name: "Propina", price: propinaAmount, quantity: 1 });
+      await addSplitItem(txId, { name: "Propina", price: amount, quantity: 1 });
       setPropinaAmount(0);
       await refreshResult(txId);
     } catch (e: any) {
       alert(e.message || "Error al agregar propina");
     } finally {
       setAddingPropina(false);
+    }
+  }
+
+  // ── Add IVA manually ──────────────────────────────────────
+  async function handleAddIva() {
+    if (!txId || !result) return;
+    setAddingIva(true);
+    try {
+      const baseTotal = result.items.reduce((s, it) => s + it.price * it.quantity, 0);
+      const ivaAmt = Math.round(baseTotal * 0.19);
+      await addSplitItem(txId, { name: "IVA (19%)", price: ivaAmt, quantity: 1 });
+      setIvaIncluded(true);
+      await refreshResult(txId);
+    } catch (e: any) {
+      alert(e.message || "Error al agregar IVA");
+    } finally {
+      setAddingIva(false);
     }
   }
 
@@ -488,24 +524,98 @@ export default function SplitPage() {
           />
 
           {/* ── Propina ─────────────────────────────────────────── */}
-          {!result.items.some((it) => /propina|tip/i.test(it.name)) && (
-            <div className="card flex items-center gap-3">
-              <span className="text-sm text-slate-600 shrink-0">🙏 Propina</span>
-              <NumericInput
-                className="input flex-1 font-mono text-sm"
-                value={propinaAmount}
-                onChange={setPropinaAmount}
-                placeholder="0"
-              />
-              <span className="text-xs text-slate-400 shrink-0">{currency}</span>
-              <button
-                type="button"
-                className="btn-primary px-4 text-sm py-2 shrink-0"
-                disabled={propinaAmount <= 0 || addingPropina}
-                onClick={handleAddPropina}
-              >
-                {addingPropina ? "…" : "+ Agregar"}
-              </button>
+          {!result.items.some((it) => /propina|tip/i.test(it.name)) && (() => {
+            const base = result.items
+              .filter((it) => !/propina|tip|iva/i.test(it.name))
+              .reduce((s, it) => s + it.price * it.quantity, 0);
+            const clp = propinaMode === "pct"
+              ? Math.round(base * propinaPct / 100)
+              : propinaAmount;
+            return (
+              <div className="card space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-700">🙏 Propina</span>
+                  <div className="flex text-xs rounded-lg bg-slate-100 p-0.5">
+                    {(["pct", "clp"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        className={`px-3 py-1 rounded-md transition ${
+                          propinaMode === m ? "bg-white shadow-soft font-medium" : "text-slate-500"
+                        }`}
+                        onClick={() => setPropinaMode(m)}
+                      >
+                        {m === "pct" ? "%" : currency}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {propinaMode === "pct" ? (
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      {[5, 10, 15, 20].map((pct) => (
+                        <button
+                          key={pct}
+                          type="button"
+                          className={`flex-1 py-2 text-sm rounded-xl border-2 transition ${
+                            propinaPct === pct
+                              ? "border-indigo-600 bg-indigo-50 text-indigo-700 font-medium"
+                              : "border-slate-200 text-slate-600 hover:border-slate-300"
+                          }`}
+                          onClick={() => setPropinaPct(pct)}
+                        >
+                          {pct}%
+                        </button>
+                      ))}
+                    </div>
+                    {base > 0 && (
+                      <p className="text-xs text-slate-500 text-right">
+                        = {formatMoney(clp, currency)}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <NumericInput
+                      className="input flex-1 font-mono text-sm"
+                      value={propinaAmount}
+                      onChange={setPropinaAmount}
+                      placeholder="0"
+                    />
+                    <span className="text-xs text-slate-400 shrink-0">{currency}</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="btn-primary w-full text-sm"
+                  disabled={clp <= 0 || addingPropina}
+                  onClick={handleAddPropina}
+                >
+                  {addingPropina ? "…" : `+ Agregar propina${clp > 0 ? ` (${formatMoney(clp, currency)})` : ""}`}
+                </button>
+              </div>
+            );
+          })()}
+
+          {/* ── IVA manual ─────────────────────────────────────── */}
+          {!ivaIncluded && (
+            <div className="card">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-700">Agregar IVA (19%)</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Para boletas donde el IVA no estaba incluido en los precios
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost text-sm px-4 py-2 shrink-0"
+                  disabled={addingIva}
+                  onClick={handleAddIva}
+                >
+                  {addingIva ? "…" : "+ IVA"}
+                </button>
+              </div>
             </div>
           )}
 
