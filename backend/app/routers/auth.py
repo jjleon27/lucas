@@ -162,19 +162,26 @@ def update_me(
     current: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Update budget, settings, etc."""
+    """Update budget, settings, email, or password."""
+    if "email" in payload:
+        new_email = str(payload["email"]).strip().lower()
+        taken = db.query(models.User).filter(
+            models.User.email == new_email, models.User.id != current.id
+        ).first()
+        if taken:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Email already in use")
+        current.email = new_email
+    if "password" in payload and payload["password"]:
+        current.hashed_password = auth.hash_password(str(payload["password"]))
     if "monthly_budget" in payload:
         current.monthly_budget = float(payload["monthly_budget"])
     if "settings" in payload and isinstance(payload["settings"], dict):
-        # Validate through UserSettings schema (extra keys are preserved via extra="allow")
         try:
             merged_raw = {**(current.settings or {}), **payload["settings"]}
             validated = schemas.UserSettings(**merged_raw)
             current.settings = validated.model_dump()
         except Exception:
-            # Fall back to raw merge if validation fails (forward compat)
             current.settings = {**(current.settings or {}), **payload["settings"]}
-    # Lazily generate email_token for users who signed up before it was added
     if not current.email_token:
         current.email_token = _generate_email_token(db)
     db.commit()

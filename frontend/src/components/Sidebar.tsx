@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Upload, Receipt, Scissors, LogOut, MessageCircle, Globe, CreditCard, Inbox } from "lucide-react";
+import { LayoutDashboard, Upload, Receipt, Scissors, LogOut, MessageCircle, Globe, CreditCard, Inbox, UserCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { clearToken, getToken, listPendingTransactions } from "@/lib/api";
 import { LOCALES, useT } from "@/lib/i18n";
@@ -34,6 +34,7 @@ export default function Sidebar() {
     { href: "/review", label: "Revisar", icon: Inbox, badge: pendingCount > 0 ? pendingCount : undefined },
     { href: "/chat", label: t("nav.chat"), icon: MessageCircle },
     { href: "/split", label: t("nav.split"), icon: Scissors },
+    { href: "/settings", label: "Perfil", icon: UserCircle },
   ];
 
   const currentFlag = LOCALES.find((l) => l.code === locale)?.flag ?? "🌐";

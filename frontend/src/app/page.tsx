@@ -20,6 +20,7 @@ export default function Landing() {
   const { t, locale, setLocale } = useT();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [mode, setMode] = useState<"quick" | "password">("quick");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -217,15 +218,25 @@ export default function Landing() {
                 onChange={(e) => setEmail(e.target.value)}
                 required
               />
-              <input
-                className="input"
-                type="password"
-                placeholder={t("auth.password")}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                minLength={8}
-                required
-              />
+              <div className="relative">
+                <input
+                  className="input pr-10"
+                  type={showPassword ? "text" : "password"}
+                  placeholder={t("auth.password")}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  minLength={8}
+                  required
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-base leading-none"
+                  onClick={() => setShowPassword((v) => !v)}
+                >
+                  {showPassword ? "🙈" : "👁️"}
+                </button>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   className="btn-ghost border border-slate-200"
