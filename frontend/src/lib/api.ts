@@ -575,6 +575,20 @@ export async function addSplitItem(
   });
 }
 
+export async function updateSplitItem(
+  item_id: number,
+  patch: { name?: string; price?: number; quantity?: number },
+): Promise<ReceiptItemV2> {
+  return request(`/split/items/${item_id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteSplitItem(item_id: number): Promise<void> {
+  await request(`/split/items/${item_id}`, { method: "DELETE" });
+}
+
 export async function splitResultV2(transaction_id: number): Promise<SplitResultV2> {
   const q = new URLSearchParams({ transaction_id: String(transaction_id) });
   return request(`/split/result?${q.toString()}`);

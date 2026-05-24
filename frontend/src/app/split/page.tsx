@@ -15,6 +15,8 @@ import {
   SettleOut,
   SplitResultV2,
   addSplitItem,
+  updateSplitItem,
+  deleteSplitItem,
   assignItemV2,
   createPerson,
   createTransaction,
@@ -411,6 +413,23 @@ export default function SplitPage() {
     }
   }
 
+  // ── Update / delete / add item ────────────────────────────
+  async function handleUpdateItem(itemId: number, patch: { name?: string; price?: number }) {
+    await updateSplitItem(itemId, patch);
+    if (txId) await refreshResult(txId);
+  }
+
+  async function handleDeleteItem(itemId: number) {
+    await deleteSplitItem(itemId);
+    if (txId) await refreshResult(txId);
+  }
+
+  async function handleAddItem(name: string, price: number) {
+    if (!txId) return;
+    await addSplitItem(txId, { name, price, quantity: 1 });
+    await refreshResult(txId);
+  }
+
   // ── Add IVA manually ──────────────────────────────────────
   async function handleAddIva() {
     if (!txId || !result) return;
@@ -521,6 +540,9 @@ export default function SplitPage() {
             onSaveAdjust={handleSaveAdjust}
             onAddPerson={handleAddPerson}
             onRemovePerson={handleRemovePerson}
+            onUpdateItem={handleUpdateItem}
+            onDeleteItem={handleDeleteItem}
+            onAddItem={handleAddItem}
           />
 
           {/* ── Propina ─────────────────────────────────────────── */}

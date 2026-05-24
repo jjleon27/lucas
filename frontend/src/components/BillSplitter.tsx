@@ -8,7 +8,7 @@
  * equal / % / exact-amount per person.
  */
 import { useState, useMemo, useCallback } from "react";
-import { Plus, Trash2, ChevronDown, ChevronUp, Check } from "lucide-react";
+import { Plus, Trash2, ChevronDown, ChevronUp, Check, Pencil, X } from "lucide-react";
 import NumericInput from "@/components/NumericInput";
 import {
   Person,
@@ -237,15 +237,22 @@ function ItemCard({
   currency,
   onTogglePerson,
   onSaveAdjust,
+  onUpdateItem,
+  onDeleteItem,
 }: {
   item: ReceiptItemV2;
   people: Person[];
   currency: string;
   onTogglePerson: (itemId: number, personId: number) => void;
   onSaveAdjust: (itemId: number, assignees: AssigneeIn[]) => void;
+  onUpdateItem: (itemId: number, patch: { name?: string; price?: number }) => void;
+  onDeleteItem: (itemId: number) => void;
 }) {
   const { t } = useT();
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(item.name);
+  const [editPrice, setEditPrice] = useState(item.line_total / Math.max(item.quantity, 1));
 
   const assignedIds = new Set(item.assignees.map((a) => a.person_id));
   const assignedPeople = people.filter((p) => assignedIds.has(p.id));
@@ -268,22 +275,73 @@ function ItemCard({
       style={{ borderColor, backgroundColor: bgColor }}
     >
       {/* Top row: name + price */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex items-center gap-1.5">
-          <span className="font-medium text-sm">{item.name}</span>
-          {/propina|tip/i.test(item.name) && (
-            <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
-              propina
-            </span>
-          )}
-          {item.quantity > 1 && (
-            <span className="ml-0.5 text-xs text-slate-400">×{item.quantity}</span>
-          )}
+      {editing ? (
+        <div className="flex items-center gap-2">
+          <input
+            className="input flex-1 text-sm py-1 px-2"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            autoFocus
+          />
+          <NumericInput
+            className="input w-28 font-mono text-sm py-1 px-2"
+            value={editPrice}
+            onChange={setEditPrice}
+            allowDecimals
+            placeholder="0"
+          />
+          <button
+            type="button"
+            className="text-emerald-600 hover:text-emerald-700"
+            onClick={() => {
+              onUpdateItem(item.id, { name: editName, price: editPrice });
+              setEditing(false);
+            }}
+          >
+            <Check className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            className="text-slate-400 hover:text-slate-600"
+            onClick={() => { setEditName(item.name); setEditPrice(item.line_total / Math.max(item.quantity, 1)); setEditing(false); }}
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
-        <span className="font-mono text-sm shrink-0">
-          {formatMoney(item.line_total, currency)}
-        </span>
-      </div>
+      ) : (
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex items-center gap-1.5">
+            <span className="font-medium text-sm">{item.name}</span>
+            {/propina|tip/i.test(item.name) && (
+              <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
+                propina
+              </span>
+            )}
+            {item.quantity > 1 && (
+              <span className="ml-0.5 text-xs text-slate-400">×{item.quantity}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="font-mono text-sm">{formatMoney(item.line_total, currency)}</span>
+            <button
+              type="button"
+              className="text-slate-300 hover:text-indigo-500 transition"
+              onClick={() => setEditing(true)}
+              title="Editar"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              className="text-slate-300 hover:text-rose-500 transition"
+              onClick={() => onDeleteItem(item.id)}
+              title="Eliminar"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Person toggle row */}
       <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
@@ -373,6 +431,9 @@ interface Props {
   onSaveAdjust: (itemId: number, assignees: AssigneeIn[]) => void;
   onAddPerson: (name: string, color: string) => void;
   onRemovePerson: (id: number) => void;
+  onUpdateItem: (itemId: number, patch: { name?: string; price?: number }) => void;
+  onDeleteItem: (itemId: number) => void;
+  onAddItem: (name: string, price: number) => void;
 }
 
 export default function BillSplitter({
@@ -383,9 +444,14 @@ export default function BillSplitter({
   onSaveAdjust,
   onAddPerson,
   onRemovePerson,
+  onUpdateItem,
+  onDeleteItem,
+  onAddItem,
 }: Props) {
   const { t } = useT();
   const [newName, setNewName] = useState("");
+  const [addItemName, setAddItemName] = useState("");
+  const [addItemPrice, setAddItemPrice] = useState(0);
 
   const completion = result.completion_pct;
   const isComplete = completion >= 100 && result.unassigned_total === 0;
@@ -475,6 +541,8 @@ export default function BillSplitter({
               currency={currency}
               onTogglePerson={onTogglePerson}
               onSaveAdjust={onSaveAdjust}
+              onUpdateItem={onUpdateItem}
+              onDeleteItem={onDeleteItem}
             />
           ))}
           {result.items.length === 0 && (
@@ -483,6 +551,40 @@ export default function BillSplitter({
             </li>
           )}
         </ul>
+
+        {/* Agregar ítem manual */}
+        <div className="mt-3 flex gap-2">
+          <input
+            className="input flex-1 text-sm"
+            placeholder="Nombre del ítem"
+            value={addItemName}
+            onChange={(e) => setAddItemName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && addItemName.trim() && addItemPrice > 0) {
+                onAddItem(addItemName.trim(), addItemPrice);
+                setAddItemName(""); setAddItemPrice(0);
+              }
+            }}
+          />
+          <NumericInput
+            className="input w-28 font-mono text-sm"
+            placeholder="Precio"
+            value={addItemPrice}
+            onChange={setAddItemPrice}
+            allowDecimals
+          />
+          <button
+            type="button"
+            className="btn-primary px-3"
+            disabled={!addItemName.trim() || addItemPrice <= 0}
+            onClick={() => {
+              onAddItem(addItemName.trim(), addItemPrice);
+              setAddItemName(""); setAddItemPrice(0);
+            }}
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        </div>
 
         {/* Progress bar */}
         {result.items.length > 0 && (

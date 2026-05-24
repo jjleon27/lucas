@@ -310,6 +310,60 @@ def add_split_item(
     return _item_v2_out(item)
 
 
+@router.patch("/items/{item_id}", status_code=200)
+def update_split_item(
+    item_id: int,
+    payload: dict,
+    current: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Edit a split item's name and/or price."""
+    item = (
+        db.query(models.ReceiptItem)
+        .join(models.Transaction, models.ReceiptItem.transaction_id == models.Transaction.id)
+        .filter(models.ReceiptItem.id == item_id, models.Transaction.user_id == current.id)
+        .first()
+    )
+    if not item:
+        raise HTTPException(404, "Item not found")
+    old_total = item.price * item.quantity
+    if "name" in payload:
+        item.name = str(payload["name"])
+    if "price" in payload:
+        item.price = float(payload["price"])
+    if "quantity" in payload:
+        item.quantity = int(payload["quantity"])
+    delta = item.price * item.quantity - old_total
+    tx = db.query(models.Transaction).filter(models.Transaction.id == item.transaction_id).first()
+    if tx:
+        tx.amount = round(tx.amount + delta, 2)
+    db.commit()
+    db.refresh(item)
+    return _item_v2_out(item)
+
+
+@router.delete("/items/{item_id}", status_code=204)
+def delete_split_item(
+    item_id: int,
+    current: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove an item from a split."""
+    item = (
+        db.query(models.ReceiptItem)
+        .join(models.Transaction, models.ReceiptItem.transaction_id == models.Transaction.id)
+        .filter(models.ReceiptItem.id == item_id, models.Transaction.user_id == current.id)
+        .first()
+    )
+    if not item:
+        raise HTTPException(404, "Item not found")
+    tx = db.query(models.Transaction).filter(models.Transaction.id == item.transaction_id).first()
+    if tx:
+        tx.amount = round(tx.amount - item.price * item.quantity, 2)
+    db.delete(item)
+    db.commit()
+
+
 # ─────────────────────────────────────────────────────────────
 # Assignment
 # ─────────────────────────────────────────────────────────────
