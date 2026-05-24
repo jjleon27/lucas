@@ -143,6 +143,8 @@ export default function SplitPage() {
   const [addingIva, setAddingIva] = useState(false);
   // IVA info
   const [ivaIncluded, setIvaIncluded] = useState(false);
+  // Duplicate detection
+  const [dupeDetected, setDupeDetected] = useState(false);
 
   // Settlement — single payer
   const [settlement, setSettlement] = useState<SettleOut | null>(null);
@@ -182,6 +184,10 @@ export default function SplitPage() {
     try {
       const upload = await uploadImage(file);
       if (!upload.transactions.length) throw new Error("No se pudo leer la boleta");
+
+      // Duplicate detection via dupe_of flag from the OCR parser
+      const hasDupe = upload.transactions.some((t) => t.dupe_of != null);
+      if (hasDupe) setDupeDetected(true);
 
       const txCurrency = upload.transactions[0].currency || upload.currency || "CLP";
 
@@ -325,6 +331,7 @@ export default function SplitPage() {
         const dupeMatch = e.message?.match(/"existing_id"\s*:\s*(\d+)/);
         if (dupeMatch) {
           txIdToUse = parseInt(dupeMatch[1]);
+          setDupeDetected(true);
         } else {
           throw e;
         }
@@ -522,6 +529,7 @@ export default function SplitPage() {
     setUploadErr("");
     setPropinaAmount(0);
     setIvaIncluded(false);
+    setDupeDetected(false);
   }
 
   // ── Render ─────────────────────────────────────────────────
@@ -587,6 +595,16 @@ export default function SplitPage() {
       {/* ══ STEP 2: Assign ══════════════════════════════════════ */}
       {step === "assign" && result && (
         <div className="space-y-4">
+          {/* Duplicate warning banner */}
+          {dupeDetected && (
+            <div className="flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+              <span className="shrink-0 text-base">⚠️</span>
+              <span>
+                <strong>Boleta duplicada detectada.</strong> Esta boleta ya fue subida anteriormente. Puedes continuar de todas formas, pero verifica que no estés dividiendo la misma cuenta dos veces.
+              </span>
+            </div>
+          )}
+
           {/* IVA info banner */}
           {ivaIncluded && (
             <div className="flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
