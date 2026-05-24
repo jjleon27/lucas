@@ -41,6 +41,37 @@ const PALETTE = [
   "#06b6d4", "#6366f1", "#a855f7", "#ec4899",
 ];
 
+type Transfer = {
+  fromId: number; fromName: string; fromColor: string;
+  toId: number;   toName: string;   toColor: string;
+  amount: number;
+};
+
+function computeMultiPayer(
+  people: Person[],
+  resultPeople: { person_id: number; person_name: string; person_color: string; total: number }[],
+  amounts: Record<number, number>,
+): Transfer[] {
+  const net = people.map((p) => ({
+    id: p.id, name: p.name, color: p.color,
+    balance: (amounts[p.id] ?? 0) - (resultPeople.find((r) => r.person_id === p.id)?.total ?? 0),
+  }));
+  const creds = net.filter((p) => p.balance > 0.5).map((p) => ({ ...p }));
+  const debts = net.filter((p) => p.balance < -0.5).map((p) => ({ ...p }));
+  creds.sort((a, b) => b.balance - a.balance);
+  debts.sort((a, b) => a.balance - b.balance);
+  const out: Transfer[] = [];
+  let ci = 0, di = 0;
+  while (ci < creds.length && di < debts.length) {
+    const t = Math.min(creds[ci].balance, -debts[di].balance);
+    if (t > 0.5) out.push({ fromId: debts[di].id, fromName: debts[di].name, fromColor: debts[di].color, toId: creds[ci].id, toName: creds[ci].name, toColor: creds[ci].color, amount: Math.round(t) });
+    creds[ci].balance -= t; debts[di].balance += t;
+    if (creds[ci].balance < 0.5) ci++;
+    if (debts[di].balance > -0.5) di++;
+  }
+  return out;
+}
+
 type Step = "setup" | "assign" | "settle";
 
 // ── Step indicator ──────────────────────────────────────────
@@ -113,11 +144,15 @@ export default function SplitPage() {
   // IVA info
   const [ivaIncluded, setIvaIncluded] = useState(false);
 
-  // Settlement
+  // Settlement — single payer
   const [settlement, setSettlement] = useState<SettleOut | null>(null);
-  const [payerPersonId, setPayerPersonId] = useState<number | null>(null); // null = "me"
+  const [payerPersonId, setPayerPersonId] = useState<number | null>(null);
   const [payerAccountId, setPayerAccountId] = useState<number | null>(null);
   const [settling, setSettling] = useState(false);
+  // Settlement — multi payer
+  const [multiPayer, setMultiPayer] = useState(false);
+  const [payerAmounts, setPayerAmounts] = useState<Record<number, number>>({});
+  const [multiSettlement, setMultiSettlement] = useState<Transfer[] | null>(null);
 
   // ── Boot ───────────────────────────────────────────────────
   useEffect(() => {
@@ -479,6 +514,9 @@ export default function SplitPage() {
     setResult(null);
     setTxId(null);
     setSettlement(null);
+    setMultiSettlement(null);
+    setMultiPayer(false);
+    setPayerAmounts({});
     setManualAmount(0);
     setManualMerchant("");
     setUploadErr("");
@@ -677,89 +715,89 @@ export default function SplitPage() {
       )}
 
       {/* ══ STEP 3: Settle ═════════════════════════════════════ */}
-      {step === "settle" && result && !settlement && (
+      {step === "settle" && result && !settlement && !multiSettlement && (
         <div className="space-y-5">
           {/* Who paid? */}
           <div className="card space-y-3">
             <h2 className="text-base font-semibold">{t("split.whoPayd")}</h2>
-            <div className="flex flex-wrap gap-2">
-              {/* "Me" option */}
-              <button
-                type="button"
-                onClick={() => setPayerPersonId(null)}
-                className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition ${
-                  payerPersonId === null
-                    ? "border-indigo-600 bg-indigo-50 text-indigo-700"
-                    : "border-slate-200 text-slate-600 hover:border-slate-300"
-                }`}
-              >
-                {t("split.paidByMe")}
+
+            {/* Mode toggle */}
+            <div className="flex text-sm rounded-xl bg-slate-100 p-1">
+              <button type="button" className={`flex-1 py-2 rounded-lg transition ${!multiPayer ? "bg-white shadow-soft font-medium" : "text-slate-500"}`} onClick={() => setMultiPayer(false)}>
+                Una persona
               </button>
-              {/* Other people */}
-              {people
-                .filter((p) => !p.is_me)
-                .map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setPayerPersonId(p.id)}
-                    className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition ${
-                      payerPersonId === p.id
-                        ? "border-2 text-white"
-                        : "border-slate-200 text-slate-600 hover:border-slate-300"
-                    }`}
-                    style={
-                      payerPersonId === p.id
-                        ? { borderColor: p.color, backgroundColor: p.color }
-                        : {}
-                    }
-                  >
-                    {p.name}
-                  </button>
-                ))}
+              <button type="button" className={`flex-1 py-2 rounded-lg transition ${multiPayer ? "bg-white shadow-soft font-medium" : "text-slate-500"}`} onClick={() => setMultiPayer(true)}>
+                Entre varios
+              </button>
             </div>
 
-            {/* Account selector (only when "me" pays) */}
-            {payerPersonId === null && accounts.length > 0 && (
-              <div className="space-y-1">
-                <label className="text-sm text-slate-500">
-                  {t("split.deductFromAccount")}
-                </label>
-                <select
-                  className="input"
-                  value={payerAccountId ?? ""}
-                  onChange={(e) =>
-                    setPayerAccountId(e.target.value ? Number(e.target.value) : null)
-                  }
-                >
-                  <option value="">— No descontar —</option>
-                  {accounts.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({formatMoney(a.current_balance, a.currency)})
-                    </option>
+            {!multiPayer ? (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setPayerPersonId(null)}
+                    className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition ${payerPersonId === null ? "border-indigo-600 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
+                    {t("split.paidByMe")}
+                  </button>
+                  {people.filter((p) => !p.is_me).map((p) => (
+                    <button key={p.id} type="button" onClick={() => setPayerPersonId(p.id)}
+                      className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition ${payerPersonId === p.id ? "text-white" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}
+                      style={payerPersonId === p.id ? { borderColor: p.color, backgroundColor: p.color } : {}}>
+                      {p.name}
+                    </button>
                   ))}
-                </select>
+                </div>
+                {payerPersonId === null && accounts.length > 0 && (
+                  <div className="space-y-1">
+                    <label className="text-sm text-slate-500">{t("split.deductFromAccount")}</label>
+                    <select className="input" value={payerAccountId ?? ""} onChange={(e) => setPayerAccountId(e.target.value ? Number(e.target.value) : null)}>
+                      <option value="">— No descontar —</option>
+                      {accounts.map((a) => (
+                        <option key={a.id} value={a.id}>{a.name} ({formatMoney(a.current_balance, a.currency)})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="space-y-2">
+                {people.map((p) => (
+                  <div key={p.id} className="flex items-center gap-3">
+                    <span className="text-sm font-medium w-20 truncate shrink-0" style={{ color: p.color }}>
+                      {p.is_me ? "Yo" : p.name}
+                    </span>
+                    <NumericInput
+                      className="input flex-1 font-mono text-sm"
+                      value={payerAmounts[p.id] ?? 0}
+                      onChange={(v) => setPayerAmounts((prev) => ({ ...prev, [p.id]: v }))}
+                      placeholder="0"
+                    />
+                    <span className="text-xs text-slate-400 shrink-0 w-8">{currency}</span>
+                  </div>
+                ))}
+                {(() => {
+                  const paid = Object.values(payerAmounts).reduce((s, v) => s + v, 0);
+                  const diff = result.total_amount - paid;
+                  return (
+                    <p className={`text-xs font-medium ${Math.abs(diff) < 1 ? "text-emerald-600" : "text-amber-600"}`}>
+                      Pagado: {formatMoney(paid, currency)} / {formatMoney(result.total_amount, currency)}
+                      {Math.abs(diff) >= 1 && ` (${diff > 0 ? "falta" : "sobra"} ${formatMoney(Math.abs(diff), currency)})`}
+                    </p>
+                  );
+                })()}
               </div>
             )}
           </div>
 
-          {/* Per-person preview */}
+          {/* Per-person totals */}
           <div className="card">
-            <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
-              {t("split.totals")}
-            </h3>
+            <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">{t("split.totals")}</h3>
             <ul className="space-y-2">
               {result.people.map((p) => (
                 <li key={p.person_id} className="flex justify-between text-sm">
                   <span className="flex items-center gap-2">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: p.person_color }}
-                    />
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.person_color }} />
                     {p.person_name}
-                    {p.is_me && (
-                      <span className="text-xs text-slate-400">(tú)</span>
-                    )}
+                    {p.is_me && <span className="text-xs text-slate-400">(tú)</span>}
                   </span>
                   <span className="font-mono">{formatMoney(p.total, currency)}</span>
                 </li>
@@ -767,33 +805,71 @@ export default function SplitPage() {
             </ul>
           </div>
 
-          <button
-            type="button"
-            className="btn-ghost w-full flex items-center justify-center gap-2 text-sm"
+          <button type="button" className="btn-ghost w-full flex items-center justify-center gap-2 text-sm"
             onClick={() => {
               const lines = ["💰 División de cuenta", ""];
-              result.people.forEach((p) => {
-                lines.push(`${p.person_name}: ${formatMoney(p.total, currency)}`);
-              });
+              result.people.forEach((p) => lines.push(`${p.person_name}: ${formatMoney(p.total, currency)}`));
               lines.push(`\nTotal: ${formatMoney(result.total_amount, currency)}`);
               navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
-            }}
-          >
+            }}>
             📋 Copiar para WhatsApp
           </button>
 
           <div className="flex gap-3">
-            <button className="btn-ghost flex-1" onClick={() => setStep("assign")}>
-              ← Editar
-            </button>
+            <button className="btn-ghost flex-1" onClick={() => setStep("assign")}>← Editar</button>
             <button
               className="btn-primary flex-1"
-              disabled={settling}
-              onClick={() => handleSettle(true)}
+              disabled={settling || (multiPayer && Math.abs(result.total_amount - Object.values(payerAmounts).reduce((s, v) => s + v, 0)) > 1)}
+              onClick={() => {
+                if (multiPayer) {
+                  setMultiSettlement(computeMultiPayer(people, result.people, payerAmounts));
+                } else {
+                  handleSettle(true);
+                }
+              }}
             >
-              {settling ? "…" : t("split.saveToLucas")}
+              {settling ? "…" : "Liquidar →"}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* ══ MULTI-PAYER RESULT ══════════════════════════════════ */}
+      {step === "settle" && multiSettlement && (
+        <div className="space-y-4">
+          <div className="card space-y-3">
+            <h2 className="text-lg font-semibold">Resultado simplificado</h2>
+            {multiSettlement.length === 0 ? (
+              <p className="text-sm text-emerald-600 font-medium">¡Todos pagaron exacto! No hay deudas pendientes.</p>
+            ) : (
+              <ul className="space-y-2.5">
+                {multiSettlement.map((tr, i) => (
+                  <li key={i} className="flex justify-between items-center">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: tr.fromColor }} />
+                      <span className="font-medium">{tr.fromName}</span>
+                      <span className="text-slate-400">→</span>
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: tr.toColor }} />
+                      <span className="font-medium">{tr.toName}</span>
+                    </div>
+                    <span className="font-mono font-semibold text-rose-500">
+                      {formatMoney(tr.amount, currency)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <button className="btn-ghost w-full flex items-center justify-center gap-2"
+            onClick={() => {
+              const lines = ["💰 División de cuenta", ""];
+              multiSettlement.forEach((tr) => lines.push(`${tr.fromName} → ${tr.toName}: ${formatMoney(tr.amount, currency)}`));
+              navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
+            }}>
+            📋 Copiar para WhatsApp
+          </button>
+          <button className="btn-ghost w-full" onClick={reset}>{t("split.splitAnother")}</button>
         </div>
       )}
 
