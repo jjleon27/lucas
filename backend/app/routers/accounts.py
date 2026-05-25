@@ -169,38 +169,37 @@ def reconcile_account(
     previous_anchor_balance = float(acc.anchor_balance)
     previous_anchor_date = acc.anchor_date
 
-    # Snap: set anchor_date = as_of (inclusive). To ensure the formula gives
-    # exactly expected_balance right now, we back-deduce the anchor_balance
-    # by reversing today's already-confirmed transactions. This means new
-    # transactions from today onward are counted correctly going forward.
-    today_income = db.query(
+    # Professional approach: clear anchor_date (count ALL confirmed transactions,
+    # no date cutoff) and back-deduce anchor_balance from the full history so
+    # the live formula gives exactly expected_balance right now.
+    #
+    # This avoids the classic bug where a payment email dated yesterday is
+    # excluded after a reconcile that sets anchor_date = today.
+    all_income = db.query(
         func.coalesce(func.sum(models.Transaction.amount), 0.0)
     ).filter(
         models.Transaction.account_id == acc.id,
         models.Transaction.status == "confirmed",
-        models.Transaction.date == as_of,
         models.Transaction.is_income.is_(True),
     ).scalar() or 0.0
 
-    today_expense = db.query(
+    all_expense = db.query(
         func.coalesce(func.sum(models.Transaction.amount), 0.0)
     ).filter(
         models.Transaction.account_id == acc.id,
         models.Transaction.status == "confirmed",
-        models.Transaction.date == as_of,
         models.Transaction.is_income.is_(False),
     ).scalar() or 0.0
 
     expected = float(payload.expected_balance)
     if acc.type == "credit":
-        # formula: used = anchor + expenses - income → anchor = expected - expenses + income
-        adjusted = expected - float(today_expense) + float(today_income)
+        # formula: used = anchor + expense - income  →  anchor = expected - expense + income
+        acc.anchor_balance = expected - float(all_expense) + float(all_income)
     else:
-        # formula: balance = anchor + income - expenses → anchor = expected - income + expenses
-        adjusted = expected - float(today_income) + float(today_expense)
+        # formula: balance = anchor + income - expense  →  anchor = expected - income + expense
+        acc.anchor_balance = expected - float(all_income) + float(all_expense)
 
-    acc.anchor_date = as_of
-    acc.anchor_balance = adjusted
+    acc.anchor_date = None  # no date cutoff — all confirmed txs count regardless of date
     db.commit()
     db.refresh(acc)
 
