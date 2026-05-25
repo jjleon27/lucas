@@ -77,6 +77,9 @@ def create_transaction(
         if not owns:
             raise HTTPException(400, "account_id does not belong to this user")
 
+    # "Pago Tarjeta" is always a transfer — never counts as a monthly expense.
+    is_transfer = bool(payload.is_transfer) or payload.category == "Pago Tarjeta"
+
     tx = models.Transaction(
         user_id=current.id,
         account_id=payload.account_id,
@@ -87,7 +90,7 @@ def create_transaction(
         merchant=payload.merchant,
         notes=payload.notes,
         is_income=payload.is_income,
-        is_transfer=bool(payload.is_transfer),
+        is_transfer=is_transfer,
         image_url=image_url,
     )
     db.add(tx)
@@ -129,6 +132,9 @@ def update_transaction(
 
     for f, v in patch.items():
         setattr(tx, f, v)
+    # Ensure Pago Tarjeta is always treated as a transfer.
+    if tx.category == "Pago Tarjeta":
+        tx.is_transfer = True
     db.commit()
     db.refresh(tx)
 

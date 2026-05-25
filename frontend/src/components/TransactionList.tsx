@@ -157,7 +157,7 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
                   </span>
                   {tx.is_transfer && (
                     <span className="inline-block px-1.5 py-0.5 rounded-full bg-sky-100 text-xs text-sky-600">
-                      ↔ Transferencia
+                      ↔ {tx.category === "Pago Tarjeta" ? "No afecta presupuesto" : "Transferencia"}
                     </span>
                   )}
                   {accountName && (
