@@ -5,7 +5,7 @@ Each user can have many accounts (Santander débito, CMR Falabella crédito,
 Banco de Chile crédito, etc.). Every transaction can optionally be associated
 with one account.
 """
-from datetime import date as date_type
+from datetime import date as date_type, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
@@ -168,9 +168,10 @@ def reconcile_account(
     previous_anchor_balance = float(acc.anchor_balance)
     previous_anchor_date = acc.anchor_date
 
-    # Snap: set a fresh anchor on the given date. From now on the live balance
-    # formula starts from `expected` and adds transactions dated >= as_of.
-    acc.anchor_date = as_of
+    # Snap: anchor to tomorrow so today's already-confirmed transactions are
+    # treated as "baked into" the expected_balance the user just entered.
+    # Only transactions dated >= tomorrow will modify the live balance forward.
+    acc.anchor_date = as_of + timedelta(days=1)
     acc.anchor_balance = float(payload.expected_balance)
     db.commit()
     db.refresh(acc)
