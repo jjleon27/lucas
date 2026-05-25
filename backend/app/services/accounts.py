@@ -40,7 +40,10 @@ def looks_like_cc_payment(merchant: str) -> bool:
 
 
 def _filter_since(q, account_id: int, since: date | None):
-    q = q.filter(models.Transaction.account_id == account_id)
+    q = q.filter(
+        models.Transaction.account_id == account_id,
+        models.Transaction.status == "confirmed",
+    )
     if since:
         q = q.filter(models.Transaction.date >= since)
     return q
