@@ -247,7 +247,7 @@ function AccountCard({
               const { reconcileAccount } = await import("@/lib/api");
               const r = await reconcileAccount(account.id, n);
               alert(`Saldo ajustado. Diferencia: ${r.drift.toLocaleString("es-CL")}`);
-              location.reload();
+              listAccounts().then(setAccounts);
             } catch (e: any) {
               alert(e?.message || "No se pudo ajustar");
             }
