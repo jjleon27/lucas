@@ -315,6 +315,8 @@ function AccountFormModal({
 }) {
   const { t, locale } = useT();
   const isCredit = value.type === "credit";
+  // For credit cards: anchor_balance in state = "available". Toggle lets user enter "used" instead.
+  const [showUsed, setShowUsed] = useState(false);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
@@ -380,20 +382,47 @@ function AccountFormModal({
             />
           </label>
           <label className="block">
-            <span className="text-xs uppercase text-slate-500">
-              {isCredit ? "Disponible actual" : t("accounts.anchorBalance")}
-            </span>
+            {isCredit ? (
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs uppercase text-slate-500">Saldo actual</span>
+                <div className="flex rounded-lg overflow-hidden border border-slate-200 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setShowUsed(false)}
+                    className={`px-2 py-0.5 transition ${!showUsed ? "bg-indigo-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+                  >Disponible</button>
+                  <button
+                    type="button"
+                    onClick={() => setShowUsed(true)}
+                    className={`px-2 py-0.5 transition ${showUsed ? "bg-indigo-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+                  >Usado</button>
+                </div>
+              </div>
+            ) : (
+              <span className="text-xs uppercase text-slate-500">{t("accounts.anchorBalance")}</span>
+            )}
             <NumericInput
               className="input mt-1 font-mono"
-              value={value.anchor_balance ?? 0}
-              onChange={(v) => onChange({ ...value, anchor_balance: v })}
+              value={
+                isCredit && showUsed
+                  ? (value.credit_limit ?? 0) - (value.anchor_balance ?? 0)
+                  : value.anchor_balance ?? 0
+              }
+              onChange={(v) => onChange({
+                ...value,
+                anchor_balance: isCredit && showUsed
+                  ? (value.credit_limit ?? 0) - v
+                  : v,
+              })}
               placeholder="0"
             />
           </label>
         </div>
         <p className="text-xs text-slate-500 -mt-2">
           {isCredit
-            ? "¿Cuánto tenés disponible para gastar hoy? (cupo − lo que debés)"
+            ? showUsed
+              ? "¿Cuánto debés hoy en esta tarjeta? (lo que ves en el banco)"
+              : "¿Cuánto tenés disponible para gastar hoy? (cupo − lo que debés)"
             : t("accounts.anchorHelp")}
         </p>
 

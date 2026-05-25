@@ -627,6 +627,7 @@ export async function reviewTransaction(
     amount?: number;
     remember?: boolean;
     target_account_id?: number;
+    source_account_id?: number;
   },
 ): Promise<Transaction> {
   return request(`/email/review/${tx_id}`, {

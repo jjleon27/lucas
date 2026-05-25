@@ -40,15 +40,17 @@ function ReviewCard({
   total,
   current,
   creditAccounts,
+  debitAccounts,
   onAction,
 }: {
   tx: Transaction;
   total: number;
   current: number;
   creditAccounts: Account[];
+  debitAccounts: Account[];
   onAction: (
     action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
-    overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number }
+    overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number; source_account_id?: number }
   ) => void;
 }) {
   const [category, setCategory] = useState(tx.category || "Otros");
@@ -59,6 +61,7 @@ function ReviewCard({
   const [editingAmount, setEditingAmount] = useState(false);
   const [acting, setActing] = useState(false);
   const [selectedCCId, setSelectedCCId] = useState<number | null>(creditAccounts[0]?.id ?? null);
+  const [selectedDebitId, setSelectedDebitId] = useState<number | null>(debitAccounts[0]?.id ?? null);
 
   // A pending_review with is_transfer=true is a CC payment waiting for account assignment
   const isCCPayment = tx.is_transfer && !tx.is_income;
@@ -69,7 +72,10 @@ function ReviewCard({
     if (acting) return;
     setActing(true);
     if (action === "confirm_cc_payment") {
-      onAction(action, { target_account_id: selectedCCId ?? undefined });
+      onAction(action, {
+        target_account_id: selectedCCId ?? undefined,
+        source_account_id: selectedDebitId ?? undefined,
+      });
     } else {
       onAction(action, { category, merchant, amount, remember });
     }
@@ -187,22 +193,40 @@ function ReviewCard({
         Clasificar así automáticamente en el futuro
       </label>
 
-      {/* CC payment: account selector */}
-      {isCCPayment && creditAccounts.length > 0 && (
-        <div className="bg-sky-50 border border-sky-200 rounded-2xl p-3 space-y-2">
+      {/* CC payment: source + target account selectors */}
+      {isCCPayment && (
+        <div className="bg-sky-50 border border-sky-200 rounded-2xl p-3 space-y-3">
           <p className="text-xs font-semibold text-sky-700 uppercase tracking-wide">
             💳 Pago de tarjeta de crédito
           </p>
-          <p className="text-xs text-sky-600">¿A qué tarjeta corresponde este pago?</p>
-          <select
-            className="input text-sm py-1.5"
-            value={selectedCCId ?? ""}
-            onChange={(e) => setSelectedCCId(e.target.value ? Number(e.target.value) : null)}
-          >
-            {creditAccounts.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
+          {debitAccounts.length > 0 && (
+            <div>
+              <p className="text-xs text-sky-600 mb-1">¿De qué cuenta salió el dinero?</p>
+              <select
+                className="input text-sm py-1.5"
+                value={selectedDebitId ?? ""}
+                onChange={(e) => setSelectedDebitId(e.target.value ? Number(e.target.value) : null)}
+              >
+                {debitAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {creditAccounts.length > 0 && (
+            <div>
+              <p className="text-xs text-sky-600 mb-1">¿A qué tarjeta fue el pago?</p>
+              <select
+                className="input text-sm py-1.5"
+                value={selectedCCId ?? ""}
+                onChange={(e) => setSelectedCCId(e.target.value ? Number(e.target.value) : null)}
+              >
+                {creditAccounts.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       )}
 
@@ -344,6 +368,7 @@ export default function ReviewPage() {
   const router = useRouter();
   const [txs, setTxs] = useState<Transaction[]>([]);
   const [creditAccounts, setCreditAccounts] = useState<Account[]>([]);
+  const [debitAccounts, setDebitAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [address, setAddress] = useState<ForwardingAddressOut | null>(null);
   const [skipped, setSkipped] = useState<Set<number>>(new Set());
@@ -358,6 +383,7 @@ export default function ReviewPage() {
       setTxs(pending);
       setAddress(addr);
       setCreditAccounts(accounts.filter((a) => a.type === "credit" && !a.archived));
+      setDebitAccounts(accounts.filter((a) => a.type !== "credit" && !a.archived));
     }).finally(() => setLoading(false));
   }, [router]);
 
@@ -365,7 +391,7 @@ export default function ReviewPage() {
     async (
       tx: Transaction,
       action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
-      overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number },
+      overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number; source_account_id?: number },
     ) => {
       if (action === "skip") {
         setSkipped((s) => new Set([...s, tx.id]));
@@ -379,6 +405,7 @@ export default function ReviewPage() {
           amount: overrides?.amount,
           remember: overrides?.remember,
           target_account_id: overrides?.target_account_id,
+          source_account_id: overrides?.source_account_id,
         });
         // Remove from list
         setTxs((prev) => prev.filter((t) => t.id !== tx.id));
@@ -430,6 +457,7 @@ export default function ReviewPage() {
           total={totalPending}
           current={currentIdx}
           creditAccounts={creditAccounts}
+          debitAccounts={debitAccounts}
           onAction={(action, overrides) => handleAction(currentTx, action, overrides)}
         />
       ) : (

@@ -154,7 +154,10 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
                     break
 
         debit_merchant = f"Pago tarjeta {parsed.get('cc_name', '').title()}".strip()
-        debit_status = "confirmed" if cc_account else "pending_review"
+        # Only auto-confirm if BOTH the source debit account AND target CC are identified.
+        # If either is missing, leave pending_review so the user can assign both sides.
+        fully_resolved = cc_account is not None and account_id is not None
+        debit_status = "confirmed" if fully_resolved else "pending_review"
 
         debit_tx = models.Transaction(
             user_id=user.id,
@@ -173,7 +176,7 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
         db.add(debit_tx)
         db.flush()
 
-        if cc_account:
+        if fully_resolved:
             credit_tx = models.Transaction(
                 user_id=user.id,
                 account_id=cc_account.id,
@@ -203,8 +206,8 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
         else:
             db.commit()
             logger.info(
-                "email_inbound: CC payment pending review tx#%d ($%.0f, cc_name=%s)",
-                debit_tx.id, amount, cc_name,
+                "email_inbound: CC payment pending review tx#%d ($%.0f, cc_name=%s, account_id=%s)",
+                debit_tx.id, amount, cc_name, account_id,
             )
             return {"ok": True, "action": "cc_payment_pending_review",
                     "transaction_id": debit_tx.id, "cc_name": cc_name}
@@ -315,8 +318,8 @@ def review_transaction(
         return tx
 
     if action == "confirm_cc_payment":
-        # User manually selected which credit card this payment went to.
-        # Create the credit-side transaction and link both.
+        # User manually selected which credit card this payment went to
+        # and optionally which source account it came from.
         if not payload.target_account_id:
             raise HTTPException(400, "target_account_id required for confirm_cc_payment")
 
@@ -327,6 +330,10 @@ def review_transaction(
         ).first()
         if not cc_account:
             raise HTTPException(404, "Credit card account not found")
+
+        # Assign source debit account if provided
+        if payload.source_account_id:
+            tx.account_id = payload.source_account_id
 
         credit_tx = models.Transaction(
             user_id=current.id,
@@ -350,6 +357,8 @@ def review_transaction(
         tx.is_transfer = True
         tx.status = "confirmed"
         db.commit()
+        db.refresh(tx)
+        account_svc.reconcile_new_transaction(db, current.id, tx)
         db.refresh(tx)
         return tx
 

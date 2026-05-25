@@ -456,6 +456,7 @@ class TransactionReviewAction(BaseModel):
     amount: Optional[float] = None       # override amount on confirm
     remember: bool = False               # call remember_correction for future auto-categorization
     target_account_id: Optional[int] = None  # for confirm_cc_payment: which credit card account
+    source_account_id: Optional[int] = None  # for confirm_cc_payment: which debit account it came from
 
 
 # ---------- Email inbound ----------
