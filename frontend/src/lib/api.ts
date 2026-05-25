@@ -647,3 +647,17 @@ export async function splitResult(transaction_id: number): Promise<SplitResult> 
   const q = new URLSearchParams({ transaction_id: String(transaction_id) });
   return request(`/split/result?${q.toString()}`);
 }
+
+export async function transcribeAudio(blob: Blob): Promise<{ transcript: string }> {
+  const token = getToken();
+  const form = new FormData();
+  const ext = blob.type.includes("mp4") ? "audio.mp4" : "audio.webm";
+  form.append("file", blob, ext);
+  const res = await fetch(`${API}/voice/transcribe`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  if (!res.ok) throw new Error(`transcribe ${res.status}`);
+  return res.json();
+}

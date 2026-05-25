@@ -29,6 +29,7 @@ import {
   getToken,
   listAccounts,
   Account,
+  transcribeAudio,
 } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
 import { Mic, X, SendHorizonal, Sparkles } from "lucide-react";
@@ -143,6 +144,8 @@ export default function LucasFAB() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef("");
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Load accounts once for the transaction confirm card
   useEffect(() => {
@@ -164,7 +167,7 @@ export default function LucasFAB() {
   }, [lastReply, action]);
 
   // ── Voice ─────────────────────────────────────────────────
-  function toggleVoice() {
+  async function toggleVoice() {
     const SR =
       (window as any).SpeechRecognition ||
       (window as any).webkitSpeechRecognition;
@@ -177,55 +180,71 @@ export default function LucasFAB() {
       return;
     }
     transcriptRef.current = "";
+    audioChunksRef.current = [];
+
+    // ── MediaRecorder for Whisper ─────────────────────────────
+    let mediaRecorder: MediaRecorder | null = null;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "audio/webm";
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        const webText = transcriptRef.current.trim();
+        try {
+          const { transcript } = await transcribeAudio(blob);
+          if (transcript) {
+            setInput(transcript);
+            if (inputRef.current) inputRef.current.value = transcript;
+            handleSend(transcript);
+            return;
+          }
+        } catch { /* fall through to web speech */ }
+        if (webText) { setInput(webText); handleSend(webText); }
+      };
+      mediaRecorder.start();
+    } catch { /* mic permission denied — Web Speech only */ }
+
+    // ── Web Speech API for live preview ──────────────────────
     const rec = new SR();
     recognitionRef.current = rec;
     rec.lang = "es-CL";
     rec.interimResults = true;
     rec.continuous = false;
-    rec.maxAlternatives = 3;
 
-    const altsRef: string[] = [];
-
-    // Auto-stop after 7s so it never hangs
     const autoStop = setTimeout(() => rec.stop(), 7000);
 
     rec.onresult = (e: any) => {
       let final = "", interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          final += e.results[i][0].transcript;
-          // Collect alternatives to help LLM disambiguate misrecognitions
-          for (let j = 1; j < e.results[i].length; j++) {
-            const alt = e.results[i][j].transcript.trim();
-            if (alt && alt !== e.results[i][0].transcript.trim()) altsRef.push(alt);
-          }
-        } else {
-          interim += e.results[i][0].transcript;
-        }
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
       }
       if (final) transcriptRef.current += final;
-      // Use a native DOM update so iOS renders immediately without waiting for React
-      if (inputRef.current) {
-        inputRef.current.value = transcriptRef.current + (interim ? " " + interim : "");
-      }
-      setInput(transcriptRef.current + (interim ? " " + interim : ""));
+      const display = transcriptRef.current + (interim ? " " + interim : "");
+      if (inputRef.current) inputRef.current.value = display;
+      setInput(display);
     };
 
-    rec.onerror = () => {
-      clearTimeout(autoStop);
-      setListening(false);
-    };
+    rec.onerror = () => { clearTimeout(autoStop); setListening(false); };
 
     rec.onend = () => {
       clearTimeout(autoStop);
       setListening(false);
-      const text = transcriptRef.current.trim();
-      if (text) {
-        const withAlts = altsRef.length
-          ? `${text} [también escuché: ${altsRef.slice(0, 2).join(" / ")}]`
-          : text;
-        setInput(text);
-        handleSend(withAlts);
+      // Stop MediaRecorder — its onstop will handle sending via Whisper
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      } else {
+        // No MediaRecorder — send Web Speech result directly
+        const text = transcriptRef.current.trim();
+        if (text) { setInput(text); handleSend(text); }
       }
     };
 

@@ -15,7 +15,7 @@ import NumericInput from "@/components/NumericInput";
 import { Trash2, Plus, Mic, SendHorizonal } from "lucide-react";
 import {
   createTransaction, me, ParsedReceipt, ParsedUpload, uploadImage,
-  listAccounts, chatAction, type Account,
+  listAccounts, chatAction, transcribeAudio, type Account,
 } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
 
@@ -68,6 +68,8 @@ export default function UploadPage() {
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef("");
   const voiceInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Load the user's preferred currency + accounts once.
   useEffect(() => {
@@ -80,7 +82,7 @@ export default function UploadPage() {
     listAccounts().then(setAccounts).catch(() => {});
   }, []);
 
-  function toggleVoice() {
+  async function toggleVoice() {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { alert("Tu navegador no soporta voz"); return; }
     if (voiceListening) {
@@ -88,29 +90,52 @@ export default function UploadPage() {
       return;
     }
     transcriptRef.current = "";
+    audioChunksRef.current = [];
+
+    // ── MediaRecorder para Whisper ────────────────────────────
+    let mediaRecorder: MediaRecorder | null = null;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "audio/webm";
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        const webText = transcriptRef.current.trim();
+        try {
+          const { transcript } = await transcribeAudio(blob);
+          if (transcript) {
+            setVoiceText(transcript);
+            if (voiceInputRef.current) voiceInputRef.current.value = transcript;
+            sendVoice(transcript);
+            return;
+          }
+        } catch { /* fall through */ }
+        if (webText) { setVoiceText(webText); sendVoice(webText); }
+      };
+      mediaRecorder.start();
+    } catch { /* sin permiso de mic — solo Web Speech */ }
+
+    // ── Web Speech para preview en tiempo real ────────────────
     const rec = new SR();
     recognitionRef.current = rec;
     rec.lang = "es-CL";
     rec.interimResults = true;
     rec.continuous = false;
-    rec.maxAlternatives = 3;
-
-    const altsRef: string[] = [];
 
     const autoStop = setTimeout(() => rec.stop(), 7000);
 
     rec.onresult = (e: any) => {
       let final = "", interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          final += e.results[i][0].transcript;
-          for (let j = 1; j < e.results[i].length; j++) {
-            const alt = e.results[i][j].transcript.trim();
-            if (alt && alt !== e.results[i][0].transcript.trim()) altsRef.push(alt);
-          }
-        } else {
-          interim += e.results[i][0].transcript;
-        }
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
       }
       if (final) transcriptRef.current += final;
       const display = transcriptRef.current + (interim ? " " + interim : "");
@@ -118,21 +143,16 @@ export default function UploadPage() {
       setVoiceText(display);
     };
 
-    rec.onerror = () => {
-      clearTimeout(autoStop);
-      setVoiceListening(false);
-    };
+    rec.onerror = () => { clearTimeout(autoStop); setVoiceListening(false); };
 
     rec.onend = () => {
       clearTimeout(autoStop);
       setVoiceListening(false);
-      const text = transcriptRef.current.trim();
-      if (text) {
-        setVoiceText(text);
-        const withAlts = altsRef.length
-          ? `${text} [también escuché: ${altsRef.slice(0, 2).join(" / ")}]`
-          : text;
-        sendVoice(withAlts);
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      } else {
+        const text = transcriptRef.current.trim();
+        if (text) { setVoiceText(text); sendVoice(text); }
       }
     };
 
