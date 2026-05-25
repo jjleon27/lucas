@@ -1,5 +1,5 @@
 # LUCAS AI — Roadmap
-> Last updated: 2026-05-11
+> Last updated: 2026-05-25
 > Priorities derived from confirmed bugs, architectural gaps, and MASTER_PLAN intent.
 > Items marked [NOT VERIFIED] depend on code sections not yet fully read.
 
@@ -8,25 +8,19 @@
 ## Tier 0 — Fix Before Any New Feature
 > These are confirmed bugs that corrupt data or make the system unusable. Fix first, always.
 
-### T0-1: Fix `resp.content` → `resp.text` in voice.py [BUG-001]
-- **File:** `backend/app/ai/voice.py` (lines ~141, ~158)
-- **Impact:** Every voice transaction that hits the LLM path raises HTTP 500
-- **Effort:** 5 minutes — 2-line fix
+### ~~T0-1: Fix `resp.content` → `resp.text` in voice.py [BUG-001]~~ DONE ✅
+### ~~T0-2: Fix `resp.content` → `resp.text` in cartola.py [BUG-002]~~ DONE ✅
+### ~~T0-3: Add `pdf2image` to requirements.txt [BUG-003]~~ DONE ✅
 
-### T0-2: Fix `resp.content` → `resp.text` in cartola.py [BUG-002]
-- **File:** `backend/app/cartola.py` (line ~158 in `_llm_structure()`)
-- **Impact:** Cartola text extraction always silently fails; all text PDFs fall to slower vision path
-- **Effort:** 5 minutes — 1-line fix
+### T0-4: Fix voice category language mismatch [BUG-005] ← promoted to T0
+- **File:** `backend/app/ai/voice.py` (line 43, `_SYSTEM_PROMPT`)
+- **Impact:** Voice transactions saved with English categories ("Food & Dining") instead of Spanish ("Alimentación"); dashboard mis-categorizes them
+- **Effort:** 5 minutes — update LLM prompt to match `CATEGORIES` list from `categorizer.py`
 
-### T0-3: Add `pdf2image` to requirements.txt [BUG-003]
-- **File:** `backend/requirements.txt`
-- **Impact:** PDF receipt parsing fails on any fresh install
-- **Effort:** 1 minute
-
-### T0-4: Fix Docker frontend networking [BUG-004]
+### T0-5: Fix Docker frontend networking [BUG-004]
 - **File:** `docker-compose.yml`
 - **Change:** `NEXT_PUBLIC_API_URL: http://localhost:8000` → `http://backend:8000`
-- **Impact:** All API calls from frontend fail inside Docker
+- **Impact:** All API calls from frontend fail inside Docker (not relevant for Vercel+Railway)
 - **Effort:** 1 minute
 
 ---
@@ -144,26 +138,26 @@
 ## Work Order Summary
 
 ```
-Priority  | ID    | Item                                          | Effort
-----------|-------|-----------------------------------------------|--------
-CRITICAL  | T0-1  | Fix resp.content → resp.text (voice.py)       | 5 min
-CRITICAL  | T0-2  | Fix resp.content → resp.text (cartola.py)     | 5 min
-CRITICAL  | T0-3  | Add pdf2image to requirements.txt             | 1 min
-CRITICAL  | T0-4  | Fix Docker NEXT_PUBLIC_API_URL                | 1 min
-HIGH      | T1-1  | reconcile on cartola commit                   | 30 min
-HIGH      | T1-2  | dedupe + reconcile on split/start-manual      | 30 min
-HIGH      | T1-3  | Harden security defaults (JWT, passwordless)  | 15 min
-MEDIUM    | T2-1  | Voice category → Spanish alignment            | 1 hr
-MEDIUM    | T2-2  | Verify/fix AI chat endpoint                   | 1 hr
-MEDIUM    | T2-3  | Verify AI usage logging coverage              | 1 hr
-MEDIUM    | T2-4  | Production Docker frontend build              | 2 hr
-MEDIUM    | T2-5  | FX / multi-currency verification              | 1 hr
-LOW       | T3-1  | Automated test suite                          | 2-3 days
-LOW       | T3-2  | Rate limiting on auth endpoints               | 2 hr
-LOW       | T3-3  | DB connection pool review                     | 1 hr
-LOW       | T3-4  | Alembic migration hygiene                     | 1 hr
-LOW       | T3-5  | Error handling audit (bare except blocks)     | 2 hr
-LATER     | T4-*  | New features — only after above resolved      | varies
+Priority  | ID    | Item                                          | Effort  | Status
+----------|-------|-----------------------------------------------|---------|--------
+DONE      | T0-1  | Fix resp.content → resp.text (voice.py)       | 5 min   | ✅ DONE
+DONE      | T0-2  | Fix resp.content → resp.text (cartola.py)     | 5 min   | ✅ DONE
+DONE      | T0-3  | Add pdf2image to requirements.txt             | 1 min   | ✅ DONE
+CRITICAL  | T0-4  | Fix voice categories → Spanish                | 5 min   | OPEN
+LOW       | T0-5  | Fix Docker NEXT_PUBLIC_API_URL                | 1 min   | (n/a for prod)
+HIGH      | T1-1  | reconcile on cartola commit                   | 30 min  | OPEN
+HIGH      | T1-2  | dedupe + reconcile on split/start-manual      | 30 min  | OPEN
+HIGH      | T1-3  | Harden security defaults (JWT, passwordless)  | 15 min  | OPEN
+MEDIUM    | T2-2  | Verify/fix AI chat endpoint                   | 1 hr    | OPEN
+MEDIUM    | T2-3  | Verify AI usage logging coverage              | 1 hr    | OPEN
+MEDIUM    | T2-4  | Production Docker frontend build              | 2 hr    | (n/a for prod)
+MEDIUM    | T2-5  | FX / multi-currency verification              | 1 hr    | OPEN
+LOW       | T3-1  | Automated test suite                          | 2-3 days| OPEN
+LOW       | T3-2  | Rate limiting on auth endpoints               | 2 hr    | OPEN
+LOW       | T3-3  | DB connection pool review                     | 1 hr    | OPEN
+LOW       | T3-4  | Alembic migration hygiene                     | 1 hr    | OPEN
+LOW       | T3-5  | Error handling audit (bare except blocks)     | 2 hr    | OPEN
+LATER     | T4-*  | New features — only after above resolved      | varies  |
 ```
 
 ---

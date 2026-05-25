@@ -1,5 +1,5 @@
 # LUCAS — MASTER PLAN
-**Version:** 0.1.0 | **Last updated:** 2026-05-11 | **Based on:** full source read
+**Version:** 0.2.0 | **Last updated:** 2026-05-25 | **Based on:** full source read + session history
 
 > This document is the single source of truth for the LUCAS AI project.
 > It is derived exclusively from the actual repository code. Anything not
@@ -99,10 +99,12 @@ production-hardened).
 | Transfer-linking (auto + manual) | IMPLEMENTED | `services/accounts.py`, `routers/transactions.py` |
 | Balance reconciliation | IMPLEMENTED | `routers/accounts.py` |
 | Bill splitter v2 (multi-assign) | IMPLEMENTED | `routers/split.py` |
-| Voice input (parse only) | PARTIAL (bug in code) | `ai/voice.py`, `routers/voice.py` |
+| Voice input (parse only) | PARTIAL (category mismatch — see §9) | `ai/voice.py`, `routers/voice.py` |
 | Cartola (PDF bank statement) import | IMPLEMENTED | `cartola.py`, `routers/cartola.py` |
 | Email ingestion (forwarding webhook) | IMPLEMENTED | `routers/email.py`, `ai/email_parser.py` |
-| Review queue | IMPLEMENTED | `routers/email.py` |
+| Email forwarding setup (Gmail + GAS) | IMPLEMENTED | Google Apps Script (external) |
+| Review queue (email + CC payment) | IMPLEMENTED | `routers/email.py` |
+| CC payment reconciliation | IMPLEMENTED | `routers/email.py`, `services/accounts.py` |
 | Dashboard (monthly summary) | IMPLEMENTED | `routers/dashboard.py`, `ai/predictor.py` |
 | Alerts engine | IMPLEMENTED | `ai/alerts.py` |
 | Chat with Lucas (basic + action) | IMPLEMENTED | `ai/chat.py`, `routers/dashboard.py` |
@@ -352,15 +354,13 @@ Default model: `gpt-4o-mini` or whatever provider is configured.
 5. Returns `VoiceParsed` schema — frontend shows confirmation card.
 6. User must explicitly save; no auto-save.
 
-**CONFIRMED BUG (`ai/voice.py` lines 141–158):**
-```python
-if resp is None or not (resp.content or "").strip():  # ← resp.content does NOT exist
-    return _fallback_unclear(transcript, today)
-raw = resp.content.strip()                             # ← AttributeError
-```
-`LLMResponse` has `.text` not `.content`. When AI is available, this code will
-raise `AttributeError` on every voice call. **Voice feature is broken when AI
-is configured.**
+**FIXED:** `ai/voice.py` now uses `resp.text` correctly (fixed in 2026-05).
+The backend voice parse endpoint no longer 500s.
+
+**REMAINING BUG (T2-1):** LLM prompt in `ai/voice.py:43` uses English category names
+("Food & Dining", "Transport", etc.) while the rest of the app uses Spanish
+("Alimentación", "Transporte"). Voice transactions will be mis-categorized until
+this is aligned.
 
 ---
 
@@ -421,9 +421,9 @@ CC payments exist. `PendingTransferList.tsx` component handles the UI.
 
 | # | Issue | Severity | Location |
 |---|-------|----------|----------|
-| 1 | `pdf2image` imported but NOT in `requirements.txt` | HIGH | `ocr.py:42` |
-| 2 | `resp.content` bug — should be `resp.text` | HIGH | `ai/voice.py:141,158` |
-| 3 | Same `resp.content` bug | HIGH | `cartola.py:158` |
+| 1 | ~~`pdf2image` imported but NOT in `requirements.txt`~~ | ~~HIGH~~ | FIXED — `pdf2image==1.17.0` in requirements.txt |
+| 2 | ~~`resp.content` bug — should be `resp.text`~~ | ~~HIGH~~ | FIXED — `ai/voice.py` uses `resp.text` |
+| 3 | ~~Same `resp.content` bug~~ | ~~HIGH~~ | FIXED — `cartola.py` uses `resp.text` |
 | 4 | `ALLOW_PASSWORDLESS=True` by default | HIGH | `config.py` |
 | 5 | No Alembic migrations folder — schema changes require full DB rebuild | MEDIUM | (absent) |
 | 6 | Docker frontend runs `npm run dev` — not production-hardened | MEDIUM | `docker-compose.yml` |
@@ -433,38 +433,32 @@ CC payments exist. `PendingTransferList.tsx` component handles the UI.
 | 10 | `routers/ai.py` content not read — AI usage endpoint behavior unverified | LOW | `routers/ai.py` |
 | 11 | `services/ai_usage.py` content not read — recording logic unverified | LOW | `services/ai_usage.py` |
 | 12 | Legacy `SplitSession` model referenced in README intro but not in `models.py` | LOW | README vs models |
-| 13 | Category mismatch: voice.py uses English categories ("Food & Dining") while OCR/dashboard use Spanish ("Alimentación") | MEDIUM | `ai/voice.py:43` |
-| 14 | `cartola.py:_llm_structure` calls `resp.content` (line 158) — same bug as voice | HIGH | `cartola.py:158` |
+| 13 | Voice LLM prompt uses English categories ("Food & Dining") instead of Spanish ("Alimentación") | MEDIUM | `ai/voice.py:43` |
+| 14 | CC payment "Pago Tarjeta" category not in voice/cartola LLM system prompts | MEDIUM | `ai/voice.py`, `cartola.py` |
 
 ---
 
 ## 13. Current Project Risks
 
-1. **Voice feature non-functional:** The `resp.content` bug means any user
-   with an AI API key configured will get a 500 on `/voice/parse`.
+1. **Voice categories wrong:** Voice transactions will be assigned English category names
+   ("Food & Dining") instead of Spanish ("Alimentación"). Functionally saved but mis-categorized.
 
-2. **Cartola LLM path non-functional:** `resp.content` bug in `cartola.py`
-   means the text-based cartola parsing path fails silently for all banks.
-   Only the scanned-PDF fallback path (vision) works.
-
-3. **PDF receipts only work if `pdf2image` + `poppler` are installed out-of-band.**
-   The Docker image will not install them automatically.
-
-4. **No database migration strategy.** Adding a column requires either raw
+2. **No database migration strategy.** Adding a column requires either raw
    ALTER TABLE or dropping+recreating the DB.
 
-5. **Docker `localhost` networking issue.** The frontend Docker container
+3. **Docker `localhost` networking issue.** The frontend Docker container
    sets `NEXT_PUBLIC_API_URL=http://localhost:8000` but in a multi-container
    network, `localhost` resolves to the frontend container itself.
+   (Not relevant for Vercel+Railway production deployment.)
 
-6. **No test coverage beyond boleta parser.** Only `tests/test_boleta_parser.py`
+4. **No test coverage beyond boleta parser.** Only `tests/test_boleta_parser.py`
    exists. All routers, services, and AI modules have zero test coverage.
 
-7. **Multi-currency is stored but not converted.** Transactions in different
+5. **Multi-currency is stored but not converted.** Transactions in different
    currencies are shown as-is. Dashboard sums across currencies without
    conversion — numbers will be wrong for multi-currency users.
 
-8. **Email domain is hardcoded fallback** (`notify.lucasapp.com`). If
+6. **Email domain is hardcoded fallback** (`notify.lucasapp.com`). If
    `EMAIL_DOMAIN` env var is not set, the forwarding address will be on a
    domain the developer does not own.
 
@@ -553,21 +547,21 @@ CC payments exist. `PendingTransferList.tsx` component handles the UI.
 
 Priority order based on bugs and gaps in current implementation.
 
-| Priority | Task | Type |
-|----------|------|------|
-| P0 | Fix `resp.content` → `resp.text` in `ai/voice.py` | Bug fix |
-| P0 | Fix `resp.content` → `resp.text` in `cartola.py` | Bug fix |
-| P0 | Add `pdf2image` to `requirements.txt` | Infrastructure |
-| P1 | Set `ALLOW_PASSWORDLESS=False` default (or env-gate clearly) | Security |
-| P1 | Set production-safe `JWT_SECRET` enforcement (raise if default) | Security |
-| P1 | Add Alembic migrations directory + initial migration | Infrastructure |
-| P1 | Fix voice category language (use Spanish, match categorizer) | Consistency |
-| P2 | Fix Docker networking: `NEXT_PUBLIC_API_URL` for container-to-container | Infrastructure |
-| P2 | Add test coverage for transfer-linking + balance computation | Testing |
-| P2 | Read and verify `routers/ai.py` content | Verification |
-| P3 | Add refresh token endpoint | Auth |
-| P3 | Shareable split links (non-user URL) | Feature |
-| P3 | Recurring subscription detection | Feature |
+| Priority | Task | Type | Status |
+|----------|------|------|--------|
+| ~~P0~~ | ~~Fix `resp.content` → `resp.text` in `ai/voice.py`~~ | Bug fix | DONE |
+| ~~P0~~ | ~~Fix `resp.content` → `resp.text` in `cartola.py`~~ | Bug fix | DONE |
+| ~~P0~~ | ~~Add `pdf2image` to `requirements.txt`~~ | Infrastructure | DONE |
+| P0 | Fix voice category language (use Spanish, match categorizer) | Consistency | OPEN |
+| P1 | Set `ALLOW_PASSWORDLESS=False` default (or env-gate clearly) | Security | OPEN |
+| P1 | Set production-safe `JWT_SECRET` enforcement (raise if default) | Security | OPEN |
+| P1 | Add Alembic migrations directory + initial migration | Infrastructure | OPEN |
+| P2 | Fix Docker networking: `NEXT_PUBLIC_API_URL` for container-to-container | Infrastructure | LOW (Vercel+Railway in prod) |
+| P2 | Add test coverage for transfer-linking + balance computation | Testing | OPEN |
+| P2 | Read and verify `routers/ai.py` content | Verification | OPEN |
+| P3 | Add refresh token endpoint | Auth | OPEN |
+| P3 | Shareable split links (non-user URL) | Feature | OPEN |
+| P3 | Recurring subscription detection | Feature | OPEN |
 
 ---
 
@@ -666,16 +660,18 @@ The following are explicitly out of scope for LUCAS:
 | Balance reconciliation | STABLE | |
 | OCR (vision path) | STABLE | requires OpenAI key |
 | OCR (Tesseract fallback) | STABLE | requires Tesseract system dep |
-| PDF receipt parsing | BROKEN | `pdf2image` not in requirements.txt |
+| PDF receipt parsing | STABLE | `pdf2image==1.17.0` in requirements.txt |
 | Categorizer | STABLE | |
 | Dashboard summary | STABLE | |
 | Alerts | STABLE | |
 | Chat (basic + action) | STABLE | |
 | Bill splitter v2 | STABLE | |
-| Cartola (text PDF) | BROKEN | `resp.content` bug in LLM path |
-| Cartola (scanned PDF) | STABLE | vision path not affected by content bug |
-| Voice parse | BROKEN | `resp.content` bug — 500 when AI is configured |
-| Email ingestion | STABLE | requires email domain + webhook setup |
+| Cartola (text PDF) | STABLE | `resp.content` bug fixed |
+| Cartola (scanned PDF) | STABLE | |
+| Voice parse (backend) | STABLE | `resp.content` bug fixed |
+| Voice parse (frontend) | PARTIAL | microphone stops correctly; categories mismatched (English vs Spanish) |
+| Email ingestion | STABLE | Gmail filter + Google Apps Script (free) |
+| CC payment reconciliation | STABLE | pending_review → review UI → confirm → balances update |
 | Review queue | STABLE | |
 | Deduplication | STABLE | |
 | AI usage logging | STABLE (code exists) | `services/ai_usage.py` not fully read |

@@ -40,7 +40,7 @@ Return strict JSON with this shape:
   "amount": number,
   "currency": "CLP" | "USD" | "BRL" | "MXN" | "ARS",
   "merchant": string,
-  "category": "Food & Dining" | "Transport" | "Shopping" | "Bills" | "Entertainment" | "Health" | "Travel" | "Housing" | "Salary" | "Freelance" | "Gift" | "Other",
+  "category": "Alimentación" | "Supermercado" | "Transporte" | "Compras" | "Entretenimiento" | "Bares y Salidas" | "Cuentas y Servicios" | "Salud" | "Viajes" | "Suscripciones" | "Tecnología" | "Educación" | "Hogar" | "Ropa" | "Ingresos" | "Transferencia" | "Pago Tarjeta" | "Inversión" | "Seguros" | "Otros",
   "is_income": boolean,
   "date": "YYYY-MM-DD",
   "account_hint": string,
@@ -65,17 +65,27 @@ RULES:
    - Default to today (passed in the user message as "Hoy es YYYY-MM-DD").
    - "ayer" → yesterday. "anteayer" / "antes de ayer" → 2 days ago.
    - "el lunes pasado", "hace una semana", etc. → best-guess a real date.
-5. CATEGORY:
-   - Food & Dining: supermarkets, restaurants, delivery, food.
-   - Transport: Uber, Cabify, Metro, gasolina, bencina, estacionamiento.
-   - Bills: telefonía (Movistar, Entel, WOM, Claro), luz, agua, gas, internet, Netflix, Spotify.
-   - Shopping: ropa, tecnología, amazon, Falabella, MercadoLibre.
-   - Health: farmacia (Cruz Verde, Ahumada, Salcobrand), médico, clínica.
-   - Entertainment: cine, bar, conciertos, videojuegos.
-   - Housing: arriendo, expensas, condominio.
-   - Salary: sueldo, pago mensual del trabajo.
-   - Freelance: "me pagaron por el proyecto", consultoría, pega puntual.
-   - If genuinely unclear, use "Other".
+5. CATEGORY (usar siempre en español, exactamente como aparece en la lista):
+   - Alimentación: restaurantes, delivery, comida rápida, cafeterías.
+   - Supermercado: Lider, Jumbo, Santa Isabel, Tottus, almacén.
+   - Transporte: Uber, Cabify, Metro, micro, gasolina, bencina, estacionamiento, Transantiago.
+   - Compras: Amazon, Falabella, MercadoLibre, compras generales.
+   - Entretenimiento: cine, conciertos, videojuegos, streaming de contenido.
+   - Bares y Salidas: bar, discoteca, tragos, carrete.
+   - Cuentas y Servicios: luz, agua, gas, internet, telefonía (Movistar, Entel, WOM, Claro).
+   - Salud: farmacia (Cruz Verde, Ahumada, Salcobrand), médico, clínica, dentista.
+   - Viajes: hotel, vuelos, vacaciones, Airbnb.
+   - Suscripciones: Netflix, Spotify, Disney+, servicios mensuales recurrentes.
+   - Tecnología: celular, computador, accesorios tech.
+   - Educación: colegio, universidad, cursos, libros.
+   - Hogar: arriendo, expensas, muebles, ferretería.
+   - Ropa: ropa, zapatos, accesorios de vestir.
+   - Ingresos: sueldo, freelance, pago por trabajo, depósito recibido.
+   - Pago Tarjeta: pago de tarjeta de crédito (CMR, Falabella, Ripley, etc.).
+   - Transferencia: transferencia entre cuentas propias.
+   - Inversión: fondos, acciones, ahorro programado.
+   - Seguros: seguro de vida, seguro automotriz, seguro complementario.
+   - Otros: si no calza con ninguna categoría anterior.
 6. UNCLEAR:
    - If the sentence is gibberish, a question, or missing an amount AND you can't
      guess it, set action="unclear" and put a one-sentence follow-up question
@@ -96,7 +106,7 @@ def _fallback_unclear(transcript: str, today: date) -> dict:
         "amount": 0.0,
         "currency": "CLP",
         "merchant": "",
-        "category": "Other",
+        "category": "Otros",
         "is_income": False,
         "date": today.isoformat(),
         "account_hint": "",
@@ -163,7 +173,7 @@ def parse_voice(
     data.setdefault("amount", 0.0)
     data.setdefault("currency", "CLP")
     data.setdefault("merchant", "")
-    data.setdefault("category", "Other")
+    data.setdefault("category", "Otros")
     data.setdefault("is_income", data["action"] == "add_income")
     data.setdefault("date", today.isoformat())
     data.setdefault("account_hint", "")

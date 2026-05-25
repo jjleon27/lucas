@@ -1,3 +1,11 @@
+## Inicio de sesión
+
+Al iniciar cualquier sesión, lee primero:
+1. `docs/MASTER_PLAN.md` — sección §20 (estabilidad) y §16 (roadmap corto plazo)
+2. `docs/ROADMAP.md` — tabla "Work Order Summary" al final
+
+Esto da el estado actual del proyecto en ~2k tokens sin necesidad de resumen de conversación.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
