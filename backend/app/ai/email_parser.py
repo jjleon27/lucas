@@ -154,7 +154,7 @@ def _extract_heuristic(subject: str, body: str) -> Optional[dict]:
         "is_income": is_income,
         "currency": "CLP",
         "card_last4": card_hint,
-        "category": "Transferencia" if is_cc_payment else "Otros",
+        "category": "Pago Tarjeta" if is_cc_payment else "Otros",
         "is_cc_payment": is_cc_payment,
         "cc_name": cc_name,
     }

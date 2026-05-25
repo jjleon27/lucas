@@ -23,7 +23,7 @@ export const CATEGORIES = [
   "Entretenimiento", "Bares y Salidas", "Cuentas y Servicios",
   "Salud", "Viajes", "Suscripciones", "Tecnología",
   "Educación", "Hogar", "Ropa", "Ingresos", "Transferencia",
-  "Inversión", "Seguros", "Otros",
+  "Pago Tarjeta", "Inversión", "Seguros", "Otros",
 ];
 
 function isDuplicate(tx: Transaction, all: Transaction[]): boolean {
