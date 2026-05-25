@@ -450,11 +450,12 @@ class DashboardOut(BaseModel):
 # ---------- Transaction review queue ----------
 class TransactionReviewAction(BaseModel):
     """Action taken on a pending_review transaction."""
-    action: str                          # "confirm" | "skip" | "not_expense" | "pending"
+    action: str                          # "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment"
     category: Optional[str] = None       # override category on confirm
     merchant: Optional[str] = None       # override merchant on confirm
     amount: Optional[float] = None       # override amount on confirm
     remember: bool = False               # call remember_correction for future auto-categorization
+    target_account_id: Optional[int] = None  # for confirm_cc_payment: which credit card account
 
 
 # ---------- Email inbound ----------

@@ -621,11 +621,12 @@ export async function listPendingTransactions(): Promise<Transaction[]> {
 export async function reviewTransaction(
   tx_id: number,
   payload: {
-    action: "confirm" | "skip" | "not_expense" | "pending";
+    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment";
     category?: string;
     merchant?: string;
     amount?: number;
     remember?: boolean;
+    target_account_id?: number;
   },
 ): Promise<Transaction> {
   return request(`/email/review/${tx_id}`, {

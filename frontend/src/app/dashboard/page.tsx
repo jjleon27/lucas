@@ -222,7 +222,9 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <VoiceButton onSaved={() => { getDashboard().then(setData).catch(() => {}); }} />
+      <div className="hidden md:block">
+        <VoiceButton onSaved={() => { getDashboard().then(setData).catch(() => {}); }} />
+      </div>
     </div>
   );
 }

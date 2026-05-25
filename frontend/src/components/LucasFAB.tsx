@@ -296,7 +296,7 @@ export default function LucasFAB() {
         onClick={() => setOpen(true)}
         aria-label={t("fab.label")}
         className={`
-          fixed bottom-6 right-5 z-50
+          fixed bottom-24 right-5 z-50
           w-14 h-14 rounded-full shadow-lg
           flex items-center justify-center
           bg-gradient-to-br from-indigo-500 to-violet-600

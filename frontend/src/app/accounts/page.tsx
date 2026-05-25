@@ -82,8 +82,11 @@ export default function AccountsPage() {
       card_image_url: a.card_image_url || "",
       credit_limit: a.credit_limit,
       anchor_date: a.anchor_date || new Date().toISOString().slice(0, 10),
+      // For credit: store as "available" (limit - used) so the form field is intuitive
       anchor_balance:
-        a.type === "credit" ? a.current_used || a.anchor_balance : a.current_balance || a.anchor_balance,
+        a.type === "credit"
+          ? (a.credit_limit ?? 0) - (a.current_used ?? a.anchor_balance ?? 0)
+          : a.current_balance ?? a.anchor_balance ?? 0,
     });
   }
 
@@ -96,13 +99,18 @@ export default function AccountsPage() {
     setBusy(true);
     setErr("");
     try {
+      // Credit cards: form stores "available", backend expects "used" (owed)
+      const payload =
+        editing.type === "credit"
+          ? { ...editing, anchor_balance: (editing.credit_limit ?? 0) - (editing.anchor_balance ?? 0) }
+          : editing;
       if (editing.id) {
-        const upd = await updateAccount(editing.id, editing);
+        const upd = await updateAccount(editing.id, payload);
         setAccounts((prev) =>
           (prev ?? []).map((a) => (a.id === upd.id ? upd : a)),
         );
       } else {
-        const created = await createAccount(editing);
+        const created = await createAccount(payload);
         setAccounts((prev) => [...(prev ?? []), created]);
       }
       setEditing(null);
@@ -121,6 +129,19 @@ export default function AccountsPage() {
 
   if (!accounts) return <div className="p-8 text-slate-500">{t("tx.loading")}</div>;
 
+  // ── Net worth calculation ──────────────────────────────────────────────────
+  // Group by currency so multi-currency users see each separately.
+  const netByCurrency: Record<string, { assets: number; debts: number }> = {};
+  for (const a of accounts) {
+    if (!netByCurrency[a.currency]) netByCurrency[a.currency] = { assets: 0, debts: 0 };
+    if (a.type === "credit") {
+      netByCurrency[a.currency].debts += a.current_used ?? 0;
+    } else {
+      netByCurrency[a.currency].assets += a.current_balance ?? 0;
+    }
+  }
+  const netEntries = Object.entries(netByCurrency);
+
   return (
     <div className="max-w-5xl mx-auto space-y-6 pb-24 md:pb-0">
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-3">
@@ -130,6 +151,44 @@ export default function AccountsPage() {
         </div>
         <button className="btn-primary" onClick={openNew}>{t("accounts.add")}</button>
       </header>
+
+      {/* ── Posición financiera ────────────────────────────────────────────── */}
+      {accounts.length > 0 && (
+        <div className="card space-y-4">
+          <h2 className="text-base font-semibold text-slate-700">Posición financiera</h2>
+          {netEntries.map(([currency, { assets, debts }]) => {
+            const net = assets - debts;
+            const fmt = (v: number) => formatMoney(v, currency);
+            return (
+              <div key={currency}>
+                {netEntries.length > 1 && (
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">{currency}</p>
+                )}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between py-2 px-1">
+                    <div>
+                      <span className="text-sm font-medium text-slate-700">Activos</span>
+                      <span className="text-xs text-slate-400 ml-2">débito, ahorro, efectivo</span>
+                    </div>
+                    <span className="text-base font-semibold font-mono text-emerald-600">{fmt(assets)}</span>
+                  </div>
+                  <div className="flex items-center justify-between py-2 px-1">
+                    <div>
+                      <span className="text-sm font-medium text-slate-700">Deudas</span>
+                      <span className="text-xs text-slate-400 ml-2">tarjetas de crédito</span>
+                    </div>
+                    <span className="text-base font-semibold font-mono text-rose-500">−{fmt(debts)}</span>
+                  </div>
+                  <div className={`flex items-center justify-between py-3 px-3 rounded-2xl ${net >= 0 ? "bg-brand-50" : "bg-orange-50"}`}>
+                    <span className={`text-sm font-semibold ${net >= 0 ? "text-brand-700" : "text-orange-700"}`}>Patrimonio neto</span>
+                    <span className={`text-xl font-bold font-mono ${net >= 0 ? "text-brand-700" : "text-orange-600"}`}>{fmt(net)}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {accounts.length === 0 ? (
         <div className="card text-center text-slate-500">{t("accounts.empty")}</div>
@@ -259,7 +318,7 @@ function AccountFormModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card max-w-lg w-full space-y-4" onClick={(e) => e.stopPropagation()}>
+      <div className="card max-w-lg w-full space-y-4 overflow-y-auto max-h-[90dvh]" onClick={(e) => e.stopPropagation()}>
         <h3 className="text-lg font-semibold">{value.id ? t("accounts.name") : t("accounts.add")}</h3>
 
         <label className="block">
@@ -321,7 +380,9 @@ function AccountFormModal({
             />
           </label>
           <label className="block">
-            <span className="text-xs uppercase text-slate-500">{t("accounts.anchorBalance")}</span>
+            <span className="text-xs uppercase text-slate-500">
+              {isCredit ? "Disponible actual" : t("accounts.anchorBalance")}
+            </span>
             <NumericInput
               className="input mt-1 font-mono"
               value={value.anchor_balance ?? 0}
@@ -331,7 +392,9 @@ function AccountFormModal({
           </label>
         </div>
         <p className="text-xs text-slate-500 -mt-2">
-          {isCredit ? t("accounts.anchorHelpCredit") : t("accounts.anchorHelp")}
+          {isCredit
+            ? "¿Cuánto tenés disponible para gastar hoy? (cupo − lo que debés)"
+            : t("accounts.anchorHelp")}
         </p>
 
         <div>

@@ -273,15 +273,15 @@ function TransactionsInner() {
         </>
       ) : (
         <>
-          <header className="flex items-center justify-between">
-            <h1 className="text-3xl font-semibold tracking-tight">
+          <header className="flex flex-wrap items-center justify-between gap-2">
+            <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
               {t("tx.title")}
             </h1>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               <a href="/upload" className="btn-ghost text-sm">
-                📷 Subir foto
+                📷 <span className="hidden sm:inline">Subir foto</span>
               </a>
-              <button className="btn-primary" onClick={() => setShowManual(true)}>
+              <button className="btn-primary text-sm" onClick={() => setShowManual(true)}>
                 ✏️ {t("tx.add")}
               </button>
             </div>

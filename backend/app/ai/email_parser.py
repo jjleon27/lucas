@@ -70,6 +70,19 @@ _EXPENSE_RE = re.compile(
     re.I,
 )
 
+# ── Credit-card payment signals ────────────────────────────────────────────────
+# These match emails describing a payment FROM a debit account TO a credit card.
+_CC_PAYMENT_RE_EMAIL = re.compile(
+    r"(?i)\b(pago\s*(?:de\s*)?(?:su\s*|tu\s*)?tarjeta\s*(?:de\s*cr[eé]dito)?"
+    r"|pago\s*tc|abono\s*a?\s*tarjeta|transferencia\s*(?:a|para|hacia)\s*tarjeta"
+    r"|pago\s*cmr|pago\s*falabella|pago\s*ripley|pago\s*l[ií]der)\b",
+)
+_CC_NAME_RE = re.compile(
+    r"(?i)\b(cmr|falabella|ripley|paris|l[ií]der|santander|bci|"
+    r"banco\s*de\s*chile|bancoestado|it[aá]u|scotiabank|mach|security|"
+    r"mercado\s*pago)\b",
+)
+
 
 def _parse_amount_str(raw: str) -> float:
     """'1.234.567' or '1,234,567' → 1234567.0"""
@@ -126,6 +139,14 @@ def _extract_heuristic(subject: str, body: str) -> Optional[dict]:
     if cm:
         card_hint = cm.group(1)
 
+    # CC payment detection
+    is_cc_payment = bool(_CC_PAYMENT_RE_EMAIL.search(text))
+    cc_name = ""
+    if is_cc_payment:
+        nm = _CC_NAME_RE.search(text)
+        if nm:
+            cc_name = nm.group(0).strip().title()
+
     return {
         "amount": amount,
         "date": tx_date.isoformat(),
@@ -133,7 +154,9 @@ def _extract_heuristic(subject: str, body: str) -> Optional[dict]:
         "is_income": is_income,
         "currency": "CLP",
         "card_last4": card_hint,
-        "category": "Otros",
+        "category": "Transferencia" if is_cc_payment else "Otros",
+        "is_cc_payment": is_cc_payment,
+        "cc_name": cc_name,
     }
 
 
@@ -149,7 +172,9 @@ Extract a single JSON object (no markdown fences) with exactly these fields:
   "currency": "CLP",
   "card_last4": <string — last 4 digits of card number, empty if unknown>,
   "category": <one of: Alimentación, Supermercado, Transporte, Entretenimiento, \
-Bares y Salidas, Suscripciones, Cuentas y Servicios, Salud, Compras, Viajes, Otros>
+Bares y Salidas, Suscripciones, Cuentas y Servicios, Salud, Compras, Viajes, Transferencia, Otros>,
+  "is_cc_payment": <boolean — true if this is a payment FROM a debit/savings account TO a credit card>,
+  "cc_name": <string — name of the credit card being paid (e.g. "CMR", "Falabella", "Ripley"), empty if unknown or not a CC payment>
 }
 
 If this email is NOT a transaction notification (marketing, welcome, verification, etc.),

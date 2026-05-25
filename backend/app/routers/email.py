@@ -105,7 +105,7 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
     if not parsed:
         return {"ok": True, "action": "skipped", "reason": "not_a_transaction"}
 
-    # Try to resolve account by card hint
+    # Try to resolve source account by card hint
     account_id: int | None = None
     card_last4 = parsed.get("card_last4", "")
     if card_last4:
@@ -117,14 +117,20 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
         if acc:
             account_id = acc.id
 
-    # Duplicate check against existing transactions
+    amount = float(parsed["amount"])
+    currency = parsed.get("currency", "CLP")
+    tx_date = date.fromisoformat(parsed["date"])
+    category = parsed.get("category", "Otros")
+    merchant = parsed.get("merchant", "")
+
+    # Duplicate check
     from ..schemas import ParsedReceipt
     proposal = ParsedReceipt(
-        amount=float(parsed["amount"]),
-        date=date.fromisoformat(parsed["date"]),
-        merchant=parsed.get("merchant", ""),
-        category=parsed.get("category", "Otros"),
-        currency=parsed.get("currency", "CLP"),
+        amount=amount,
+        date=tx_date,
+        merchant=merchant,
+        category=category,
+        currency=currency,
         is_income=bool(parsed.get("is_income", False)),
     )
     existing = dedupe_svc.find_duplicate(db, user_id=user.id, account_id=account_id, proposed=proposal)
@@ -132,15 +138,86 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
         logger.info("email_inbound: dupe of tx#%d for user#%d", existing.id, user.id)
         return {"ok": True, "action": "duplicate", "existing_id": existing.id}
 
-    # Create pending_review transaction
+    # ── CC payment: create both sides if we can identify the credit card ─────
+    if parsed.get("is_cc_payment"):
+        cc_name = parsed.get("cc_name", "").lower().strip()
+        cc_account = None
+        if cc_name:
+            cc_accounts = db.query(models.Account).filter(
+                models.Account.user_id == user.id,
+                models.Account.type == "credit",
+                models.Account.archived.is_(False),
+            ).all()
+            for a in cc_accounts:
+                if cc_name in a.name.lower() or a.name.lower() in cc_name:
+                    cc_account = a
+                    break
+
+        debit_merchant = f"Pago tarjeta {parsed.get('cc_name', '').title()}".strip()
+        debit_status = "confirmed" if cc_account else "pending_review"
+
+        debit_tx = models.Transaction(
+            user_id=user.id,
+            account_id=account_id,
+            amount=amount,
+            currency=currency,
+            category="Transferencia",
+            date=tx_date,
+            merchant=debit_merchant or merchant or "Pago tarjeta",
+            notes=f"Importado desde email: {subject[:120]}",
+            is_income=False,
+            is_transfer=True,
+            image_url="",
+            status=debit_status,
+        )
+        db.add(debit_tx)
+        db.flush()
+
+        if cc_account:
+            credit_tx = models.Transaction(
+                user_id=user.id,
+                account_id=cc_account.id,
+                amount=amount,
+                currency=currency,
+                category="Transferencia",
+                date=tx_date,
+                merchant="Pago recibido",
+                notes=f"Pago desde email: {subject[:120]}",
+                is_income=True,
+                is_transfer=True,
+                linked_transaction_id=debit_tx.id,
+                image_url="",
+                status="confirmed",
+            )
+            db.add(credit_tx)
+            db.flush()
+            debit_tx.linked_transaction_id = credit_tx.id
+            db.commit()
+            logger.info(
+                "email_inbound: CC payment auto-linked debit#%d ↔ credit#%d ($%.0f %s → %s)",
+                debit_tx.id, credit_tx.id, amount, currency, cc_account.name,
+            )
+            return {"ok": True, "action": "cc_payment_linked",
+                    "debit_tx_id": debit_tx.id, "credit_tx_id": credit_tx.id,
+                    "cc_account": cc_account.name}
+        else:
+            db.commit()
+            logger.info(
+                "email_inbound: CC payment pending review tx#%d ($%.0f, cc_name=%s)",
+                debit_tx.id, amount, cc_name,
+            )
+            return {"ok": True, "action": "cc_payment_pending_review",
+                    "transaction_id": debit_tx.id, "cc_name": cc_name}
+
+    # ── Regular transaction ───────────────────────────────────────────────────
     tx = models.Transaction(
         user_id=user.id,
         account_id=account_id,
-        amount=float(parsed["amount"]),
-        currency=parsed.get("currency", "CLP"),
-        category=parsed.get("category", "Otros"),
-        date=date.fromisoformat(parsed["date"]),
-        merchant=parsed.get("merchant", ""),
+        amount=amount,
+        currency=currency,
+        category=category,
+        date=tx_date,
+        merchant=merchant,
         notes=f"Importado desde email: {subject[:120]}",
         is_income=bool(parsed.get("is_income", False)),
         is_transfer=False,
@@ -220,7 +297,6 @@ def review_transaction(
         return tx
 
     if action == "confirm":
-        # Apply any edits
         if payload.category:
             tx.category = payload.category
         if payload.merchant:
@@ -231,12 +307,49 @@ def review_transaction(
         db.commit()
         db.refresh(tx)
 
-        # Remember merchant→category for future auto-categorisation
         if payload.remember and tx.merchant and tx.category:
             categorizer.remember_correction(db, current.id, tx.merchant, tx.category)
 
-        # Attempt auto-link (CC payment detection)
         account_svc.reconcile_new_transaction(db, current.id, tx)
+        db.refresh(tx)
+        return tx
+
+    if action == "confirm_cc_payment":
+        # User manually selected which credit card this payment went to.
+        # Create the credit-side transaction and link both.
+        if not payload.target_account_id:
+            raise HTTPException(400, "target_account_id required for confirm_cc_payment")
+
+        cc_account = db.query(models.Account).filter(
+            models.Account.id == payload.target_account_id,
+            models.Account.user_id == current.id,
+            models.Account.type == "credit",
+        ).first()
+        if not cc_account:
+            raise HTTPException(404, "Credit card account not found")
+
+        credit_tx = models.Transaction(
+            user_id=current.id,
+            account_id=cc_account.id,
+            amount=tx.amount,
+            currency=tx.currency,
+            category="Transferencia",
+            date=tx.date,
+            merchant="Pago recibido",
+            notes=f"Enlazado con tx#{tx.id}",
+            is_income=True,
+            is_transfer=True,
+            linked_transaction_id=tx.id,
+            image_url="",
+            status="confirmed",
+        )
+        db.add(credit_tx)
+        db.flush()
+
+        tx.linked_transaction_id = credit_tx.id
+        tx.is_transfer = True
+        tx.status = "confirmed"
+        db.commit()
         db.refresh(tx)
         return tx
 

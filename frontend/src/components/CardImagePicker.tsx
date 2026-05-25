@@ -112,7 +112,7 @@ function MiniCard({ preset, selected }: { preset: CardPreset; selected: boolean 
       className={`relative rounded-xl overflow-hidden cursor-pointer transition-all ${
         selected ? "ring-2 ring-brand-500 scale-105" : "hover:scale-105 opacity-80 hover:opacity-100"
       }`}
-      style={{ background: preset.bg, aspectRatio: "1.586 / 1", minWidth: 80 }}
+      style={{ background: preset.bg, aspectRatio: "1.586 / 1" }}
     >
       {/* Chip */}
       <div
@@ -219,7 +219,7 @@ export default function CardImagePicker({ value, accountId, onSelect, onUpload }
 
       {/* Preset grid */}
       <p className="text-xs text-slate-500 uppercase tracking-wide">O elige un diseño</p>
-      <div className="grid grid-cols-5 gap-2">
+      <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
         {CARD_PRESETS.map((preset) => (
           <div key={preset.key} onClick={() => onSelect(`preset:${preset.key}`)}>
             <MiniCard

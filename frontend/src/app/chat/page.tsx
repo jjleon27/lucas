@@ -83,7 +83,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto flex flex-col h-[calc(100vh-6rem)] pb-24 md:pb-0">
+    <div className="max-w-3xl mx-auto flex flex-col h-[calc(100dvh-4rem)] pb-20 md:pb-0 md:h-[calc(100vh-6rem)]">
       <h1 className="text-3xl font-semibold tracking-tight mb-4">{t("chat.title")}</h1>
 
       <div className="card flex-1 overflow-y-auto space-y-3">

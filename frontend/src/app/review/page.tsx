@@ -10,8 +10,10 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   Transaction,
+  Account,
   getToken,
   listPendingTransactions,
+  listAccounts,
   reviewTransaction,
   getForwardingAddress,
   ForwardingAddressOut,
@@ -37,14 +39,16 @@ function ReviewCard({
   tx,
   total,
   current,
+  creditAccounts,
   onAction,
 }: {
   tx: Transaction;
   total: number;
   current: number;
+  creditAccounts: Account[];
   onAction: (
-    action: "confirm" | "skip" | "not_expense" | "pending",
-    overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean }
+    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
+    overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number }
   ) => void;
 }) {
   const [category, setCategory] = useState(tx.category || "Otros");
@@ -54,13 +58,21 @@ function ReviewCard({
   const [editingMerchant, setEditingMerchant] = useState(false);
   const [editingAmount, setEditingAmount] = useState(false);
   const [acting, setActing] = useState(false);
+  const [selectedCCId, setSelectedCCId] = useState<number | null>(creditAccounts[0]?.id ?? null);
+
+  // A pending_review with is_transfer=true is a CC payment waiting for account assignment
+  const isCCPayment = tx.is_transfer && !tx.is_income;
 
   async function act(
-    action: "confirm" | "skip" | "not_expense" | "pending",
+    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
   ) {
     if (acting) return;
     setActing(true);
-    onAction(action, { category, merchant, amount, remember });
+    if (action === "confirm_cc_payment") {
+      onAction(action, { target_account_id: selectedCCId ?? undefined });
+    } else {
+      onAction(action, { category, merchant, amount, remember });
+    }
   }
 
   return (
@@ -175,7 +187,48 @@ function ReviewCard({
         Clasificar así automáticamente en el futuro
       </label>
 
+      {/* CC payment: account selector */}
+      {isCCPayment && creditAccounts.length > 0 && (
+        <div className="bg-sky-50 border border-sky-200 rounded-2xl p-3 space-y-2">
+          <p className="text-xs font-semibold text-sky-700 uppercase tracking-wide">
+            💳 Pago de tarjeta de crédito
+          </p>
+          <p className="text-xs text-sky-600">¿A qué tarjeta corresponde este pago?</p>
+          <select
+            className="input text-sm py-1.5"
+            value={selectedCCId ?? ""}
+            onChange={(e) => setSelectedCCId(e.target.value ? Number(e.target.value) : null)}
+          >
+            {creditAccounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {/* Action buttons */}
+      {isCCPayment ? (
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            type="button"
+            disabled={acting || !selectedCCId}
+            onClick={() => act("confirm_cc_payment")}
+            className="flex flex-col items-center gap-1 py-3 rounded-xl bg-emerald-50 border-2 border-emerald-200 text-emerald-700 font-medium text-xs hover:bg-emerald-100 active:scale-95 transition disabled:opacity-50"
+          >
+            <Check className="w-5 h-5" />
+            Confirmar pago
+          </button>
+          <button
+            type="button"
+            disabled={acting}
+            onClick={() => act("not_expense")}
+            className="flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border-2 border-slate-200 text-slate-500 font-medium text-xs hover:bg-slate-100 active:scale-95 transition disabled:opacity-50"
+          >
+            <Trash2 className="w-5 h-5" />
+            Eliminar
+          </button>
+        </div>
+      ) : (
       <div className="grid grid-cols-3 gap-2 pt-1">
         <button
           type="button"
@@ -207,6 +260,7 @@ function ReviewCard({
           No es gasto
         </button>
       </div>
+      )}
 
       {/* Skip */}
       <button
@@ -289,6 +343,7 @@ function SetupCard({ address }: { address: ForwardingAddressOut | null }) {
 export default function ReviewPage() {
   const router = useRouter();
   const [txs, setTxs] = useState<Transaction[]>([]);
+  const [creditAccounts, setCreditAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [address, setAddress] = useState<ForwardingAddressOut | null>(null);
   const [skipped, setSkipped] = useState<Set<number>>(new Set());
@@ -298,17 +353,19 @@ export default function ReviewPage() {
     Promise.all([
       listPendingTransactions(),
       getForwardingAddress(),
-    ]).then(([pending, addr]) => {
+      listAccounts(),
+    ]).then(([pending, addr, accounts]) => {
       setTxs(pending);
       setAddress(addr);
+      setCreditAccounts(accounts.filter((a) => a.type === "credit" && !a.archived));
     }).finally(() => setLoading(false));
   }, [router]);
 
   const handleAction = useCallback(
     async (
       tx: Transaction,
-      action: "confirm" | "skip" | "not_expense" | "pending",
-      overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean },
+      action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
+      overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number },
     ) => {
       if (action === "skip") {
         setSkipped((s) => new Set([...s, tx.id]));
@@ -321,6 +378,7 @@ export default function ReviewPage() {
           merchant: overrides?.merchant,
           amount: overrides?.amount,
           remember: overrides?.remember,
+          target_account_id: overrides?.target_account_id,
         });
         // Remove from list
         setTxs((prev) => prev.filter((t) => t.id !== tx.id));
@@ -371,6 +429,7 @@ export default function ReviewPage() {
           tx={currentTx}
           total={totalPending}
           current={currentIdx}
+          creditAccounts={creditAccounts}
           onAction={(action, overrides) => handleAction(currentTx, action, overrides)}
         />
       ) : (
