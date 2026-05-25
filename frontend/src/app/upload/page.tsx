@@ -90,17 +90,27 @@ export default function UploadPage() {
     transcriptRef.current = "";
     const rec = new SR();
     recognitionRef.current = rec;
-    rec.lang = "es";
+    rec.lang = "es-CL";
     rec.interimResults = true;
     rec.continuous = false;
+    rec.maxAlternatives = 3;
+
+    const altsRef: string[] = [];
 
     const autoStop = setTimeout(() => rec.stop(), 7000);
 
     rec.onresult = (e: any) => {
       let final = "", interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript;
-        else interim += e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          final += e.results[i][0].transcript;
+          for (let j = 1; j < e.results[i].length; j++) {
+            const alt = e.results[i][j].transcript.trim();
+            if (alt && alt !== e.results[i][0].transcript.trim()) altsRef.push(alt);
+          }
+        } else {
+          interim += e.results[i][0].transcript;
+        }
       }
       if (final) transcriptRef.current += final;
       const display = transcriptRef.current + (interim ? " " + interim : "");
@@ -117,7 +127,13 @@ export default function UploadPage() {
       clearTimeout(autoStop);
       setVoiceListening(false);
       const text = transcriptRef.current.trim();
-      if (text) { setVoiceText(text); sendVoice(text); }
+      if (text) {
+        setVoiceText(text);
+        const withAlts = altsRef.length
+          ? `${text} [también escuché: ${altsRef.slice(0, 2).join(" / ")}]`
+          : text;
+        sendVoice(withAlts);
+      }
     };
 
     rec.start();

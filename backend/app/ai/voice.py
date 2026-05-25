@@ -31,8 +31,19 @@ from typing import Optional
 from ..ai import provider as ai_provider
 
 
-_SYSTEM_PROMPT = """You turn a single spoken sentence (usually Spanish, Chilean accent)
-into a structured personal-finance transaction.
+_SYSTEM_PROMPT = """You turn a spoken sentence (Chilean Spanish) into a structured personal-finance transaction.
+
+The input is a speech-recognition transcript and may contain recognition errors.
+If the message includes "[también escuché: ...]", those are alternative transcriptions — use them
+to resolve ambiguities in the main transcript. The correct interpretation is usually the one
+that makes sense as a financial transaction.
+
+Common speech-recognition mistakes with Chilean slang — correct these automatically:
+- "lucas" / "oucas" / "lucas" / "Lukas" / "luck as" → "lucas" (1000 CLP each)
+- "palo" / "pablo" / "polo" → "palo" (1,000,000 CLP)
+- "gamba" / "gamma" → "gamba" (100 CLP)
+- "lúcas" / "Luca's" → "lucas"
+- Bank names: "Falabela" → Falabella, "Santader" → Santander, "BCI" / "VECI" → BCI
 
 Return strict JSON with this shape:
 {

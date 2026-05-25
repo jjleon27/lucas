@@ -179,9 +179,12 @@ export default function LucasFAB() {
     transcriptRef.current = "";
     const rec = new SR();
     recognitionRef.current = rec;
-    rec.lang = "es";
+    rec.lang = "es-CL";
     rec.interimResults = true;
     rec.continuous = false;
+    rec.maxAlternatives = 3;
+
+    const altsRef: string[] = [];
 
     // Auto-stop after 7s so it never hangs
     const autoStop = setTimeout(() => rec.stop(), 7000);
@@ -189,8 +192,16 @@ export default function LucasFAB() {
     rec.onresult = (e: any) => {
       let final = "", interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript;
-        else interim += e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          final += e.results[i][0].transcript;
+          // Collect alternatives to help LLM disambiguate misrecognitions
+          for (let j = 1; j < e.results[i].length; j++) {
+            const alt = e.results[i][j].transcript.trim();
+            if (alt && alt !== e.results[i][0].transcript.trim()) altsRef.push(alt);
+          }
+        } else {
+          interim += e.results[i][0].transcript;
+        }
       }
       if (final) transcriptRef.current += final;
       // Use a native DOM update so iOS renders immediately without waiting for React
@@ -210,8 +221,11 @@ export default function LucasFAB() {
       setListening(false);
       const text = transcriptRef.current.trim();
       if (text) {
+        const withAlts = altsRef.length
+          ? `${text} [también escuché: ${altsRef.slice(0, 2).join(" / ")}]`
+          : text;
         setInput(text);
-        handleSend(text);
+        handleSend(withAlts);
       }
     };
 
