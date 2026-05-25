@@ -203,10 +203,10 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
                     break
 
         debit_merchant = f"Pago tarjeta {parsed.get('cc_name', '').title()}".strip()
-        # Only auto-confirm if BOTH the source debit account AND target CC are identified.
-        # If either is missing, leave pending_review so the user can assign both sides.
-        fully_resolved = cc_account is not None and account_id is not None
-        debit_status = "confirmed" if fully_resolved else "pending_review"
+        # CC payments always start as pending_review so the user can verify
+        # before they affect balances. Account hints are stored but not auto-confirmed.
+        fully_resolved = False
+        debit_status = "pending_review"
 
         debit_tx = models.Transaction(
             user_id=user.id,

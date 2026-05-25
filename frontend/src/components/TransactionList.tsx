@@ -8,12 +8,13 @@
  */
 import { useState, useMemo } from "react";
 import { Pencil, Trash2, Check, X, AlertTriangle } from "lucide-react";
-import { Transaction, updateTransaction, deleteTransaction } from "@/lib/api";
+import { Transaction, Account, updateTransaction, deleteTransaction } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
 import NumericInput from "@/components/NumericInput";
 
 interface Props {
   txs: Transaction[];
+  accounts?: Account[];
   onRefresh?: () => void;
 }
 
@@ -42,9 +43,10 @@ interface EditState {
   date: string;
   notes: string;
   is_income: boolean;
+  account_id: number | null;
 }
 
-export default function TransactionList({ txs: initial, onRefresh }: Props) {
+export default function TransactionList({ txs: initial, accounts = [], onRefresh }: Props) {
   const { t } = useT();
   const [txs, setTxs] = useState<Transaction[]>(initial);
   const [editId, setEditId] = useState<number | null>(null);
@@ -69,6 +71,7 @@ export default function TransactionList({ txs: initial, onRefresh }: Props) {
       date: tx.date,
       notes: tx.notes,
       is_income: tx.is_income,
+      account_id: tx.account_id,
     });
     setConfirmDelete(null);
   }
@@ -89,6 +92,7 @@ export default function TransactionList({ txs: initial, onRefresh }: Props) {
         date: editState.date,
         notes: editState.notes,
         is_income: editState.is_income,
+        account_id: editState.account_id,
       });
       setTxs((prev) => prev.map((t) => (t.id === tx.id ? updated : t)));
       setEditId(null);
@@ -119,12 +123,18 @@ export default function TransactionList({ txs: initial, onRefresh }: Props) {
     return <div className="card text-center text-slate-500">{t("tx.empty")}</div>;
   }
 
+  // Hide the "receiving" side of linked transfers — show only the outgoing side
+  const visibleTxs = txs.filter(
+    (tx) => !(tx.is_transfer && tx.is_income && tx.linked_transaction_id != null),
+  );
+
   return (
     <div className="space-y-1">
-      {txs.map((tx) => {
+      {visibleTxs.map((tx) => {
         const isEditing = editId === tx.id;
         const isDupe = dupeIds.has(tx.id);
         const isDeleting = confirmDelete === tx.id;
+        const accountName = accounts.find((a) => a.id === tx.account_id)?.name;
 
         return (
           <div
@@ -141,15 +151,25 @@ export default function TransactionList({ txs: initial, onRefresh }: Props) {
               {/* Merchant + category */}
               <div className="flex-1 min-w-0">
                 <p className="font-medium truncate">{tx.merchant || "—"}</p>
-                <span className="inline-block px-1.5 py-0.5 rounded-full bg-slate-100 text-xs text-slate-500">
-                  {tx.category}
-                </span>
-                {isDupe && (
-                  <span className="ml-1.5 inline-flex items-center gap-0.5 text-amber-600 text-xs">
-                    <AlertTriangle size={11} />
-                    {t("tx.duplicateWarning")}
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="inline-block px-1.5 py-0.5 rounded-full bg-slate-100 text-xs text-slate-500">
+                    {tx.category}
                   </span>
-                )}
+                  {tx.is_transfer && (
+                    <span className="inline-block px-1.5 py-0.5 rounded-full bg-sky-100 text-xs text-sky-600">
+                      ↔ Transferencia
+                    </span>
+                  )}
+                  {accountName && (
+                    <span className="text-xs text-slate-400 truncate">{accountName}</span>
+                  )}
+                  {isDupe && (
+                    <span className="inline-flex items-center gap-0.5 text-amber-600 text-xs">
+                      <AlertTriangle size={11} />
+                      {t("tx.duplicateWarning")}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Amount */}
@@ -260,9 +280,24 @@ export default function TransactionList({ txs: initial, onRefresh }: Props) {
                       onChange={(e) => setEditState((s) => s && { ...s, is_income: e.target.checked })}
                       className="rounded"
                     />
-                    <span className="text-sm">{t("upload.isIncome")}</span>
+                    <span className="text-sm">Es ingreso</span>
                   </label>
                 </div>
+                {accounts.length > 0 && (
+                  <label className="block">
+                    <span className="text-xs text-slate-500 uppercase">Cuenta</span>
+                    <select
+                      className="input mt-0.5"
+                      value={editState.account_id ?? ""}
+                      onChange={(e) => setEditState((s) => s && { ...s, account_id: e.target.value ? Number(e.target.value) : null })}
+                    >
+                      <option value="">Sin cuenta</option>
+                      {accounts.map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label className="block">
                   <span className="text-xs text-slate-500 uppercase">{t("tx.notes")}</span>
                   <input

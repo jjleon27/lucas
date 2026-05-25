@@ -290,7 +290,7 @@ function TransactionsInner() {
           {txs === null ? (
             <div className="text-slate-500">{t("tx.loading")}</div>
           ) : (
-            <TransactionList txs={txs} onRefresh={load} />
+            <TransactionList txs={txs} accounts={accounts} onRefresh={load} />
           )}
         </>
       )}
