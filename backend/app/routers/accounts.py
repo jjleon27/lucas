@@ -5,7 +5,8 @@ Each user can have many accounts (Santander débito, CMR Falabella crédito,
 Banco de Chile crédito, etc.). Every transaction can optionally be associated
 with one account.
 """
-from datetime import date as date_type, timedelta
+from datetime import date as date_type
+from sqlalchemy import func
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
@@ -168,11 +169,38 @@ def reconcile_account(
     previous_anchor_balance = float(acc.anchor_balance)
     previous_anchor_date = acc.anchor_date
 
-    # Snap: anchor to tomorrow so today's already-confirmed transactions are
-    # treated as "baked into" the expected_balance the user just entered.
-    # Only transactions dated >= tomorrow will modify the live balance forward.
-    acc.anchor_date = as_of + timedelta(days=1)
-    acc.anchor_balance = float(payload.expected_balance)
+    # Snap: set anchor_date = as_of (inclusive). To ensure the formula gives
+    # exactly expected_balance right now, we back-deduce the anchor_balance
+    # by reversing today's already-confirmed transactions. This means new
+    # transactions from today onward are counted correctly going forward.
+    today_income = db.query(
+        func.coalesce(func.sum(models.Transaction.amount), 0.0)
+    ).filter(
+        models.Transaction.account_id == acc.id,
+        models.Transaction.status == "confirmed",
+        models.Transaction.date == as_of,
+        models.Transaction.is_income.is_(True),
+    ).scalar() or 0.0
+
+    today_expense = db.query(
+        func.coalesce(func.sum(models.Transaction.amount), 0.0)
+    ).filter(
+        models.Transaction.account_id == acc.id,
+        models.Transaction.status == "confirmed",
+        models.Transaction.date == as_of,
+        models.Transaction.is_income.is_(False),
+    ).scalar() or 0.0
+
+    expected = float(payload.expected_balance)
+    if acc.type == "credit":
+        # formula: used = anchor + expenses - income → anchor = expected - expenses + income
+        adjusted = expected - float(today_expense) + float(today_income)
+    else:
+        # formula: balance = anchor + income - expenses → anchor = expected - income + expenses
+        adjusted = expected - float(today_income) + float(today_expense)
+
+    acc.anchor_date = as_of
+    acc.anchor_balance = adjusted
     db.commit()
     db.refresh(acc)
 
