@@ -41,6 +41,31 @@ def _user_from_token(db: Session, token: str) -> models.User | None:
     return db.query(models.User).filter(models.User.email_token == token).first()
 
 
+# Maps substrings found in a sender email domain → canonical bank name (lowercase for matching)
+_SENDER_BANK_MAP = {
+    "falabella": "falabella",
+    "bancofalabella": "falabella",
+    "santander": "santander",
+    "bancochile": "banco de chile",
+    "bci": "bci",
+    "itau": "itaú",
+    "scotiabank": "scotiabank",
+    "bancoestado": "bancoestado",
+    "security": "security",
+    "ripley": "ripley",
+    "mach": "mach",
+}
+
+
+def _bank_from_sender(from_addr: str) -> str | None:
+    """Extract a canonical bank name from the sender's email address."""
+    addr = from_addr.lower()
+    for key, bank in _SENDER_BANK_MAP.items():
+        if key in addr:
+            return bank
+    return None
+
+
 def _extract_token_from_address(address: str) -> str | None:
     """
     'lucas-abc123@notify.lucasapp.com' → 'abc123'
@@ -105,7 +130,7 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
     if not parsed:
         return {"ok": True, "action": "skipped", "reason": "not_a_transaction"}
 
-    # Try to resolve source account by card hint
+    # Try to resolve source account by card hint, then by sender bank
     account_id: int | None = None
     card_last4 = parsed.get("card_last4", "")
     if card_last4:
@@ -116,6 +141,10 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
         ).first()
         if acc:
             account_id = acc.id
+
+    # For CC payments: if card hint didn't work, use the sender's bank domain
+    # to find the source debit account (e.g. email from @bancofalabella.com → Falabella debit)
+    sender_bank = _bank_from_sender(from_addr)
 
     amount = float(parsed["amount"])
     currency = parsed.get("currency", "CLP")
@@ -142,15 +171,35 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
     if parsed.get("is_cc_payment"):
         cc_name = parsed.get("cc_name", "").lower().strip()
         cc_account = None
+
+        # Find target credit card by cc_name from email body
+        all_credit = db.query(models.Account).filter(
+            models.Account.user_id == user.id,
+            models.Account.type == "credit",
+            models.Account.archived.is_(False),
+        ).all()
         if cc_name:
-            cc_accounts = db.query(models.Account).filter(
-                models.Account.user_id == user.id,
-                models.Account.type == "credit",
-                models.Account.archived.is_(False),
-            ).all()
-            for a in cc_accounts:
+            for a in all_credit:
                 if cc_name in a.name.lower() or a.name.lower() in cc_name:
                     cc_account = a
+                    break
+        # Fallback: match credit account by sender bank
+        if not cc_account and sender_bank:
+            for a in all_credit:
+                if sender_bank in a.name.lower() or sender_bank in (a.bank or "").lower():
+                    cc_account = a
+                    break
+
+        # Find source debit account by sender bank (if not found via card_last4)
+        if not account_id and sender_bank:
+            debit_accounts = db.query(models.Account).filter(
+                models.Account.user_id == user.id,
+                models.Account.type.in_(["debit", "savings", "wallet", "cash"]),
+                models.Account.archived.is_(False),
+            ).all()
+            for a in debit_accounts:
+                if sender_bank in a.name.lower() or sender_bank in (a.bank or "").lower():
+                    account_id = a.id
                     break
 
         debit_merchant = f"Pago tarjeta {parsed.get('cc_name', '').title()}".strip()

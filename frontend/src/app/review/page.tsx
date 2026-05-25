@@ -60,8 +60,20 @@ function ReviewCard({
   const [editingMerchant, setEditingMerchant] = useState(false);
   const [editingAmount, setEditingAmount] = useState(false);
   const [acting, setActing] = useState(false);
-  const [selectedCCId, setSelectedCCId] = useState<number | null>(creditAccounts[0]?.id ?? null);
-  const [selectedDebitId, setSelectedDebitId] = useState<number | null>(debitAccounts[0]?.id ?? null);
+  // Pre-select CC account by matching tx.merchant ("Pago tarjeta CMR" → find account with "CMR")
+  const inferredCCId = (() => {
+    const m = tx.merchant?.toLowerCase() ?? "";
+    return creditAccounts.find((a) =>
+      m.includes(a.name.toLowerCase()) || a.name.toLowerCase().split(/\s+/).some((w) => w.length > 2 && m.includes(w))
+    )?.id ?? creditAccounts[0]?.id ?? null;
+  })();
+  // Pre-select debit account from tx.account_id if already set, else first
+  const inferredDebitId = tx.account_id
+    ? (debitAccounts.find((a) => a.id === tx.account_id)?.id ?? debitAccounts[0]?.id ?? null)
+    : debitAccounts[0]?.id ?? null;
+
+  const [selectedCCId, setSelectedCCId] = useState<number | null>(inferredCCId);
+  const [selectedDebitId, setSelectedDebitId] = useState<number | null>(inferredDebitId);
 
   // A pending_review with is_transfer=true is a CC payment waiting for account assignment
   const isCCPayment = tx.is_transfer && !tx.is_income;

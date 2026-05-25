@@ -142,6 +142,7 @@ export default function LucasFAB() {
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const transcriptRef = useRef("");
 
   // Load accounts once for the transaction confirm card
   useEffect(() => {
@@ -173,22 +174,47 @@ export default function LucasFAB() {
     }
     if (listening) {
       recognitionRef.current?.stop();
-      setListening(false);
       return;
     }
+    transcriptRef.current = "";
     const rec = new SR();
     recognitionRef.current = rec;
-    rec.lang = "es-CL";
-    rec.interimResults = false;
+    rec.lang = "es";
+    rec.interimResults = true;
+    rec.continuous = false;
+
+    // Auto-stop after 7s so it never hangs
+    const autoStop = setTimeout(() => rec.stop(), 7000);
+
     rec.onresult = (e: any) => {
-      const transcript = e.results[0][0].transcript;
-      setInput(transcript);
-      setListening(false);
-      // Auto-send after voice
-      handleSend(transcript);
+      let final = "", interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      if (final) transcriptRef.current += final;
+      // Use a native DOM update so iOS renders immediately without waiting for React
+      if (inputRef.current) {
+        inputRef.current.value = transcriptRef.current + (interim ? " " + interim : "");
+      }
+      setInput(transcriptRef.current + (interim ? " " + interim : ""));
     };
-    rec.onerror = () => setListening(false);
-    rec.onend = () => setListening(false);
+
+    rec.onerror = () => {
+      clearTimeout(autoStop);
+      setListening(false);
+    };
+
+    rec.onend = () => {
+      clearTimeout(autoStop);
+      setListening(false);
+      const text = transcriptRef.current.trim();
+      if (text) {
+        setInput(text);
+        handleSend(text);
+      }
+    };
+
     rec.start();
     setListening(true);
   }
@@ -498,8 +524,7 @@ export default function LucasFAB() {
               className="flex-1 bg-slate-50 rounded-full px-4 py-2.5 text-sm outline-none focus:ring-2 ring-indigo-300 transition"
               placeholder={listening ? t("fab.listening") : t("fab.placeholder")}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={listening}
+              onChange={(e) => !listening && setInput(e.target.value)}
             />
             <button
               type="submit"
