@@ -170,6 +170,8 @@ def commit_cartola(
             is_transfer=bool(t.is_cc_payment),
         )
         db.add(tx)
+        db.flush()
+        accounts_svc.reconcile_new_transaction(db, current.id, tx)
         saved += 1
 
     drift: float | None = None

@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from .. import models, schemas, auth
 from ..database import get_db
-from ..services import accounts as account_svc
+from ..services import accounts as account_svc, dedupe as dedupe_svc
 
 router = APIRouter(prefix="/split", tags=["split"])
 
@@ -246,6 +246,18 @@ def start_manual(
     Create a transaction + single ReceiptItem from a manually entered total.
     Used when the user doesn't have a receipt photo but wants to split a bill.
     """
+    proposal = schemas.ParsedReceipt(
+        amount=payload.total_amount,
+        date=payload.date,
+        merchant=payload.merchant or "División de cuenta",
+        category="Dividido",
+        currency=payload.currency,
+        is_income=False,
+    )
+    existing = dedupe_svc.find_duplicate(db, user_id=current.id, account_id=payload.account_id, proposed=proposal)
+    if existing:
+        return {"transaction_id": existing.id, "items": []}
+
     tx = models.Transaction(
         user_id=current.id,
         account_id=payload.account_id,
@@ -259,6 +271,7 @@ def start_manual(
     )
     db.add(tx)
     db.flush()
+    account_svc.reconcile_new_transaction(db, current.id, tx)
     item = models.ReceiptItem(
         transaction_id=tx.id,
         name=payload.merchant or "Total",

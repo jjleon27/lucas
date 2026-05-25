@@ -2,6 +2,7 @@
 FastAPI entrypoint. Wires together routers, CORS, static file serving for
 uploaded images, and DB init.
 """
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -39,10 +40,25 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup() -> None:
+    _security_checks()
     init_db()
     # Make sure the local uploads directory exists before we try to mount it.
     if settings.storage_backend == "local":
         Path(settings.local_storage_dir).mkdir(parents=True, exist_ok=True)
+
+
+def _security_checks() -> None:
+    log = logging.getLogger("lucas.security")
+    if settings.jwt_secret == "dev-secret-change-me":
+        log.critical(
+            "JWT_SECRET is set to the insecure default. "
+            "Set JWT_SECRET to a random secret in production."
+        )
+    if settings.allow_passwordless:
+        log.warning(
+            "ALLOW_PASSWORDLESS=True — anyone can log in with just an email. "
+            "Set ALLOW_PASSWORDLESS=False in production."
+        )
 
 
 # Serve uploaded receipts back to the frontend when using local storage.
