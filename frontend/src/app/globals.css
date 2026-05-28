@@ -8,11 +8,18 @@
   --muted: #64748b;
 }
 
-html, body {
+html {
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
+body {
   background: var(--bg);
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
+  position: relative;
   overflow-x: hidden;
+  overflow-x: clip;
   overscroll-behavior-x: none;
   max-width: 100%;
 }

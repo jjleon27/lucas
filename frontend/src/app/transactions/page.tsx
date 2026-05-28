@@ -269,7 +269,7 @@ function TransactionsInner() {
   }, [router, load]);
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 pb-24 md:pb-0">
+    <div className="max-w-5xl mx-auto w-full space-y-6 pb-24 md:pb-0" style={{ overflowX: "clip" }}>
       {pending ? (
         <>
           <header className="flex flex-wrap items-start justify-between gap-3">
