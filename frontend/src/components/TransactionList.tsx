@@ -128,9 +128,19 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
     (tx) => !(tx.is_transfer && tx.is_income && tx.linked_transaction_id != null),
   );
 
+  // Group by date, preserving order
+  const dates = [...new Set(visibleTxs.map((tx) => tx.date))];
+
   return (
-    <div className="space-y-1">
-      {visibleTxs.map((tx) => {
+    <div className="space-y-4">
+      {dates.map((date) => (
+        <div key={date}>
+          {/* Date header */}
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-1 mb-1">
+            {date}
+          </p>
+          <div className="space-y-1">
+          {visibleTxs.filter((tx) => tx.date === date).map((tx) => {
         const isEditing = editId === tx.id;
         const isDupe = dupeIds.has(tx.id);
         const isDeleting = confirmDelete === tx.id;
@@ -158,7 +168,6 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
               {/* Row 2: date · category · badges (left) + edit/delete (right) */}
               <div className="flex items-center justify-between gap-2 mt-1">
                 <div className="flex items-center gap-1 flex-wrap min-w-0 text-xs text-slate-400">
-                  <span className="font-mono shrink-0">{tx.date}</span>
                   <span className="px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 max-w-[9rem] truncate">
                     {tx.category}
                   </span>
@@ -338,6 +347,9 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
           </div>
         );
       })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

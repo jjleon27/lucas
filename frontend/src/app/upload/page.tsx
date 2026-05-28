@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import NumericInput from "@/components/NumericInput";
-import { Trash2, Plus, Mic, SendHorizonal } from "lucide-react";
+import { Trash2, Plus, Mic, SendHorizonal, Scissors } from "lucide-react";
 import {
   createTransaction, me, ParsedReceipt, ParsedUpload, uploadImage,
   listAccounts, chatAction, transcribeAudio, type Account,
@@ -283,6 +283,23 @@ export default function UploadPage() {
         <h1 className="text-3xl font-semibold tracking-tight">{t("upload.title")}</h1>
         <p className="text-slate-500 mt-1">{t("upload.subtitle")}</p>
       </div>
+
+      {/* Entry point: upload receipt OR split bill */}
+      {!upload && (
+        <a
+          href="/split"
+          className="flex items-center gap-3 card border-2 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 transition-colors no-underline"
+        >
+          <div className="w-10 h-10 rounded-xl bg-emerald-500 flex items-center justify-center shrink-0">
+            <Scissors className="w-5 h-5 text-white" />
+          </div>
+          <div className="min-w-0">
+            <p className="font-semibold text-emerald-900">Dividir cuenta</p>
+            <p className="text-sm text-emerald-700">Divide gastos entre amigos y simplifica quién le debe a quién</p>
+          </div>
+          <span className="ml-auto text-emerald-500 shrink-0">→</span>
+        </a>
+      )}
 
       {!upload && <UploadZone onFile={handleFile} loading={loading} />}
       {err && <p className="text-sm text-rose-600">{err}</p>}

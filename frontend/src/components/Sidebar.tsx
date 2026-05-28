@@ -42,18 +42,18 @@ export default function Sidebar() {
 
   // Mobile: 4 primary tabs
   const primaryNav: NavItem[] = [
-    { href: "/dashboard", label: t("nav.dashboard"), icon: LayoutDashboard },
-    { href: "/upload",    label: t("nav.upload"),     icon: Upload },
-    { href: "/split",     label: t("nav.split"),      icon: Scissors },
+    { href: "/dashboard",    label: t("nav.dashboard"),    icon: LayoutDashboard },
+    { href: "/upload",       label: t("nav.upload"),       icon: Upload },
     { href: "/transactions", label: t("nav.transactions"), icon: Receipt },
+    { href: "/accounts",     label: t("nav.accounts"),     icon: CreditCard },
   ];
 
   // Mobile: overflow items inside "Más" sheet
   const moreNav: NavItem[] = [
-    { href: "/accounts", label: t("nav.accounts"), icon: CreditCard },
-    { href: "/review",   label: "Revisar",          icon: Inbox,        badge: pendingCount > 0 ? pendingCount : undefined },
-    { href: "/chat",     label: t("nav.chat"),      icon: MessageCircle },
-    { href: "/settings", label: "Perfil",            icon: UserCircle },
+    { href: "/split",    label: t("nav.split"),  icon: Scissors },
+    { href: "/review",   label: "Revisar",        icon: Inbox,        badge: pendingCount > 0 ? pendingCount : undefined },
+    { href: "/chat",     label: t("nav.chat"),   icon: MessageCircle },
+    { href: "/settings", label: "Perfil",         icon: UserCircle },
   ];
 
   // Desktop: all items in sidebar
