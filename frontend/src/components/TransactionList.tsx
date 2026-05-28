@@ -144,20 +144,22 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
             }`}
           >
             {/* Main row */}
-            <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3">
-              {/* Date */}
-              <span className="text-xs text-slate-400 w-16 sm:w-20 shrink-0 font-mono">{tx.date}</span>
+            <div className="flex items-center gap-2 px-3 py-3">
+              {/* Date — hidden on mobile, shown on sm+ */}
+              <span className="hidden sm:block text-xs text-slate-400 w-20 shrink-0 font-mono">{tx.date}</span>
 
               {/* Merchant + category */}
               <div className="flex-1 min-w-0">
                 <p className="font-medium truncate">{tx.merchant || "—"}</p>
                 <div className="flex items-center gap-1 flex-wrap">
-                  <span className="inline-block px-1.5 py-0.5 rounded-full bg-slate-100 text-xs text-slate-500">
+                  {/* Date inline on mobile */}
+                  <span className="sm:hidden text-xs text-slate-400 font-mono shrink-0">{tx.date}</span>
+                  <span className="inline-block px-1.5 py-0.5 rounded-full bg-slate-100 text-xs text-slate-500 max-w-[8rem] truncate">
                     {tx.category}
                   </span>
                   {tx.is_transfer && (
-                    <span className="inline-block px-1.5 py-0.5 rounded-full bg-sky-100 text-xs text-sky-600">
-                      ↔ {tx.category === "Pago Tarjeta" ? "No afecta presupuesto" : "Transferencia"}
+                    <span className="inline-block px-1.5 py-0.5 rounded-full bg-sky-100 text-xs text-sky-600 max-w-[8rem] truncate">
+                      ↔ {tx.category === "Pago Tarjeta" ? "Sin presup." : "Transfer"}
                     </span>
                   )}
                   {accountName && (

@@ -9,8 +9,7 @@
 }
 
 html {
-  overflow-x: hidden;
-  overflow-x: clip;
+  overflow-x: hidden; /* propagates to viewport — prevents viewport horizontal scroll */
 }
 
 body {
@@ -18,10 +17,10 @@ body {
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
   position: relative;
-  overflow-x: hidden;
-  overflow-x: clip;
+  overflow-x: clip; /* clip: no scroll container created, truly blocks overflow */
   overscroll-behavior-x: none;
   max-width: 100%;
+  width: 100%;
 }
 
 @layer components {
