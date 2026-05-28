@@ -144,9 +144,9 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
             }`}
           >
             {/* Main row */}
-            <div className="flex items-center gap-3 px-4 py-3">
+            <div className="flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-3">
               {/* Date */}
-              <span className="text-xs text-slate-400 w-20 shrink-0 font-mono">{tx.date}</span>
+              <span className="text-xs text-slate-400 w-16 sm:w-20 shrink-0 font-mono">{tx.date}</span>
 
               {/* Merchant + category */}
               <div className="flex-1 min-w-0">
@@ -174,7 +174,7 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
 
               {/* Amount */}
               <span
-                className={`font-mono text-sm shrink-0 ${
+                className={`font-mono text-xs sm:text-sm shrink-0 ${
                   tx.is_income ? "text-emerald-600" : ""
                 }`}
               >
