@@ -3,6 +3,11 @@ Pydantic schemas (DTOs) used for request/response validation.
 Keeps API shape separate from the ORM layer.
 """
 from datetime import date, datetime
+# Alias avoids field-name/type-name shadowing in Pydantic V2:
+# when a field is named 'date' with default=None, Python assigns date=None
+# in the class namespace before the annotation Optional[date] is evaluated,
+# so _date keeps the correct type reference.
+_date = date
 from typing import Any, Optional
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
@@ -11,6 +16,8 @@ from pydantic import BaseModel, EmailStr, Field, ConfigDict
 class FixedItem(BaseModel):
     name: str
     amount: float
+    day: int = 1         # day-of-month when this item is expected (1-31)
+    is_income: bool = False
 
 
 class UserSettings(BaseModel):
@@ -124,7 +131,7 @@ class TransactionCreate(TransactionBase):
 class TransactionUpdate(BaseModel):
     amount: Optional[float] = None
     category: Optional[str] = None
-    date: Optional[date] = None
+    date: Optional[_date] = None
     merchant: Optional[str] = None
     notes: Optional[str] = None
     is_income: Optional[bool] = None
@@ -455,6 +462,7 @@ class TransactionReviewAction(BaseModel):
     merchant: Optional[str] = None       # override merchant on confirm
     amount: Optional[float] = None       # override amount on confirm
     remember: bool = False               # call remember_correction for future auto-categorization
+    account_id: Optional[int] = None         # override the transaction's account on confirm
     target_account_id: Optional[int] = None  # for confirm_cc_payment: which credit card account
     source_account_id: Optional[int] = None  # for confirm_cc_payment: which debit account it came from
 

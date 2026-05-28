@@ -18,6 +18,7 @@ import {
   listAccounts, chatAction, transcribeAudio, type Account,
 } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
+import { CATEGORIES } from "@/components/TransactionList";
 
 interface Row extends ParsedReceipt {
   _selected: boolean;
@@ -33,12 +34,6 @@ const CURRENCIES: { code: string; label: string }[] = [
   { code: "PEN", label: "🇵🇪 PEN" },
   { code: "COP", label: "🇨🇴 COP" },
   { code: "GBP", label: "🇬🇧 GBP" },
-];
-
-const CATEGORIES = [
-  "Food", "Groceries", "Transport", "Shopping",
-  "Entertainment", "Bills", "Health", "Travel",
-  "Subscriptions", "Other",
 ];
 
 export default function UploadPage() {
@@ -643,11 +638,22 @@ function EditRow({
             <span className="text-xs uppercase text-slate-500">{t("upload.category")}</span>
             <select
               className="input mt-1"
-              value={row.category}
-              onChange={(e) => onChange({ category: e.target.value })}
+              value={CATEGORIES.includes(row.category) ? row.category : "__otra__"}
+              onChange={(e) => {
+                if (e.target.value !== "__otra__") onChange({ category: e.target.value });
+              }}
             >
               {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+              <option value="__otra__">✏️ Otra categoría...</option>
             </select>
+            {!CATEGORIES.includes(row.category) && (
+              <input
+                className="input mt-1"
+                placeholder="Nombre de categoría"
+                value={row.category}
+                onChange={(e) => onChange({ category: e.target.value })}
+              />
+            )}
           </label>
           <label className="block md:col-span-2">
             <span className="text-xs uppercase text-slate-500">{t("upload.type")}</span>

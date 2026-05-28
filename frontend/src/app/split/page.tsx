@@ -141,6 +141,11 @@ export default function SplitPage() {
   const [propinaMode, setPropinaMode] = useState<"pct" | "clp">("pct");
   const [addingPropina, setAddingPropina] = useState(false);
   const [addingIva, setAddingIva] = useState(false);
+  // Descuento state
+  const [discountAmount, setDiscountAmount] = useState(0);
+  const [discountPct, setDiscountPct] = useState(10);
+  const [discountMode, setDiscountMode] = useState<"pct" | "clp">("pct");
+  const [addingDiscount, setAddingDiscount] = useState(false);
   // IVA info
   const [ivaIncluded, setIvaIncluded] = useState(false);
   // Duplicate detection
@@ -284,16 +289,25 @@ export default function SplitPage() {
         // Case C: gap ≈ 0 → IVA already included in prices, do nothing
       }
 
+      // Auto-detect discount lines from OCR: ensure their price is negative
+      splitItems = splitItems.map((it) => {
+        if (/^(descuento|dscto|dcto|rebaja)/i.test(it.name.trim()) && it.price > 0) {
+          return { ...it, price: -it.price };
+        }
+        return it;
+      });
+
       // Expand items with quantity > 1 into individual units (capped at 20)
-      splitItems = splitItems.flatMap((it) =>
-        it.quantity > 1
-          ? Array.from({ length: Math.min(it.quantity, 20) }, () => ({
-              name: it.name,
-              price: it.price,
-              quantity: 1,
-            }))
-          : [it],
-      );
+      splitItems = splitItems.flatMap((it) => {
+        if (it.quantity > 1 && it.price > 0) {
+          return Array.from({ length: Math.min(it.quantity, 20) }, () => ({
+            name: it.name,
+            price: it.price,
+            quantity: 1,
+          }));
+        }
+        return [it];
+      });
 
       // Validate we have something real to split
       if (totalAmount <= 0) {
@@ -466,6 +480,31 @@ export default function SplitPage() {
     }
   }
 
+  // ── Add discount ───────────────────────────────────────────
+  async function handleAddDiscount() {
+    if (!txId || !result) return;
+    const base = result.items
+      .filter((it) => !/propina|tip|iva|descuento|dscto|dcto|rebaja/i.test(it.name))
+      .reduce((s, it) => s + it.price * it.quantity, 0);
+    const rawAmt = discountMode === "pct"
+      ? Math.round(base * discountPct / 100)
+      : Math.abs(discountAmount);
+    if (rawAmt <= 0) return;
+    const negativePrice = -rawAmt;
+    setAddingDiscount(true);
+    try {
+      const discountItem = await addSplitItem(txId, { name: "Descuento", price: negativePrice, quantity: 1 });
+      // Assign discount to all people equally
+      await handleAssignAll(discountItem.id, people.map((p) => p.id));
+      setDiscountAmount(0);
+      await refreshResult(txId);
+    } catch (e: any) {
+      alert(e.message || "Error al agregar descuento");
+    } finally {
+      setAddingDiscount(false);
+    }
+  }
+
   // ── Update / delete / add item ────────────────────────────
   async function handleUpdateItem(itemId: number, patch: { name?: string; price?: number }) {
     await updateSplitItem(itemId, patch);
@@ -528,6 +567,7 @@ export default function SplitPage() {
     setManualMerchant("");
     setUploadErr("");
     setPropinaAmount(0);
+    setDiscountAmount(0);
     setIvaIncluded(false);
     setDupeDetected(false);
   }
@@ -691,6 +731,74 @@ export default function SplitPage() {
                   onClick={handleAddPropina}
                 >
                   {addingPropina ? "…" : `+ Agregar propina${clp > 0 ? ` (${formatMoney(clp, currency)})` : ""}`}
+                </button>
+              </div>
+            );
+          })()}
+
+          {/* ── Descuento ─────────────────────────────────────────── */}
+          {!result.items.some((it) => /descuento|dscto|dcto|rebaja/i.test(it.name)) && (() => {
+            const base = result.items
+              .filter((it) => !/propina|tip|iva|descuento|dscto|dcto|rebaja/i.test(it.name))
+              .reduce((s, it) => s + it.price * it.quantity, 0);
+            const clp = discountMode === "pct"
+              ? Math.round(base * discountPct / 100)
+              : Math.abs(discountAmount);
+            return (
+              <div className="card space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-slate-700">% Descuento</span>
+                  <div className="flex text-xs rounded-lg bg-slate-100 p-0.5">
+                    {(["pct", "clp"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        className={`px-3 py-1 rounded-md transition ${
+                          discountMode === m ? "bg-white shadow-soft font-medium" : "text-slate-500"
+                        }`}
+                        onClick={() => setDiscountMode(m)}
+                      >
+                        {m === "pct" ? "%" : currency}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {discountMode === "pct" ? (
+                  <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-1 flex-1">
+                      <NumericInput
+                        className="input w-20 font-mono text-sm text-center"
+                        value={discountPct}
+                        onChange={setDiscountPct}
+                        allowDecimals
+                        placeholder="10"
+                      />
+                      <span className="text-sm text-slate-500">%</span>
+                    </div>
+                    {base > 0 && (
+                      <span className="text-sm text-slate-500 text-emerald-600">
+                        = -{formatMoney(clp, currency)}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <NumericInput
+                      className="input flex-1 font-mono text-sm"
+                      value={discountAmount}
+                      onChange={setDiscountAmount}
+                      placeholder="0"
+                    />
+                    <span className="text-xs text-slate-400 shrink-0">{currency}</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  className="btn-ghost w-full text-sm border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                  disabled={clp <= 0 || addingDiscount}
+                  onClick={handleAddDiscount}
+                >
+                  {addingDiscount ? "…" : `− Agregar descuento${clp > 0 ? ` (-${formatMoney(clp, currency)})` : ""}`}
                 </button>
               </div>
             );

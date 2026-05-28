@@ -28,3 +28,4 @@ python-dotenv==1.0.1
 # vision_parse() for scanned/image-only PDFs.
 pdfplumber==0.11.4
 pdf2image==1.17.0
+slowapi==0.1.9

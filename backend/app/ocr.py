@@ -429,12 +429,24 @@ CRITICAL RULES:
 
    STEP 1 — READ EVERY PRODUCT LINE (do not skip any):
    Each line has: [barcode/code] [description] [price or NxPrice]
-   The rightmost number on the line is the LINE TOTAL (TOTAL NETO for that item).
+   The rightmost number on the line is the LINE TOTAL for that item.
 
-   a) Pattern "NxPRECIO" (e.g. "2x4.990" or "2 x 4.990"):
-      → quantity = N, unit neto price = PRECIO, line_total = N × PRECIO
-      → Store as: {"name": description, "price": PRECIO, "quantity": N}
-   b) All other lines: quantity = 1, price = the printed number (line total = price)
+   QUANTITY RULES — two sub-cases, DO NOT confuse them:
+
+   a) "NxUNIT_PRICE" embedded in line (number immediately after x, e.g. "2x4.990", "3 x 2.990"):
+      → quantity = N, unit neto price = the number right after x (UNIT_PRICE)
+      → LINE_TOTAL = N × UNIT_PRICE = rightmost number on the line (verify!)
+      → Store as: {"name": description, "price": UNIT_PRICE, "quantity": N}
+      → Example: "2x4.990 PECHU POLLO $ 9.980" → price=4990, quantity=2
+
+   a2) "Nx description LINE_TOTAL" (only quantity prefix, no unit embedded, e.g. "2x Hamburguesa $10.000"):
+      → quantity = N, LINE_TOTAL = rightmost number on line
+      → unit price = LINE_TOTAL / N  ← ALWAYS DIVIDE
+      → Store as: {"name": description, "price": LINE_TOTAL/N, "quantity": N}
+      → Example: "2x Hamburguesa $10.000" → price=5000, quantity=2
+      CRITICAL: Never store LINE_TOTAL as price when quantity > 1.
+
+   b) All other lines: quantity = 1, price = the printed number (= line total)
       → Store as: {"name": description, "price": <amount>, "quantity": 1}
 
    STEP 2 — VERIFY your item list:
@@ -477,6 +489,8 @@ CRITICAL RULES:
    ❌ Reading the barcode as a price — barcodes are 12-13 digits; prices are 3-5 digits
    ❌ Setting `amount` = Total Neto instead of the final charged total
    ❌ Misreading NxPrice: "2x4.990" means qty=2, unit=4990, total=9980
+   ❌ Using LINE_TOTAL as unit price when quantity>1 — always store unit price, not line total
+   ❌ "2x Hamburguesa $10.000": price MUST be 5000 (not 10000); unit=10000/2=5000
    ❌ Adding IVA to individual product prices — products are always NETO
    ❌ Skipping any product line — read ALL lines top to bottom
 
@@ -548,7 +562,17 @@ def _shrink_for_vision(image_bytes: bytes, max_side: int = 1600) -> bytes:
 
 # Lines that are never product lines (summary/header/footer)
 _SKIP_BOLETA_LINE = re.compile(
-    r"TOTAL\s+NETO|TOTAL\s+IVA|I\.?V\.?A|TARJETA\s+DE|EFECTIVO|"
+    # Totals and tax lines (handle noisy OCR: 0↔O, 3↔E)
+    r"T[O0]TAL\s+N[E3]T[O0]|T[O0]TAL\s+[I1]VA|I\.?V\.?A|"
+    # Any line starting with TOTAL or SUBTOTAL (footer summaries)
+    r"^\s*T[O0]TAL\b|^\s*SUBTOTAL\b|"
+    # Payment method lines
+    r"TARJETA\s+DE|EFECTIVO|\bDEBITO\b|\bCREDITO\b|"
+    # Branch/address lines like "SUC: AV. AMERICO VESPUCIO SUR 881"
+    r"\bSUC[\s:]|"
+    # Boleta/document header lines like "Boleta Electronica N° 003214567"
+    r"BOL[^\s]*\s+[EE]L[EE]CTR|^\s*BOL\.|"
+    # Column headers and receipt boilerplate
     r"CANT\b|PRECIO\s+UNIT|CODIGO|DESC[^\s]*\s+ARTICULO|"
     r"NUMERO\s+UNICO|TIMBRE|COMPROBANTE|BIENVENIDO|MI\s+CLUB|"
     r"AUTORIZACION|SII\s+RES|NRO\s+DE\s+OR|VERIFIQUE|PRECIOS\s+BAJOS|"
@@ -559,8 +583,10 @@ _SKIP_BOLETA_LINE = re.compile(
 # Chilean CLP number at end of line: "$ 1.750" or "1.750" or "1,750"
 _CLP_PRICE_RE = re.compile(r"\$?\s*([\d]{1,3}(?:[.,]\d{3})*)\s*$")
 
-# Multi-quantity pattern: "2x4.990" or "2 x 4.990" or "2X4990"
+# Multi-quantity pattern: "2x4.990" or "2 x 4.990" or "2X4990" (unit price embedded after x)
 _QTY_X_UNIT_RE = re.compile(r"^(\d+)\s*[xX]\s*([\d.,]+)")
+# Multi-quantity with description only: "2x Descripción" (no unit price after x, only text)
+_QTY_X_DESC_RE = re.compile(r"^(\d+)\s*[xX]\s+([^\d].*)")
 
 # Pure barcode line (12-14 digits, nothing else)
 _BARCODE_ONLY_RE = re.compile(r"^\d{12,14}$")
@@ -632,11 +658,11 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
     total_neto = 0.0
     iva_amount = 0.0
     for ln in lines:
-        if re.search(r"TOTAL\s+NETO", ln, re.IGNORECASE) and total_neto == 0:
+        if re.search(r"T[O0]TAL\s+N[E3]T[O0]", ln, re.IGNORECASE) and total_neto == 0:
             v = _price_at_end(ln)
             if v > 0:
                 total_neto = v
-        elif re.search(r"\bI\.?V\.?A\b", ln, re.IGNORECASE) and iva_amount == 0:
+        elif re.search(r"\b[I1]\.?V\.?A\b", ln, re.IGNORECASE) and iva_amount == 0:
             v = _price_at_end(ln)
             # Reject the '19' from "(19%)" — IVA amount must be > 100 CLP
             if v > 100:
@@ -672,7 +698,7 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
 
         if pending_barcode_line:
             # ── Format B: barcode was on previous line ────────────────────────
-            # Remaining part: "[NxUNIT] description" or just "description"
+            # Remaining part: "[NxUNIT] description" or "Nx description" or just "description"
             m_qty = _QTY_X_UNIT_RE.match(desc_part)
             if m_qty:
                 qty = int(m_qty.group(1))
@@ -684,9 +710,18 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
             else:
                 # Remove leading barcode-like prefix if any slipped in
                 desc_clean = re.sub(r"^\d{6,14}\s*", "", desc_part)
-                name = _clean_item_name(desc_clean)
-                if name and price >= 100:
-                    items.append(ParsedItem(name=name, price=price, quantity=1))
+                # Check for "Nx Description" where price is the line total
+                m_qty_desc = _QTY_X_DESC_RE.match(desc_clean)
+                if m_qty_desc and price >= 100:
+                    qty = int(m_qty_desc.group(1))
+                    name = _clean_item_name(m_qty_desc.group(2))
+                    unit_price = round(price / qty) if qty >= 2 else price
+                    if unit_price >= 100 and name:
+                        items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
+                else:
+                    name = _clean_item_name(desc_clean)
+                    if name and price >= 100:
+                        items.append(ParsedItem(name=name, price=price, quantity=1))
             pending_barcode_line = False
             continue
 
@@ -694,7 +729,7 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
         # Strip leading 12-14 digit barcode
         desc_no_barcode = re.sub(r"^\d{12,14}\s+", "", desc_part)
 
-        # Check for inline multi-quantity "2x4.990 description"
+        # Check for inline multi-quantity "2x4.990 description" (unit price embedded)
         m_qty = _QTY_X_UNIT_RE.match(desc_no_barcode)
         if m_qty:
             qty = int(m_qty.group(1))
@@ -704,6 +739,16 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
                 items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
             continue
 
+        # Check for "2x Description" where price is the line total (unit price = total / qty)
+        m_qty_desc = _QTY_X_DESC_RE.match(desc_no_barcode)
+        if m_qty_desc and price >= 100:
+            qty = int(m_qty_desc.group(1))
+            name = _clean_item_name(m_qty_desc.group(2))
+            unit_price = round(price / qty) if qty >= 2 else price
+            if unit_price >= 100 and name:
+                items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
+                continue
+
         name = _clean_item_name(desc_no_barcode)
         if name and len(name) >= 2 and price >= 100:
             items.append(ParsedItem(name=name, price=price, quantity=1))
@@ -711,10 +756,15 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
     # ── Pass 3: confidence score ─────────────────────────────────────────────
     confidence = 0.0
     if total_neto > 0 and items:
-        items_sum = sum(it.price * it.quantity for it in items)
-        ratio = items_sum / total_neto
-        # Allow up to 3% drift (OCR rounding in individual prices)
-        confidence = max(0.0, 1.0 - abs(1.0 - ratio))
+        items_sum_val = sum(it.price * it.quantity for it in items)
+        # Chilean boletas may list items at neto prices (sum → total_neto) or at
+        # IVA-inclusive prices (sum → total_neto + iva). Compare against whichever
+        # total is closest so confidence stays high in both receipt formats.
+        total_with_iva = total_neto + (iva_amount or round(total_neto * 0.19))
+        ratio_neto = items_sum_val / total_neto
+        ratio_iva = items_sum_val / total_with_iva if total_with_iva > 0 else float("inf")
+        best_ratio = ratio_neto if abs(1 - ratio_neto) < abs(1 - ratio_iva) else ratio_iva
+        confidence = max(0.0, 1.0 - abs(1.0 - best_ratio))
 
     return items, total_neto, iva_amount, confidence
 

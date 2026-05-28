@@ -47,11 +47,26 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 // -------- Auth --------
+export interface FixedItem {
+  name: string;
+  amount: number;
+  day: number;       // day-of-month (1-31)
+  is_income: boolean;
+}
+
 export interface User {
   id: number;
   email: string;
   monthly_budget: number;
-  settings: Record<string, unknown>;
+  settings: {
+    currency?: string;
+    locale?: string;
+    income_target?: number;
+    fixed_expenses?: FixedItem[];
+    fixed_incomes?: FixedItem[];
+    fixed_confirmations?: Record<string, Record<string, "confirmed" | "rejected">>;
+    [key: string]: unknown;
+  };
 }
 export interface TokenOut {
   access_token: string;
@@ -626,6 +641,7 @@ export async function reviewTransaction(
     merchant?: string;
     amount?: number;
     remember?: boolean;
+    account_id?: number;
     target_account_id?: number;
     source_account_id?: number;
   },

@@ -32,6 +32,7 @@ function ManualTxModal({
   const [amount, setAmount] = useState(0);
   const [merchant, setMerchant] = useState("");
   const [category, setCategory] = useState("Alimentación");
+  const [customCategory, setCustomCategory] = useState("");
   const [date, setDate] = useState(today);
   const [accountId, setAccountId] = useState<number | null>(
     accounts.length > 0 ? accounts[0].id : null,
@@ -40,16 +41,21 @@ function ManualTxModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const effectiveCategory = category === "__otra__" && customCategory.trim()
+    ? customCategory.trim()
+    : category === "__otra__" ? "Otros" : category;
+
   async function save() {
     if (!amount || amount <= 0) { setErr("Escribe un monto válido"); return; }
     if (!merchant.trim()) { setErr("Escribe una descripción"); return; }
+    if (!accountId) { setErr("Selecciona una cuenta para este movimiento"); return; }
     setBusy(true);
     setErr("");
     try {
       await createTransaction({
         amount,
         currency: accounts.find((a) => a.id === accountId)?.currency || "CLP",
-        category,
+        category: effectiveCategory,
         date,
         merchant: merchant.trim(),
         notes,
@@ -140,7 +146,7 @@ function ManualTxModal({
             <select
               className="input mt-1"
               value={category}
-              onChange={(e) => setCategory(e.target.value)}
+              onChange={(e) => { setCategory(e.target.value); if (e.target.value !== "__otra__") setCustomCategory(""); }}
             >
               {(isIncome
                 ? ["Ingresos", "Transferencia", "Otros"]
@@ -148,7 +154,17 @@ function ManualTxModal({
               ).map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
+              <option value="__otra__">✏️ Otra…</option>
             </select>
+            {category === "__otra__" && (
+              <input
+                autoFocus
+                className="input mt-1 text-sm"
+                placeholder="Nueva categoría"
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+              />
+            )}
           </label>
           <label className="block">
             <span className="text-xs uppercase text-slate-500">Fecha</span>
@@ -162,16 +178,16 @@ function ManualTxModal({
           </label>
         </div>
 
-        {/* Account */}
+        {/* Account — obligatorio */}
         {accounts.length > 0 && (
           <label className="block">
-            <span className="text-xs uppercase text-slate-500">Cuenta</span>
+            <span className="text-xs uppercase text-slate-500">Cuenta <span className="text-rose-500">*</span></span>
             <select
-              className="input mt-1"
+              className={`input mt-1 ${!accountId ? "border-rose-300" : ""}`}
               value={accountId ?? ""}
               onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : null)}
             >
-              <option value="">Sin cuenta</option>
+              {!accountId && <option value="" disabled>Selecciona una cuenta…</option>}
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}{a.bank ? ` — ${a.bank}` : ""}
@@ -221,6 +237,7 @@ function TransactionsInner() {
   const { t } = useT();
 
   const pending = params.get("transfers") === "pending";
+  const filterAccountId = params.get("account_id") ? Number(params.get("account_id")) : null;
   const [txs, setTxs] = useState<Transaction[] | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showManual, setShowManual] = useState(false);
@@ -229,7 +246,11 @@ function TransactionsInner() {
     setTxs(null);
     try {
       const [list, accs] = await Promise.all([
-        listTransactions(pending ? { pending_transfers: true } : undefined),
+        listTransactions(
+          pending ? { pending_transfers: true }
+          : filterAccountId ? { account_id: filterAccountId }
+          : undefined,
+        ),
         listAccounts(),
       ]);
       setTxs(list);
@@ -237,7 +258,7 @@ function TransactionsInner() {
     } catch {
       router.replace("/");
     }
-  }, [pending, router]);
+  }, [pending, filterAccountId, router]);
 
   useEffect(() => {
     if (!getToken()) {
@@ -274,9 +295,18 @@ function TransactionsInner() {
       ) : (
         <>
           <header className="flex flex-wrap items-center justify-between gap-2">
-            <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-              {t("tx.title")}
-            </h1>
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+                {filterAccountId
+                  ? (accounts.find((a) => a.id === filterAccountId)?.name ?? t("tx.title"))
+                  : t("tx.title")}
+              </h1>
+              {filterAccountId && (
+                <a href="/accounts" className="text-xs text-slate-400 hover:text-slate-600">
+                  ← Volver a cuentas
+                </a>
+              )}
+            </div>
             <div className="flex items-center gap-2 shrink-0">
               <a href="/upload" className="btn-ghost text-sm">
                 📷 <span className="hidden sm:inline">Subir foto</span>

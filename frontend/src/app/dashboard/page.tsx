@@ -7,8 +7,9 @@ import {
 import StatCard from "@/components/StatCard";
 import VoiceButton from "@/components/VoiceButton";
 import BudgetPanel from "@/components/BudgetPanel";
-import { DashboardData, getDashboard, getToken, me, updateMe } from "@/lib/api";
+import { DashboardData, User, getDashboard, getToken, me, updateMe } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
+import FixedItemsPanel from "@/components/FixedItemsPanel";
 
 const CAT_COLORS = [
   "#10b981", "#6366f1", "#f97316", "#ef4444",
@@ -31,14 +32,16 @@ export default function DashboardPage() {
   const router = useRouter();
   const { t, locale } = useT();
   const [data, setData] = useState<DashboardData | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [currency, setCurrency] = useState<string>("CLP");
 
   const loadData = useCallback(async () => {
     try {
-      const [d, user] = await Promise.all([getDashboard(), me()]);
+      const [d, u] = await Promise.all([getDashboard(), me()]);
       setData(d);
-      const curr = (user.settings as any)?.currency || (locale === "es" ? "CLP" : "USD");
+      setUser(u);
+      const curr = u.settings?.currency || (locale === "es" ? "CLP" : "USD");
       setCurrency(curr);
     } catch {
       router.replace("/");
@@ -204,10 +207,19 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Right column: Budget panel + quick actions */}
+        {/* Right column: Budget panel + fixed items + quick actions */}
         <div className="space-y-4">
           {/* Budget / income panel */}
           <BudgetPanel data={data} currency={currency} onSaved={loadData} />
+
+          {/* Fixed income & expenses */}
+          {user && (
+            <FixedItemsPanel
+              user={user}
+              currency={currency}
+              onUpdated={(u) => setUser(u)}
+            />
+          )}
 
           {/* Quick actions */}
           <div className="card">

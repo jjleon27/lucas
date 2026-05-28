@@ -1,10 +1,28 @@
 ## Inicio de sesión
 
-Al iniciar cualquier sesión, lee primero:
-1. `docs/MASTER_PLAN.md` — sección §20 (estabilidad) y §16 (roadmap corto plazo)
-2. `docs/ROADMAP.md` — tabla "Work Order Summary" al final
+Al iniciar cualquier sesión, lee en este orden:
+1. `docs/SESSION_STATE.md` — si existe, léelo PRIMERO (estado exacto de la sesión anterior)
+2. `docs/MASTER_PLAN.md` — sección §20 (estabilidad) y §16 (roadmap corto plazo)
+3. `docs/ROADMAP.md` — tabla "Work Order Summary" al final
 
 Esto da el estado actual del proyecto en ~2k tokens sin necesidad de resumen de conversación.
+
+## Gestión de contexto
+
+El hook `Stop` guarda `docs/SESSION_STATE.md` automáticamente tras cada respuesta.
+
+Cuando detectes presión de contexto (cualquiera de estas señales):
+- Ves mensajes comprimidos/sumarios en el historial (etiqueta "summary" o "compacted")
+- Has hecho >40 tool calls en la sesión
+- El sistema te advierte que el contexto está casi lleno
+
+ANTES de responder al usuario, actualiza `docs/SESSION_STATE.md` añadiendo esta sección:
+
+    ## ESTADO MANUAL (alta presión de contexto)
+    Tarea en curso: [descripción exacta de lo que se estaba haciendo]
+    Próximo paso inmediato: [acción específica y concreta para continuar]
+    Bugs pendientes: [lista]
+    Archivos clave para continuar: [rutas relevantes]
 
 ## graphify
 

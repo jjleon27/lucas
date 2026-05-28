@@ -7,7 +7,7 @@
  * When 2+ people share an item, an "Ajustar" row lets you pick
  * equal / % / exact-amount per person.
  */
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo } from "react";
 import { Plus, Trash2, ChevronDown, ChevronUp, Check, Pencil, X } from "lucide-react";
 import NumericInput from "@/components/NumericInput";
 import {
@@ -452,9 +452,29 @@ export default function BillSplitter({
   const [newName, setNewName] = useState("");
   const [addItemName, setAddItemName] = useState("");
   const [addItemPrice, setAddItemPrice] = useState(0);
+  const [viewMode, setViewMode] = useState<"boleta" | "agrupado">("boleta");
 
   const completion = result.completion_pct;
   const isComplete = completion >= 100 && result.unassigned_total === 0;
+
+  // Summary breakdown
+  const subtotal = result.items
+    .filter((it) => !/propina|tip|^iva|descuento|dscto|dcto|rebaja/i.test(it.name.trim()))
+    .reduce((s, it) => s + it.line_total, 0);
+  const descuento = result.items
+    .filter((it) => /descuento|dscto|dcto|rebaja/i.test(it.name))
+    .reduce((s, it) => s + it.line_total, 0);
+  const propina = result.items
+    .filter((it) => /propina|tip/i.test(it.name))
+    .reduce((s, it) => s + it.line_total, 0);
+  const iva = result.items
+    .filter((it) => /^iva/i.test(it.name.trim()))
+    .reduce((s, it) => s + it.line_total, 0);
+  // Ordered items: boleta = DB order, agrupado = sorted by name (same items together)
+  const displayItems = useMemo(() => {
+    if (viewMode === "boleta") return result.items;
+    return [...result.items].sort((a, b) => a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
+  }, [viewMode, result.items]);
 
   return (
     <div className="space-y-6">
@@ -527,25 +547,54 @@ export default function BillSplitter({
           <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide">
             {t("split.stepItems")}
           </h3>
-          <span className="text-xs text-slate-400">
-            {formatMoney(result.total_amount, currency)}
-          </span>
+          <div className="flex items-center gap-2">
+            {/* View mode toggle */}
+            {result.items.length > 1 && (
+              <div className="flex text-[11px] rounded-lg bg-slate-100 p-0.5">
+                {(["boleta", "agrupado"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={`px-2.5 py-1 rounded-md transition capitalize ${
+                      viewMode === mode ? "bg-white shadow-soft font-medium text-slate-800" : "text-slate-500"
+                    }`}
+                    onClick={() => setViewMode(mode)}
+                  >
+                    {mode === "boleta" ? "Boleta" : "Agrupado"}
+                  </button>
+                ))}
+              </div>
+            )}
+            <span className="text-xs text-slate-400">
+              {formatMoney(result.total_amount, currency)}
+            </span>
+          </div>
         </div>
 
         <ul className="space-y-2">
-          {result.items.map((item) => (
-            <ItemCard
-              key={item.id}
-              item={item}
-              people={people}
-              currency={currency}
-              onTogglePerson={onTogglePerson}
-              onSaveAdjust={onSaveAdjust}
-              onUpdateItem={onUpdateItem}
-              onDeleteItem={onDeleteItem}
-              onAssignAll={onAssignAll}
-            />
-          ))}
+          {displayItems.map((item, idx) => {
+            // In agrupado mode, add a visual separator between different item groups
+            const prevItem = idx > 0 ? displayItems[idx - 1] : null;
+            const isNewGroup =
+              viewMode === "agrupado" &&
+              prevItem &&
+              prevItem.name.toLowerCase() !== item.name.toLowerCase();
+            return (
+              <div key={item.id}>
+                {isNewGroup && <div className="h-px bg-slate-100 my-1" />}
+                <ItemCard
+                  item={item}
+                  people={people}
+                  currency={currency}
+                  onTogglePerson={onTogglePerson}
+                  onSaveAdjust={onSaveAdjust}
+                  onUpdateItem={onUpdateItem}
+                  onDeleteItem={onDeleteItem}
+                  onAssignAll={onAssignAll}
+                />
+              </div>
+            );
+          })}
           {result.items.length === 0 && (
             <li className="text-sm text-slate-400 text-center py-6">
               {t("split.noItems")}
@@ -612,6 +661,41 @@ export default function BillSplitter({
           </div>
         )}
       </div>
+
+      {/* ── Bill summary breakdown ── */}
+      {result.items.length > 0 && (
+        <div className="card space-y-2">
+          <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-1">
+            Resumen
+          </h3>
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-600">Subtotal</span>
+            <span className="font-mono">{formatMoney(subtotal, currency)}</span>
+          </div>
+          {descuento !== 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-emerald-600">Descuento</span>
+              <span className="font-mono text-emerald-600">{formatMoney(descuento, currency)}</span>
+            </div>
+          )}
+          {propina !== 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Propina</span>
+              <span className="font-mono">{formatMoney(propina, currency)}</span>
+            </div>
+          )}
+          {iva !== 0 && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">IVA (19%)</span>
+              <span className="font-mono">{formatMoney(iva, currency)}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-sm font-semibold pt-2 border-t border-slate-100">
+            <span>Total</span>
+            <span className="font-mono">{formatMoney(result.total_amount, currency)}</span>
+          </div>
+        </div>
+      )}
 
       {/* ── Per-person summary ── */}
       {result.people.length > 0 && (

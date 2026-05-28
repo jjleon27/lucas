@@ -143,17 +143,20 @@ Priority  | ID    | Item                                          | Effort  | St
 DONE      | T0-1  | Fix resp.content → resp.text (voice.py)       | 5 min   | ✅ DONE
 DONE      | T0-2  | Fix resp.content → resp.text (cartola.py)     | 5 min   | ✅ DONE
 DONE      | T0-3  | Add pdf2image to requirements.txt             | 1 min   | ✅ DONE
-CRITICAL  | T0-4  | Fix voice categories → Spanish                | 5 min   | OPEN
+DONE      | T0-4  | Fix voice categories → Spanish                | 5 min   | ✅ DONE
 LOW       | T0-5  | Fix Docker NEXT_PUBLIC_API_URL                | 1 min   | (n/a for prod)
-HIGH      | T1-1  | reconcile on cartola commit                   | 30 min  | OPEN
-HIGH      | T1-2  | dedupe + reconcile on split/start-manual      | 30 min  | OPEN
-HIGH      | T1-3  | Harden security defaults (JWT, passwordless)  | 15 min  | OPEN
-MEDIUM    | T2-2  | Verify/fix AI chat endpoint                   | 1 hr    | OPEN
-MEDIUM    | T2-3  | Verify AI usage logging coverage              | 1 hr    | OPEN
+DONE      | T1-1  | reconcile on cartola commit                   | 30 min  | ✅ DONE
+DONE      | T1-2  | dedupe + reconcile on split/start-manual      | 30 min  | ✅ DONE
+DONE      | T1-3  | Harden security defaults (JWT, passwordless)  | 15 min  | ✅ DONE
+DONE      | B-1   | AccountCard reconcile refresh (onRefresh prop)| 10 min  | ✅ DONE
+DONE      | B-2   | Delete CC payment cascades to linked tx       | 10 min  | ✅ DONE
+DONE      | B-3   | OCR parser: 7 test failures (skip rules+conf) | 30 min  | ✅ DONE
+DONE      | T2-2  | Verify/fix AI chat endpoint                   | 1 hr    | ✅ DONE (router faltaba — creado chat.py)
+DONE      | T2-3  | Verify AI usage logging coverage              | 1 hr    | ✅ DONE (todos los callers pasan purpose+user_id+db)
 MEDIUM    | T2-4  | Production Docker frontend build              | 2 hr    | (n/a for prod)
-MEDIUM    | T2-5  | FX / multi-currency verification              | 1 hr    | OPEN
+DONE      | T2-5  | FX / multi-currency verification              | 1 hr    | ✅ DONE (por cuenta, agrupado por moneda en frontend)
 LOW       | T3-1  | Automated test suite                          | 2-3 days| OPEN
-LOW       | T3-2  | Rate limiting on auth endpoints               | 2 hr    | OPEN
+DONE      | T3-2  | Rate limiting on auth endpoints               | 2 hr    | ✅ DONE (slowapi, 10/min login, 5/min signup)
 LOW       | T3-3  | DB connection pool review                     | 1 hr    | OPEN
 LOW       | T3-4  | Alembic migration hygiene                     | 1 hr    | OPEN
 LOW       | T3-5  | Error handling audit (bare except blocks)     | 2 hr    | OPEN

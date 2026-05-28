@@ -21,12 +21,18 @@ from .routers import ai as ai_router
 from .routers import cartola as cartola_router
 from .routers import voice as voice_router
 from .routers import email as email_router
+from .routers import chat as chat_router
+from .rate_limit import limiter
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 
 app = FastAPI(
     title="LUCAS API",
     description="Screenshot-first AI personal finance assistant",
     version="0.1.0",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -82,3 +88,4 @@ app.include_router(ai_router.router)
 app.include_router(cartola_router.router)
 app.include_router(voice_router.router)
 app.include_router(email_router.router)
+app.include_router(chat_router.router)

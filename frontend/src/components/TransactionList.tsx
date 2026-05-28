@@ -267,11 +267,24 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
                     <span className="text-xs text-slate-500 uppercase">{t("tx.category")}</span>
                     <select
                       className="input mt-0.5"
-                      value={editState.category}
-                      onChange={(e) => setEditState((s) => s && { ...s, category: e.target.value })}
+                      value={CATEGORIES.includes(editState.category) ? editState.category : "__otra__"}
+                      onChange={(e) => {
+                        if (e.target.value !== "__otra__") {
+                          setEditState((s) => s && { ...s, category: e.target.value });
+                        }
+                      }}
                     >
                       {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+                      <option value="__otra__">✏️ Otra categoría...</option>
                     </select>
+                    {!CATEGORIES.includes(editState.category) && (
+                      <input
+                        className="input mt-1"
+                        placeholder="Nombre de categoría"
+                        value={editState.category}
+                        onChange={(e) => setEditState((s) => s && { ...s, category: e.target.value })}
+                      />
+                    )}
                   </label>
                   <label className="flex items-center gap-2 mt-5">
                     <input

@@ -50,16 +50,24 @@ function ReviewCard({
   debitAccounts: Account[];
   onAction: (
     action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
-    overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number; source_account_id?: number }
+    overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; account_id?: number; target_account_id?: number; source_account_id?: number }
   ) => void;
 }) {
   const [category, setCategory] = useState(tx.category || "Otros");
+  const [customCategory, setCustomCategory] = useState(
+    CATEGORIES.includes(tx.category || "Otros") ? "" : (tx.category || ""),
+  );
+  const [showCustomCat, setShowCustomCat] = useState(
+    !CATEGORIES.includes(tx.category || "Otros"),
+  );
   const [merchant, setMerchant] = useState(tx.merchant || "");
   const [amount, setAmount] = useState(tx.amount);
   const [remember, setRemember] = useState(true);
   const [editingMerchant, setEditingMerchant] = useState(false);
   const [editingAmount, setEditingAmount] = useState(false);
   const [acting, setActing] = useState(false);
+
+  const effectiveCategory = showCustomCat && customCategory.trim() ? customCategory.trim() : category;
   // Pre-select CC account by matching tx.merchant ("Pago tarjeta CMR" → find account with "CMR")
   const inferredCCId = (() => {
     const m = tx.merchant?.toLowerCase() ?? "";
@@ -74,6 +82,11 @@ function ReviewCard({
 
   const [selectedCCId, setSelectedCCId] = useState<number | null>(inferredCCId);
   const [selectedDebitId, setSelectedDebitId] = useState<number | null>(inferredDebitId);
+  const allAccounts = [...debitAccounts, ...creditAccounts];
+  // For income with no assigned account, let user pick destination account
+  const [selectedIncomeAccountId, setSelectedIncomeAccountId] = useState<number | null>(
+    tx.account_id ?? allAccounts[0]?.id ?? null
+  );
 
   // A pending_review with is_transfer=true is a CC payment waiting for account assignment
   const isCCPayment = tx.is_transfer && !tx.is_income;
@@ -89,7 +102,10 @@ function ReviewCard({
         source_account_id: selectedDebitId ?? undefined,
       });
     } else {
-      onAction(action, { category, merchant, amount, remember });
+      onAction(action, {
+        category: effectiveCategory, merchant, amount, remember,
+        account_id: tx.is_income ? (selectedIncomeAccountId ?? undefined) : undefined,
+      });
     }
   }
 
@@ -171,9 +187,9 @@ function ReviewCard({
             <button
               key={cat}
               type="button"
-              onClick={() => setCategory(cat)}
+              onClick={() => { setCategory(cat); setShowCustomCat(false); setCustomCategory(""); }}
               className={`shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all ${
-                category === cat
+                !showCustomCat && category === cat
                   ? "bg-indigo-600 border-indigo-600 text-white shadow-sm"
                   : "bg-white border-slate-200 text-slate-600 hover:border-indigo-300"
               }`}
@@ -182,7 +198,27 @@ function ReviewCard({
               <span>{cat}</span>
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setShowCustomCat(true)}
+            className={`shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-full text-xs font-medium border transition-all ${
+              showCustomCat
+                ? "bg-indigo-600 border-indigo-600 text-white shadow-sm"
+                : "bg-white border-slate-200 text-slate-600 hover:border-indigo-300"
+            }`}
+          >
+            ✏️ Otra
+          </button>
         </div>
+        {showCustomCat && (
+          <input
+            autoFocus
+            className="input mt-2 text-sm"
+            placeholder="Nombre de categoría…"
+            value={customCategory}
+            onChange={(e) => setCustomCategory(e.target.value)}
+          />
+        )}
       </div>
 
       {/* Remember toggle */}
@@ -204,6 +240,24 @@ function ReviewCard({
         </button>
         Clasificar así automáticamente en el futuro
       </label>
+
+      {/* Income account selector */}
+      {tx.is_income && allAccounts.length > 0 && (
+        <div className="bg-green-50 border border-green-200 rounded-2xl p-3 space-y-2">
+          <p className="text-xs font-semibold text-green-700 uppercase tracking-wide">
+            💰 ¿A qué cuenta llegó este ingreso?
+          </p>
+          <select
+            className="input text-sm py-1.5"
+            value={selectedIncomeAccountId ?? ""}
+            onChange={(e) => setSelectedIncomeAccountId(e.target.value ? Number(e.target.value) : null)}
+          >
+            {allAccounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* CC payment: source + target account selectors */}
       {isCCPayment && (
@@ -403,7 +457,7 @@ export default function ReviewPage() {
     async (
       tx: Transaction,
       action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
-      overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; target_account_id?: number; source_account_id?: number },
+      overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; account_id?: number; target_account_id?: number; source_account_id?: number },
     ) => {
       if (action === "skip") {
         setSkipped((s) => new Set([...s, tx.id]));
@@ -416,6 +470,7 @@ export default function ReviewPage() {
           merchant: overrides?.merchant,
           amount: overrides?.amount,
           remember: overrides?.remember,
+          account_id: overrides?.account_id,
           target_account_id: overrides?.target_account_id,
           source_account_id: overrides?.source_account_id,
         });

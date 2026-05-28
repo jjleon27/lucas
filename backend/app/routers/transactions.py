@@ -154,5 +154,16 @@ def delete_transaction(
     ).first()
     if not tx:
         raise HTTPException(404, "Transaction not found")
+    if tx.linked_transaction_id:
+        linked = db.query(models.Transaction).filter(
+            models.Transaction.id == tx.linked_transaction_id,
+            models.Transaction.user_id == current.id,
+        ).first()
+        if linked:
+            linked.linked_transaction_id = None
+            db.flush()
+            db.delete(linked)
+    tx.linked_transaction_id = None
+    db.flush()
     db.delete(tx)
     db.commit()

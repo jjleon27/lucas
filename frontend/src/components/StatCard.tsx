@@ -26,7 +26,7 @@ export default function StatCard({ label, value, hint, tone = "default" }: Props
           </span>
         )}
       </div>
-      <div className="mt-2 text-3xl font-semibold tracking-tight">{value}</div>
+      <div className="mt-2 text-xl font-semibold tracking-tight truncate min-w-0">{value}</div>
       {hint && <div className="mt-1 text-xs text-slate-500">{hint}</div>}
     </div>
   );

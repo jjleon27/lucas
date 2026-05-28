@@ -1,7 +1,7 @@
 """Signup / login endpoints. Returns a JWT + the user profile."""
 import secrets
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas, auth
 from ..config import settings
 from ..database import get_db
+from ..rate_limit import limiter
 
 
 def _generate_email_token(db: Session) -> str:
@@ -17,6 +18,30 @@ def _generate_email_token(db: Session) -> str:
         token = secrets.token_urlsafe(9)  # 12 base64 chars
         if not db.query(models.User).filter(models.User.email_token == token).first():
             return token
+
+
+def _ensure_efectivo_account(db: Session, user: models.User) -> None:
+    """Create an 'Efectivo' cash account for the user if one doesn't exist yet."""
+    exists = db.query(models.Account).filter(
+        models.Account.user_id == user.id,
+        models.Account.type == "cash",
+    ).first()
+    if not exists:
+        locale = (user.settings or {}).get("locale", "es") if isinstance(user.settings, dict) else "es"
+        currency = "CLP" if locale == "es" else "BRL" if locale == "pt" else "USD"
+        cash = models.Account(
+            user_id=user.id,
+            name="Efectivo",
+            bank="",
+            type="cash",
+            currency=currency,
+            color="#10b981",
+            icon="cash",
+            card_image_url="",
+            anchor_balance=0.0,
+        )
+        db.add(cash)
+        db.commit()
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -55,6 +80,7 @@ def _get_or_create_user(
     db.add(user)
     db.commit()
     db.refresh(user)
+    _ensure_efectivo_account(db, user)
     return user
 
 
@@ -64,7 +90,8 @@ def _token_response(user: models.User) -> schemas.TokenOut:
 
 
 @router.post("/signup", response_model=schemas.TokenOut)
-def signup(payload: schemas.UserCreate, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def signup(request: Request, payload: schemas.UserCreate, db: Session = Depends(get_db)):
     existing = db.query(models.User).filter(models.User.email == payload.email).first()
     if existing:
         # Account exists with no password (created via quick/passwordless login) — set the password now
@@ -84,15 +111,18 @@ def signup(payload: schemas.UserCreate, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+    _ensure_efectivo_account(db, user)
     return _token_response(user)
 
 
 @router.post("/login", response_model=schemas.TokenOut)
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     """OAuth2PasswordRequestForm reads `username` + `password`; we treat username=email."""
     user = db.query(models.User).filter(models.User.email == form.username).first()
     if not user or not auth.verify_password(form.password, user.hashed_password):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+    _ensure_efectivo_account(db, user)
     token = auth.create_access_token(user.id)
     return schemas.TokenOut(access_token=token, user=schemas.UserOut.model_validate(user))
 
@@ -107,7 +137,8 @@ class QuickLoginIn(BaseModel):
 
 
 @router.post("/quick", response_model=schemas.TokenOut)
-def quick_login(payload: QuickLoginIn, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def quick_login(request: Request, payload: QuickLoginIn, db: Session = Depends(get_db)):
     """
     Passwordless sign-in by email. Creates an account if one doesn't exist.
     Intended for local dev and demos. For production, replace with a magic-link
@@ -125,7 +156,8 @@ class GoogleLoginIn(BaseModel):
 
 
 @router.post("/google", response_model=schemas.TokenOut)
-def google_login(payload: GoogleLoginIn, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def google_login(request: Request, payload: GoogleLoginIn, db: Session = Depends(get_db)):
     """
     Verify a Google ID token and log the user in (creating an account if needed).
     The frontend obtains `credential` via Google Identity Services (one-tap / button).

@@ -194,7 +194,15 @@ export default function AccountsPage() {
         <div className="card text-center text-slate-500">{t("accounts.empty")}</div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {accounts.map((a) => <AccountCard key={a.id} account={a} onEdit={openEdit} onDelete={remove} />)}
+          {accounts.map((a) => (
+            <AccountCard
+              key={a.id}
+              account={a}
+              onEdit={openEdit}
+              onDelete={remove}
+              onRefresh={() => listAccounts().then(setAccounts)}
+            />
+          ))}
         </div>
       )}
 
@@ -213,13 +221,15 @@ export default function AccountsPage() {
 }
 
 function AccountCard({
-  account, onEdit, onDelete,
+  account, onEdit, onDelete, onRefresh,
 }: {
   account: Account;
   onEdit: (a: Account) => void;
   onDelete: (id: number) => void;
+  onRefresh: () => void;
 }) {
   const { t } = useT();
+  const router = useRouter();
   const Icon = TYPE_ICON[account.type] ?? CreditCard;
   const fmt = (v: number) => formatMoney(v, account.currency);
 
@@ -247,7 +257,7 @@ function AccountCard({
               const { reconcileAccount } = await import("@/lib/api");
               const r = await reconcileAccount(account.id, n);
               alert(`Saldo ajustado. Diferencia: ${r.drift.toLocaleString("es-CL")}`);
-              listAccounts().then(setAccounts);
+              onRefresh();
             } catch (e: any) {
               alert(e?.message || "No se pudo ajustar");
             }
@@ -273,7 +283,11 @@ function AccountCard({
         </div>
       </div>
 
-      <div className="mt-6 space-y-1">
+      <button
+        className="mt-6 space-y-1 w-full text-left cursor-pointer"
+        onClick={() => router.push(`/transactions?account_id=${account.id}`)}
+        title="Ver movimientos"
+      >
         {account.type === "credit" ? (
           <>
             <div className="text-xs uppercase opacity-80">{t("accounts.used")}</div>
@@ -298,7 +312,8 @@ function AccountCard({
             <div className="text-3xl font-mono font-semibold">{fmt(account.current_balance)}</div>
           </>
         )}
-      </div>
+        <div className="text-xs opacity-60 mt-2">Toca para ver movimientos →</div>
+      </button>
     </div>
   );
 }

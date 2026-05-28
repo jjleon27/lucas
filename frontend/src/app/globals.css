@@ -12,6 +12,7 @@ html, body {
   background: var(--bg);
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
 
 @layer components {

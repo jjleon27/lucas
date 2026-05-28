@@ -355,6 +355,8 @@ def review_transaction(
             tx.merchant = payload.merchant
         if payload.amount is not None:
             tx.amount = payload.amount
+        if payload.account_id is not None:
+            tx.account_id = payload.account_id
         tx.status = "confirmed"
         db.commit()
         db.refresh(tx)
