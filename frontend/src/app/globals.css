@@ -8,20 +8,11 @@
   --muted: #64748b;
 }
 
-html {
-  overflow-x: clip; /* clip stays on html (doesn't propagate to viewport) */
-  max-width: 100vw; /* html never wider than viewport → mobile browser won't zoom-out to fit */
-}
-
 body {
   background: var(--bg);
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
-  position: relative;
-  overflow-x: clip;
-  overscroll-behavior-x: none;
-  max-width: 100vw; /* 100vw = viewport width, not parent % */
-  width: 100%;
+  overflow-x: hidden;
 }
 
 @layer components {

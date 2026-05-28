@@ -76,7 +76,7 @@ export default function DashboardPage() {
   return (
     <div className="max-w-6xl mx-auto space-y-6 pb-24 md:pb-0">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">{t("dashboard.title")}</h1>
           <p className="text-slate-500 capitalize">{monthLabel}</p>
