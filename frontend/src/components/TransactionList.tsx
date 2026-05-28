@@ -143,17 +143,20 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
               isDupe ? "border border-amber-300" : ""
             }`}
           >
-            {/* Main row */}
-            <div className="flex items-center gap-2 px-3 py-3">
-              {/* Date — hidden on mobile, shown on sm+ */}
-              <span className="hidden sm:block text-xs text-slate-400 w-20 shrink-0 font-mono">{tx.date}</span>
+            {/* Main row — 2-line layout: no overflow possible */}
+            <div className="px-3 py-3">
+              {/* Line 1: merchant name (left, truncates) + amount (right, always visible) */}
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="font-medium truncate min-w-0">{tx.merchant || "—"}</p>
+                <span className={`font-mono text-sm shrink-0 ${tx.is_income ? "text-emerald-600" : ""}`}>
+                  {tx.is_income ? "+" : "−"}{formatMoney(Math.abs(tx.amount), tx.currency)}
+                </span>
+              </div>
 
-              {/* Merchant + category */}
-              <div className="flex-1 min-w-0">
-                <p className="font-medium truncate">{tx.merchant || "—"}</p>
-                <div className="flex items-center gap-1 flex-wrap">
-                  {/* Date inline on mobile */}
-                  <span className="sm:hidden text-xs text-slate-400 font-mono shrink-0">{tx.date}</span>
+              {/* Line 2: meta (date, category, badges) + actions */}
+              <div className="flex items-center justify-between gap-2 mt-0.5">
+                <div className="flex items-center gap-1 flex-wrap min-w-0">
+                  <span className="text-xs text-slate-400 font-mono shrink-0">{tx.date}</span>
                   <span className="inline-block px-1.5 py-0.5 rounded-full bg-slate-100 text-xs text-slate-500 max-w-[8rem] truncate">
                     {tx.category}
                   </span>
@@ -166,47 +169,38 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
                     <span className="text-xs text-slate-400 truncate">{accountName}</span>
                   )}
                   {isDupe && (
-                    <span className="inline-flex items-center gap-0.5 text-amber-600 text-xs">
+                    <span className="inline-flex items-center gap-0.5 text-amber-600 text-xs shrink-0">
                       <AlertTriangle size={11} />
                       {t("tx.duplicateWarning")}
                     </span>
                   )}
                 </div>
-              </div>
 
-              {/* Amount */}
-              <span
-                className={`font-mono text-xs sm:text-sm shrink-0 ${
-                  tx.is_income ? "text-emerald-600" : ""
-                }`}
-              >
-                {tx.is_income ? "+" : "−"}{formatMoney(Math.abs(tx.amount), tx.currency)}
-              </span>
-
-              {/* Actions */}
-              <div className="flex gap-1 shrink-0">
-                <button
-                  onClick={() => (isEditing ? cancelEdit() : startEdit(tx))}
-                  className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
-                  title={isEditing ? t("tx.cancel") : t("tx.edit")}
-                >
-                  {isEditing ? <X size={14} /> : <Pencil size={14} />}
-                </button>
-                {!isEditing && (
+                {/* Actions */}
+                <div className="flex gap-1 shrink-0">
                   <button
-                    onClick={() =>
-                      isDeleting ? setConfirmDelete(null) : setConfirmDelete(tx.id)
-                    }
-                    className={`p-1.5 rounded-lg transition-colors ${
-                      isDeleting
-                        ? "bg-rose-100 text-rose-600"
-                        : "hover:bg-slate-100 text-slate-400 hover:text-rose-500"
-                    }`}
-                    title={t("tx.delete")}
+                    onClick={() => (isEditing ? cancelEdit() : startEdit(tx))}
+                    className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
+                    title={isEditing ? t("tx.cancel") : t("tx.edit")}
                   >
-                    <Trash2 size={14} />
+                    {isEditing ? <X size={14} /> : <Pencil size={14} />}
                   </button>
-                )}
+                  {!isEditing && (
+                    <button
+                      onClick={() =>
+                        isDeleting ? setConfirmDelete(null) : setConfirmDelete(tx.id)
+                      }
+                      className={`p-1.5 rounded-lg transition-colors ${
+                        isDeleting
+                          ? "bg-rose-100 text-rose-600"
+                          : "hover:bg-slate-100 text-slate-400 hover:text-rose-500"
+                      }`}
+                      title={t("tx.delete")}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
 
