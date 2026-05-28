@@ -24,7 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <I18nProvider>
           <div className="flex min-h-screen">
             <Sidebar />
-            <main className="flex-1 p-4 md:p-8 md:ml-64">{children}</main>
+            <main className="flex-1 min-w-0 overflow-x-hidden p-4 md:p-8 md:ml-64">{children}</main>
           </div>
           {/* Lucas floating action button — shown on every page for logged-in users */}
           <LucasFAB />

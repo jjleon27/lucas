@@ -17,17 +17,17 @@ const toneMap = {
 export default function StatCard({ label, value, hint, tone = "default" }: Props) {
   const { t } = useT();
   return (
-    <div className="card">
-      <div className="flex items-center justify-between">
-        <span className="text-xs uppercase tracking-wide text-slate-500">{label}</span>
+    <div className="card overflow-hidden">
+      <div className="flex items-center justify-between gap-1 min-w-0">
+        <span className="text-xs uppercase tracking-wide text-slate-500 truncate">{label}</span>
         {tone !== "default" && (
-          <span className={`text-xs px-2 py-0.5 rounded-full ${toneMap[tone]}`}>
+          <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${toneMap[tone]}`}>
             {t(`status.${tone}`)}
           </span>
         )}
       </div>
-      <div className="mt-2 text-xl font-semibold tracking-tight truncate min-w-0">{value}</div>
-      {hint && <div className="mt-1 text-xs text-slate-500">{hint}</div>}
+      <div className="mt-2 text-base sm:text-lg font-semibold tracking-tight truncate">{value}</div>
+      {hint && <div className="mt-1 text-xs text-slate-500 truncate">{hint}</div>}
     </div>
   );
 }
