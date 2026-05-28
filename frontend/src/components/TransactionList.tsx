@@ -143,40 +143,41 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
               isDupe ? "border border-amber-300" : ""
             }`}
           >
-            {/* Main row — 2-line layout: no overflow possible */}
+            {/* Santander-style: description wraps left, amount right */}
             <div className="px-3 py-3">
-              {/* Line 1: merchant name (left, truncates) + amount (right, always visible) */}
-              <div className="flex items-baseline justify-between gap-3">
-                <p className="font-medium truncate min-w-0">{tx.merchant || "—"}</p>
-                <span className={`font-mono text-sm shrink-0 ${tx.is_income ? "text-emerald-600" : ""}`}>
+              {/* Row 1: merchant (wraps up to 2 lines) + amount pinned right */}
+              <div className="flex items-start justify-between gap-3">
+                <p className="font-medium leading-snug line-clamp-2 break-words min-w-0">
+                  {tx.merchant || "—"}
+                </p>
+                <span className={`font-mono text-sm shrink-0 pt-px ${tx.is_income ? "text-emerald-600" : ""}`}>
                   {tx.is_income ? "+" : "−"}{formatMoney(Math.abs(tx.amount), tx.currency)}
                 </span>
               </div>
 
-              {/* Line 2: meta (date, category, badges) + actions */}
-              <div className="flex items-center justify-between gap-2 mt-0.5">
-                <div className="flex items-center gap-1 flex-wrap min-w-0">
-                  <span className="text-xs text-slate-400 font-mono shrink-0">{tx.date}</span>
-                  <span className="inline-block px-1.5 py-0.5 rounded-full bg-slate-100 text-xs text-slate-500 max-w-[8rem] truncate">
+              {/* Row 2: date · category · badges (left) + edit/delete (right) */}
+              <div className="flex items-center justify-between gap-2 mt-1">
+                <div className="flex items-center gap-1 flex-wrap min-w-0 text-xs text-slate-400">
+                  <span className="font-mono shrink-0">{tx.date}</span>
+                  <span className="px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 max-w-[9rem] truncate">
                     {tx.category}
                   </span>
                   {tx.is_transfer && (
-                    <span className="inline-block px-1.5 py-0.5 rounded-full bg-sky-100 text-xs text-sky-600 max-w-[8rem] truncate">
+                    <span className="px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-600 max-w-[7rem] truncate">
                       ↔ {tx.category === "Pago Tarjeta" ? "Sin presup." : "Transfer"}
                     </span>
                   )}
                   {accountName && (
-                    <span className="text-xs text-slate-400 truncate">{accountName}</span>
+                    <span className="truncate max-w-[8rem]">{accountName}</span>
                   )}
                   {isDupe && (
-                    <span className="inline-flex items-center gap-0.5 text-amber-600 text-xs shrink-0">
+                    <span className="inline-flex items-center gap-0.5 text-amber-600 shrink-0">
                       <AlertTriangle size={11} />
                       {t("tx.duplicateWarning")}
                     </span>
                   )}
                 </div>
 
-                {/* Actions */}
                 <div className="flex gap-1 shrink-0">
                   <button
                     onClick={() => (isEditing ? cancelEdit() : startEdit(tx))}
