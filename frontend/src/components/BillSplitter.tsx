@@ -429,6 +429,7 @@ interface Props {
   onSaveAdjust: (itemId: number, assignees: AssigneeIn[]) => void;
   onAddPerson: (name: string, color: string) => void;
   onRemovePerson: (id: number) => void;
+  onClearPeople: () => void;
   onUpdateItem: (itemId: number, patch: { name?: string; price?: number }) => void;
   onDeleteItem: (itemId: number) => void;
   onAddItem: (name: string, price: number) => void;
@@ -443,6 +444,7 @@ export default function BillSplitter({
   onSaveAdjust,
   onAddPerson,
   onRemovePerson,
+  onClearPeople,
   onUpdateItem,
   onDeleteItem,
   onAddItem,
@@ -480,9 +482,22 @@ export default function BillSplitter({
     <div className="space-y-6">
       {/* ── People bar ── */}
       <div className="card">
-        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
-          {t("split.stepPeople")}
-        </h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide">
+            {t("split.stepPeople")}
+          </h3>
+          {people.filter((p) => !p.is_me).length > 0 && (
+            <button
+              type="button"
+              onClick={onClearPeople}
+              className="text-xs text-slate-400 hover:text-rose-500 transition-colors flex items-center gap-1"
+              title="Quitar a todos y empezar de cero"
+            >
+              <Trash2 className="w-3 h-3" />
+              Limpiar lista
+            </button>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2 mb-3">
           {people.map((p) => (
             <span

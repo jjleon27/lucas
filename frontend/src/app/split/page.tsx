@@ -459,6 +459,11 @@ export default function SplitPage() {
     await deletePerson(id);
     setPeople((prev) => prev.filter((x) => x.id !== id));
   }
+  async function handleClearPeople() {
+    const toRemove = people.filter((p) => !p.is_me);
+    await Promise.all(toRemove.map((p) => deletePerson(p.id)));
+    setPeople((prev) => prev.filter((p) => p.is_me));
+  }
 
   // ── Add propina ────────────────────────────────────────────
   async function handleAddPropina() {
@@ -662,6 +667,7 @@ export default function SplitPage() {
             onSaveAdjust={handleSaveAdjust}
             onAddPerson={handleAddPerson}
             onRemovePerson={handleRemovePerson}
+            onClearPeople={handleClearPeople}
             onUpdateItem={handleUpdateItem}
             onDeleteItem={handleDeleteItem}
             onAddItem={handleAddItem}
