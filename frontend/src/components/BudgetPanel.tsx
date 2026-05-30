@@ -81,7 +81,6 @@ export default function BudgetPanel({ data, currency, onSaved }: Props) {
   async function save() {
     setSaving(true);
     try {
-      // If incomeTarget is 0 but we have fixed incomes, auto-set target to their sum
       const targetToSave = incomeTarget > 0 ? incomeTarget : fixedIncomeTotal;
       await updateMe({
         settings: {
@@ -93,6 +92,8 @@ export default function BudgetPanel({ data, currency, onSaved }: Props) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
       onSaved();
+    } catch (e: any) {
+      alert(e?.message || "No se pudo guardar el presupuesto");
     } finally {
       setSaving(false);
     }

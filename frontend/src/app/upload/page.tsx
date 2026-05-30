@@ -657,7 +657,7 @@ function EditRow({
               className="input mt-1"
               value={CATEGORIES.includes(row.category) ? row.category : "__otra__"}
               onChange={(e) => {
-                if (e.target.value !== "__otra__") onChange({ category: e.target.value });
+                onChange({ category: e.target.value === "__otra__" ? "" : e.target.value });
               }}
             >
               {CATEGORIES.map((c) => <option key={c}>{c}</option>)}

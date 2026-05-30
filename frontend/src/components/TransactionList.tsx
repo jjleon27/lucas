@@ -274,9 +274,10 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
                       className="input mt-0.5"
                       value={CATEGORIES.includes(editState.category) ? editState.category : "__otra__"}
                       onChange={(e) => {
-                        if (e.target.value !== "__otra__") {
-                          setEditState((s) => s && { ...s, category: e.target.value });
-                        }
+                        setEditState((s) => s && {
+                          ...s,
+                          category: e.target.value === "__otra__" ? "" : e.target.value,
+                        });
                       }}
                     >
                       {CATEGORIES.map((c) => <option key={c}>{c}</option>)}

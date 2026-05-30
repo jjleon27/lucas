@@ -125,6 +125,8 @@ export default function FixedItemsPanel({ user, currency, onUpdated }: Props) {
         settings: { fixed_confirmations: { ...existing, [mk]: monthData } } as any,
       });
       onUpdated(updated);
+    } catch (e: any) {
+      alert(e?.message || "No se pudo guardar");
     } finally {
       setSaving(false);
     }
@@ -139,6 +141,8 @@ export default function FixedItemsPanel({ user, currency, onUpdated }: Props) {
       const next = current.filter((it) => it.name !== item.name || it.day !== item.day);
       const updated = await updateMe({ settings: { [key]: next } as any });
       onUpdated(updated);
+    } catch (e: any) {
+      alert(e?.message || "No se pudo eliminar");
     } finally {
       setSaving(false);
     }
@@ -160,6 +164,8 @@ export default function FixedItemsPanel({ user, currency, onUpdated }: Props) {
       onUpdated(updated);
       setNewItem({ day: 1, is_income: false, amount: 0, name: "" });
       setAdding(false);
+    } catch (e: any) {
+      alert(e?.message || "No se pudo agregar");
     } finally {
       setSaving(false);
     }
