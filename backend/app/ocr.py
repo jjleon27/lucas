@@ -446,6 +446,15 @@ CRITICAL RULES:
       → Example: "2x Hamburguesa $10.000" → price=5000, quantity=2
       CRITICAL: Never store LINE_TOTAL as price when quantity > 1.
 
+   a3) "N description LINE_TOTAL" (restaurant/bar style: leading number, NO "x", e.g. "3 vienesa italiana 13200"):
+      → quantity = N (leading integer 1–20), LINE_TOTAL = rightmost number on line
+      → unit price = LINE_TOTAL / N  ← ALWAYS DIVIDE
+      → Store as: {"name": description, "price": LINE_TOTAL/N, "quantity": N}
+      → Example: "3 vienesa italiana 13200" → price=4400, quantity=3
+      → Example: "6 schop medio royal 28800" → price=4800, quantity=6
+      CRITICAL: Even without "x", a leading integer IS the quantity. ALWAYS divide LINE_TOTAL by it.
+      CRITICAL: Never store LINE_TOTAL (13200, 28800, 8800) as the unit price when a leading quantity exists.
+
    b) All other lines: quantity = 1, price = the printed number (= line total)
       → Store as: {"name": description, "price": <amount>, "quantity": 1}
 
@@ -491,6 +500,8 @@ CRITICAL RULES:
    ❌ Misreading NxPrice: "2x4.990" means qty=2, unit=4990, total=9980
    ❌ Using LINE_TOTAL as unit price when quantity>1 — always store unit price, not line total
    ❌ "2x Hamburguesa $10.000": price MUST be 5000 (not 10000); unit=10000/2=5000
+   ❌ "3 vienesa italiana 13200": price MUST be 4400 (not 13200); unit=13200/3=4400
+   ❌ "6 schop medio royal 28800": price MUST be 4800 (not 28800); unit=28800/6=4800
    ❌ Adding IVA to individual product prices — products are always NETO
    ❌ Skipping any product line — read ALL lines top to bottom
 
@@ -587,6 +598,8 @@ _CLP_PRICE_RE = re.compile(r"\$?\s*([\d]{1,3}(?:[.,]\d{3})*)\s*$")
 _QTY_X_UNIT_RE = re.compile(r"^(\d+)\s*[xX]\s*([\d.,]+)")
 # Multi-quantity with description only: "2x Descripción" (no unit price after x, only text)
 _QTY_X_DESC_RE = re.compile(r"^(\d+)\s*[xX]\s+([^\d].*)")
+# Restaurant-style: leading qty (1-20) + space + word (no x): "3 vienesa italiana"
+_QTY_NUM_DESC_RE = re.compile(r"^([1-9]|1\d|20)\s+([A-Za-záéíóúñÁÉÍÓÚÑ].*)")
 
 # Pure barcode line (12-14 digits, nothing else)
 _BARCODE_ONLY_RE = re.compile(r"^\d{12,14}$")
@@ -719,9 +732,18 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
                     if unit_price >= 100 and name:
                         items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
                 else:
-                    name = _clean_item_name(desc_clean)
-                    if name and price >= 100:
-                        items.append(ParsedItem(name=name, price=price, quantity=1))
+                    # Restaurant style: "3 vienesa italiana" (no x, leading qty)
+                    m_qty_num = _QTY_NUM_DESC_RE.match(desc_clean)
+                    if m_qty_num and price >= 100:
+                        qty = int(m_qty_num.group(1))
+                        name = _clean_item_name(m_qty_num.group(2))
+                        unit_price = round(price / qty) if qty >= 2 else price
+                        if unit_price >= 100 and name:
+                            items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
+                    else:
+                        name = _clean_item_name(desc_clean)
+                        if name and price >= 100:
+                            items.append(ParsedItem(name=name, price=price, quantity=1))
             pending_barcode_line = False
             continue
 
@@ -744,6 +766,16 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
         if m_qty_desc and price >= 100:
             qty = int(m_qty_desc.group(1))
             name = _clean_item_name(m_qty_desc.group(2))
+            unit_price = round(price / qty) if qty >= 2 else price
+            if unit_price >= 100 and name:
+                items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
+                continue
+
+        # Restaurant style: "3 vienesa italiana" (no x, leading qty 1-20)
+        m_qty_num = _QTY_NUM_DESC_RE.match(desc_no_barcode)
+        if m_qty_num and price >= 100:
+            qty = int(m_qty_num.group(1))
+            name = _clean_item_name(m_qty_num.group(2))
             unit_price = round(price / qty) if qty >= 2 else price
             if unit_price >= 100 and name:
                 items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
@@ -1099,6 +1131,20 @@ def vision_parse(
                 if total_neto_val > 0 and iva_amount_val > 0:
                     auth_total = round(total_neto_val + iva_amount_val)
                     if items:
+                        # Detect "line total stored as unit price" bug:
+                        # If sum(price) ≈ total (ignoring qty), the LLM stored
+                        # LINE TOTALS as unit prices. Fix by dividing each price by qty.
+                        sum_prices_flat = sum(it.price for it in items)
+                        if auth_total > 0 and abs(sum_prices_flat / auth_total - 1.0) < 0.05:
+                            print(f"[ocr] Detected line-total-as-unit-price: dividing by qty")
+                            items = [
+                                ParsedItem(
+                                    name=it.name,
+                                    price=round(it.price / it.quantity) if it.quantity > 1 else it.price,
+                                    quantity=it.quantity,
+                                )
+                                for it in items
+                            ]
                         # Proportional normalization — fixes total, best-effort items
                         items, raw_amount = _normalize_boleta_items(
                             items, total_neto_val, iva_amount_val

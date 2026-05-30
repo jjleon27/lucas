@@ -636,7 +636,7 @@ export async function listPendingTransactions(): Promise<Transaction[]> {
 export async function reviewTransaction(
   tx_id: number,
   payload: {
-    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment";
+    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment" | "confirm_own_transfer";
     category?: string;
     merchant?: string;
     amount?: number;

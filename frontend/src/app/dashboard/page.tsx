@@ -57,6 +57,7 @@ export default function DashboardPage() {
 
   async function saveCurrency(code: string) {
     setCurrency(code);
+    if (typeof window !== "undefined") window.localStorage.setItem("lucas_currency", code);
     try {
       await updateMe({ settings: { currency: code } as any });
       setData(await getDashboard());
@@ -76,23 +77,9 @@ export default function DashboardPage() {
   return (
     <div className="max-w-6xl mx-auto space-y-6 pb-24 md:pb-0">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">{t("dashboard.title")}</h1>
-          <p className="text-slate-500 capitalize">{monthLabel}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-slate-500">{t("dashboard.currency")}</label>
-          <select
-            className="input w-44"
-            value={currency}
-            onChange={(e) => saveCurrency(e.target.value)}
-          >
-            {CURRENCIES.map((c) => (
-              <option key={c.code} value={c.code}>{c.label}</option>
-            ))}
-          </select>
-        </div>
+      <header>
+        <h1 className="text-3xl font-semibold tracking-tight">{t("dashboard.title")}</h1>
+        <p className="text-slate-500 capitalize">{monthLabel}</p>
       </header>
 
       {/* ── Alerts ─────────────────────────────────────────────────────────── */}
@@ -138,6 +125,7 @@ export default function DashboardPage() {
               : t("dashboard.noBudgetSet")
           }
           tone={tone}
+          href="/transactions?type=expense"
         />
         <StatCard
           label={t("dashboard.incomeActual")}
@@ -147,15 +135,24 @@ export default function DashboardPage() {
               ? `${Math.round((data.income_actual / data.income_target) * 100)}% de meta`
               : "ingresos este mes"
           }
+          href="/transactions?type=income"
         />
-        <StatCard
-          label={t("dashboard.safeDailyActual")}
-          value={fmt(Math.round(data.safe_spend_actual))}
-          hint={t("dashboard.safeDailyActualHint")}
-        />
+        {(() => {
+          const balance = data.income_actual - data.total_spent;
+          const balanceTone = balance >= 0 ? "good" : "danger";
+          return (
+            <StatCard
+              label="Balance del mes"
+              value={(balance >= 0 ? "+" : "") + fmt(balance)}
+              hint={balance >= 0 ? "en verde este mes" : "gastaste más de lo recibido"}
+              tone={balanceTone}
+            />
+          );
+        })()}
         <StatCard
           label={t("dashboard.projectedEOM")}
           value={fmt(data.predicted_end_of_month)}
+          hint={`a ${data.days_remaining} días del fin de mes`}
           tone={tone}
         />
       </div>
@@ -180,6 +177,8 @@ export default function DashboardPage() {
                       innerRadius={50}
                       outerRadius={80}
                       paddingAngle={2}
+                      cursor="pointer"
+                      onClick={(d: any) => router.push(`/transactions?category=${encodeURIComponent(d.category)}`)}
                     >
                       {data.by_category.map((_, i) => (
                         <Cell key={i} fill={CAT_COLORS[i % CAT_COLORS.length]} />
@@ -191,15 +190,20 @@ export default function DashboardPage() {
               </div>
               <ul className="flex-1 w-full space-y-2 text-sm">
                 {data.by_category.map((c, i) => (
-                  <li key={c.category} className="flex justify-between">
-                    <span className="flex items-center gap-2">
-                      <span
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: CAT_COLORS[i % CAT_COLORS.length] }}
-                      />
-                      {c.category}
-                    </span>
-                    <span className="font-mono">{fmt(c.total)}</span>
+                  <li key={c.category}>
+                    <a
+                      href={`/transactions?category=${encodeURIComponent(c.category)}`}
+                      className="flex justify-between items-center py-0.5 rounded-lg hover:bg-slate-50 px-1 -mx-1 transition-colors"
+                    >
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: CAT_COLORS[i % CAT_COLORS.length] }}
+                        />
+                        {c.category}
+                      </span>
+                      <span className="font-mono text-slate-600">{fmt(c.total)}</span>
+                    </a>
                   </li>
                 ))}
               </ul>

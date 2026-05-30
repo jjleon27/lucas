@@ -6,7 +6,7 @@
  * - Delete with a confirmation prompt
  * - Duplicate badge if a transaction shares date+amount+merchant with another
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Pencil, Trash2, Check, X, AlertTriangle } from "lucide-react";
 import { Transaction, Account, updateTransaction, deleteTransaction } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
@@ -54,8 +54,7 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
 
-  // Sync when parent refreshes
-  useState(() => { setTxs(initial); });
+  useEffect(() => { setTxs(initial); }, [initial]);
 
   const dupeIds = useMemo(
     () => new Set(txs.filter((tx) => isDuplicate(tx, txs)).map((tx) => tx.id)),

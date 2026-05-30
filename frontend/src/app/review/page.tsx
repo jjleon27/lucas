@@ -49,7 +49,7 @@ function ReviewCard({
   creditAccounts: Account[];
   debitAccounts: Account[];
   onAction: (
-    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
+    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment" | "confirm_own_transfer",
     overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; account_id?: number; target_account_id?: number; source_account_id?: number }
   ) => void;
 }) {
@@ -87,12 +87,18 @@ function ReviewCard({
   const [selectedIncomeAccountId, setSelectedIncomeAccountId] = useState<number | null>(
     tx.account_id ?? allAccounts[0]?.id ?? null
   );
+  // For regular expenses: pre-fill with tx.account_id (email import guess) or first debit account
+  const [selectedExpenseAccountId, setSelectedExpenseAccountId] = useState<number | null>(
+    tx.account_id ?? debitAccounts[0]?.id ?? allAccounts[0]?.id ?? null
+  );
 
-  // A pending_review with is_transfer=true is a CC payment waiting for account assignment
-  const isCCPayment = tx.is_transfer && !tx.is_income;
+  // CC payment = is_transfer + not income + category "Pago Tarjeta"
+  const isCCPayment = tx.is_transfer && !tx.is_income && tx.category === "Pago Tarjeta";
+  // Own-account transfer = is_transfer + not income + category "Transferencia"
+  const isOwnTransfer = tx.is_transfer && !tx.is_income && tx.category === "Transferencia";
 
   async function act(
-    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
+    action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment" | "confirm_own_transfer",
   ) {
     if (acting) return;
     setActing(true);
@@ -101,10 +107,17 @@ function ReviewCard({
         target_account_id: selectedCCId ?? undefined,
         source_account_id: selectedDebitId ?? undefined,
       });
+    } else if (action === "confirm_own_transfer") {
+      onAction(action, {
+        source_account_id: selectedExpenseAccountId ?? undefined,
+        target_account_id: selectedIncomeAccountId ?? undefined,
+      });
     } else {
       onAction(action, {
         category: effectiveCategory, merchant, amount, remember,
-        account_id: tx.is_income ? (selectedIncomeAccountId ?? undefined) : undefined,
+        account_id: tx.is_income
+          ? (selectedIncomeAccountId ?? undefined)
+          : (selectedExpenseAccountId ?? undefined),
       });
     }
   }
@@ -241,6 +254,24 @@ function ReviewCard({
         Clasificar así automáticamente en el futuro
       </label>
 
+      {/* Expense account selector — always show for regular expenses */}
+      {!tx.is_income && !isCCPayment && !isOwnTransfer && allAccounts.length > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2">
+          <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+            💳 ¿De qué tarjeta o cuenta salió?
+          </p>
+          <select
+            className="input text-sm py-1.5"
+            value={selectedExpenseAccountId ?? ""}
+            onChange={(e) => setSelectedExpenseAccountId(e.target.value ? Number(e.target.value) : null)}
+          >
+            {allAccounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {/* Income account selector */}
       {tx.is_income && allAccounts.length > 0 && (
         <div className="bg-green-50 border border-green-200 rounded-2xl p-3 space-y-2">
@@ -256,6 +287,42 @@ function ReviewCard({
               <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
             ))}
           </select>
+        </div>
+      )}
+
+      {/* Own-account transfer: source and destination selectors */}
+      {isOwnTransfer && allAccounts.length > 0 && (
+        <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-3 space-y-3">
+          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide">
+            ↔️ Transferencia entre tus cuentas
+          </p>
+          <p className="text-xs text-indigo-600">
+            Esta plata se movió entre dos de tus cuentas propias — no es un gasto real.
+          </p>
+          <div>
+            <p className="text-xs text-indigo-600 mb-1">¿De qué cuenta salió?</p>
+            <select
+              className="input text-sm py-1.5"
+              value={selectedExpenseAccountId ?? ""}
+              onChange={(e) => setSelectedExpenseAccountId(e.target.value ? Number(e.target.value) : null)}
+            >
+              {allAccounts.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <p className="text-xs text-indigo-600 mb-1">¿A qué cuenta llegó?</p>
+            <select
+              className="input text-sm py-1.5"
+              value={selectedIncomeAccountId ?? ""}
+              onChange={(e) => setSelectedIncomeAccountId(e.target.value ? Number(e.target.value) : null)}
+            >
+              {allAccounts.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+              ))}
+            </select>
+          </div>
         </div>
       )}
 
@@ -297,7 +364,28 @@ function ReviewCard({
       )}
 
       {/* Action buttons */}
-      {isCCPayment ? (
+      {isOwnTransfer ? (
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            type="button"
+            disabled={acting || !selectedExpenseAccountId || !selectedIncomeAccountId}
+            onClick={() => act("confirm_own_transfer")}
+            className="flex flex-col items-center gap-1 py-3 rounded-xl bg-indigo-50 border-2 border-indigo-200 text-indigo-700 font-medium text-xs hover:bg-indigo-100 active:scale-95 transition disabled:opacity-50"
+          >
+            <Check className="w-5 h-5" />
+            Confirmar traspaso
+          </button>
+          <button
+            type="button"
+            disabled={acting}
+            onClick={() => act("not_expense")}
+            className="flex flex-col items-center gap-1 py-3 rounded-xl bg-slate-50 border-2 border-slate-200 text-slate-500 font-medium text-xs hover:bg-slate-100 active:scale-95 transition disabled:opacity-50"
+          >
+            <Trash2 className="w-5 h-5" />
+            Eliminar
+          </button>
+        </div>
+      ) : isCCPayment ? (
         <div className="grid grid-cols-2 gap-2 pt-1">
           <button
             type="button"
@@ -456,7 +544,7 @@ export default function ReviewPage() {
   const handleAction = useCallback(
     async (
       tx: Transaction,
-      action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment",
+      action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment" | "confirm_own_transfer",
       overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; account_id?: number; target_account_id?: number; source_account_id?: number },
     ) => {
       if (action === "skip") {

@@ -70,6 +70,17 @@ _EXPENSE_RE = re.compile(
     re.I,
 )
 
+# ── Self-transfer signals (same person, different accounts) ───────────────────
+_SELF_TRANSFER_RE = re.compile(
+    r"(transferencia\s+de\s+fondos|comprobante.{0,30}transferencia|traspaso\s+entre\s+cuentas)",
+    re.I,
+)
+_RUT_RE = re.compile(r"\b(\d{1,2}[\.\s]?\d{3}[\.\s]?\d{3}[-\s]?[\dkK])\b")
+_DEST_BANK_RE = re.compile(
+    r"(?:banco|bank)\s*[:\-]?\s*([A-Za-záéíóúñÁÉÍÓÚÑ][^\n\r,|]{2,40})",
+    re.I,
+)
+
 # ── Credit-card payment signals ────────────────────────────────────────────────
 # These match emails describing a payment FROM a debit account TO a credit card.
 _CC_PAYMENT_RE_EMAIL = re.compile(
@@ -147,6 +158,23 @@ def _extract_heuristic(subject: str, body: str) -> Optional[dict]:
         if nm:
             cc_name = nm.group(0).strip().title()
 
+    # Self-transfer detection: "Transferencia de fondos" with same RUT on both sides
+    is_own_transfer = False
+    dest_bank = ""
+    if _SELF_TRANSFER_RE.search(text) and not is_cc_payment:
+        ruts = [re.sub(r"[\s\.]", "", m.group(1)).upper() for m in _RUT_RE.finditer(text)]
+        # If same RUT appears 2+ times → same person, different accounts
+        if len(ruts) >= 2 and len(set(ruts)) == 1:
+            is_own_transfer = True
+            is_income = False
+            # Extract destination bank if visible (skip "Banco de origen" → use last match)
+            dest_banks = [m.group(1).strip() for m in _DEST_BANK_RE.finditer(text)]
+            if len(dest_banks) >= 2:
+                dest_bank = dest_banks[-1]  # last mention is usually destination
+            elif dest_banks:
+                dest_bank = dest_banks[0]
+            merchant = f"Transferencia → {dest_bank}" if dest_bank else "Transferencia entre cuentas"
+
     return {
         "amount": amount,
         "date": tx_date.isoformat(),
@@ -154,9 +182,11 @@ def _extract_heuristic(subject: str, body: str) -> Optional[dict]:
         "is_income": is_income,
         "currency": "CLP",
         "card_last4": card_hint,
-        "category": "Pago Tarjeta" if is_cc_payment else "Otros",
+        "category": "Pago Tarjeta" if is_cc_payment else ("Transferencia" if is_own_transfer else "Otros"),
         "is_cc_payment": is_cc_payment,
         "cc_name": cc_name,
+        "is_own_transfer": is_own_transfer,
+        "dest_bank": dest_bank,
     }
 
 
@@ -174,7 +204,9 @@ Extract a single JSON object (no markdown fences) with exactly these fields:
   "category": <one of: Alimentación, Supermercado, Transporte, Entretenimiento, \
 Bares y Salidas, Suscripciones, Cuentas y Servicios, Salud, Compras, Viajes, Transferencia, Otros>,
   "is_cc_payment": <boolean — true if this is a payment FROM a debit/savings account TO a credit card>,
-  "cc_name": <string — name of the credit card being paid (e.g. "CMR", "Falabella", "Ripley"), empty if unknown or not a CC payment>
+  "cc_name": <string — name of the credit card being paid (e.g. "CMR", "Falabella", "Ripley"), empty if unknown or not a CC payment>,
+  "is_own_transfer": <boolean — true if this is a transfer between the SAME person's own accounts (same RUT sender and recipient, e.g. "Comprobante Transferencia de fondos" where the RUT appears twice). NOT a CC payment, NOT income — just money moving between own accounts>,
+  "dest_bank": <string — destination bank name for own-account transfers, e.g. "Banco Falabella", empty if unknown>
 }
 
 If this email is NOT a transaction notification (marketing, welcome, verification, etc.),

@@ -457,7 +457,7 @@ class DashboardOut(BaseModel):
 # ---------- Transaction review queue ----------
 class TransactionReviewAction(BaseModel):
     """Action taken on a pending_review transaction."""
-    action: str                          # "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment"
+    action: str                          # "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment" | "confirm_own_transfer"
     category: Optional[str] = None       # override category on confirm
     merchant: Optional[str] = None       # override merchant on confirm
     amount: Optional[float] = None       # override amount on confirm

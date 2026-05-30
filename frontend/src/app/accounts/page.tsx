@@ -1,19 +1,13 @@
 "use client";
-/**
- * Accounts page — manage cards, debit, savings, wallets.
- *
- * Each card shows live balance (debit/savings) or used+available (credit).
- * The user sets a "known balance" anchor; the app computes the live value
- * by adding/subtracting transactions since that date.
- */
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CreditCard, Wallet, PiggyBank, Banknote, Pencil, Trash2 } from "lucide-react";
+import { CreditCard, Wallet, PiggyBank, Banknote, Pencil, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import {
-  Account, AccountInput, AccountType,
-  createAccount, deleteAccount, getToken, listAccounts, updateAccount, uploadCardImage,
+  Account, AccountInput, AccountType, Transaction,
+  createAccount, deleteAccount, getToken, listAccounts, listTransactions, updateAccount, uploadCardImage,
 } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
+import TransactionList from "@/components/TransactionList";
 import NumericInput from "@/components/NumericInput";
 import CardImagePicker, {
   resolveCardBackground, resolveCardTextColor, CARD_PRESETS,
@@ -149,7 +143,10 @@ export default function AccountsPage() {
           <h1 className="text-3xl font-semibold tracking-tight">{t("accounts.title")}</h1>
           <p className="text-slate-500 mt-1">{t("accounts.subtitle")}</p>
         </div>
-        <button className="btn-primary" onClick={openNew}>{t("accounts.add")}</button>
+        <div className="flex items-center gap-2">
+          <a href="/transactions" className="btn text-sm border border-brand-600 text-brand-600 hover:bg-brand-50">Ver todos los movimientos</a>
+          <button className="btn-primary" onClick={openNew}>{t("accounts.add")}</button>
+        </div>
       </header>
 
       {/* ── Posición financiera ────────────────────────────────────────────── */}
@@ -198,6 +195,7 @@ export default function AccountsPage() {
             <AccountCard
               key={a.id}
               account={a}
+              allAccounts={accounts}
               onEdit={openEdit}
               onDelete={remove}
               onRefresh={() => listAccounts().then(setAccounts)}
@@ -221,99 +219,141 @@ export default function AccountsPage() {
 }
 
 function AccountCard({
-  account, onEdit, onDelete, onRefresh,
+  account, allAccounts, onEdit, onDelete, onRefresh,
 }: {
   account: Account;
+  allAccounts: Account[];
   onEdit: (a: Account) => void;
   onDelete: (id: number) => void;
   onRefresh: () => void;
 }) {
   const { t } = useT();
-  const router = useRouter();
   const Icon = TYPE_ICON[account.type] ?? CreditCard;
   const fmt = (v: number) => formatMoney(v, account.currency);
+  const [expanded, setExpanded] = useState(false);
+  const [txs, setTxs] = useState<Transaction[] | null>(null);
+  const [loadingTxs, setLoadingTxs] = useState(false);
+
+  async function toggleTxs() {
+    if (expanded) { setExpanded(false); return; }
+    setExpanded(true);
+    if (txs !== null) return;
+    setLoadingTxs(true);
+    try {
+      const data = await listTransactions({ account_id: account.id });
+      setTxs(data);
+    } catch { setTxs([]); }
+    finally { setLoadingTxs(false); }
+  }
 
   const bgStyle = resolveCardBackground(account.card_image_url || "", account.color);
   const textColor = resolveCardTextColor(account.card_image_url || "");
 
   return (
-    <div
-      className="rounded-2xl shadow-soft p-5 relative overflow-hidden"
-      style={{ ...bgStyle, color: textColor }}
-    >
-      <div className="absolute top-3 right-3 flex gap-1">
-        <button
-          onClick={async () => {
-            const input = prompt(
-              account.type === "credit"
-                ? `¿Cuánto dices que debes hoy en ${account.name}? (lo que ves en el banco)`
-                : `¿Cuánto dices que tienes hoy en ${account.name}? (lo que ves en el banco)`,
-              String(account.type === "credit" ? account.current_used : account.current_balance),
-            );
-            if (input == null) return;
-            const n = Number(input.replace(/[^\d.-]/g, ""));
-            if (!isFinite(n)) { alert("Número inválido"); return; }
-            try {
-              const { reconcileAccount } = await import("@/lib/api");
-              const r = await reconcileAccount(account.id, n);
-              alert(`Saldo ajustado. Diferencia: ${r.drift.toLocaleString("es-CL")}`);
-              onRefresh();
-            } catch (e: any) {
-              alert(e?.message || "No se pudo ajustar");
-            }
-          }}
-          title="Ajustar saldo al del banco"
-          className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-[10px] font-semibold"
-        >
-          ⚖️
-        </button>
-        <button onClick={() => onEdit(account)} className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30">
-          <Pencil className="w-3.5 h-3.5" />
-        </button>
-        <button onClick={() => onDelete(account.id)} className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30">
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
-      </div>
+    <div className="rounded-2xl shadow-soft overflow-hidden">
+      {/* Card face — clicking anywhere on it toggles transactions */}
+      <div
+        className="p-5 relative cursor-pointer select-none"
+        style={{ ...bgStyle, color: textColor }}
+        onClick={toggleTxs}
+      >
+        {/* Action buttons — stop propagation so they don't toggle accordion */}
+        <div className="absolute top-3 right-3 flex gap-1" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={async (e) => {
+              e.stopPropagation();
+              const input = prompt(
+                account.type === "credit"
+                  ? `¿Cuánto dices que debes hoy en ${account.name}? (lo que ves en el banco)`
+                  : `¿Cuánto dices que tienes hoy en ${account.name}? (lo que ves en el banco)`,
+                String(account.type === "credit" ? account.current_used : account.current_balance),
+              );
+              if (input == null) return;
+              const n = Number(input.replace(/[^\d.-]/g, ""));
+              if (!isFinite(n)) { alert("Número inválido"); return; }
+              try {
+                const { reconcileAccount } = await import("@/lib/api");
+                const r = await reconcileAccount(account.id, n);
+                alert(`Saldo ajustado. Diferencia: ${r.drift.toLocaleString("es-CL")}`);
+                onRefresh();
+              } catch (e: any) {
+                alert(e?.message || "No se pudo ajustar");
+              }
+            }}
+            title="Ajustar saldo al del banco"
+            className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-[10px] font-semibold"
+          >
+            ⚖️
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); onEdit(account); }} className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30">
+            <Pencil className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={(e) => { e.stopPropagation(); onDelete(account.id); }} className="p-1.5 rounded-lg bg-white/20 hover:bg-white/30">
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
 
-      <div className="flex items-start gap-3">
-        <div className="p-2 rounded-xl bg-white/20"><Icon className="w-5 h-5" /></div>
-        <div>
-          <div className="text-xs uppercase opacity-80">{account.bank || t(`accounts.type.${account.type}` as any)}</div>
-          <div className="text-lg font-semibold">{account.name}</div>
+        <div className="flex items-start gap-3">
+          <div className="p-2 rounded-xl bg-white/20"><Icon className="w-5 h-5" /></div>
+          <div>
+            <div className="text-xs uppercase opacity-80">{account.bank || t(`accounts.type.${account.type}` as any)}</div>
+            <div className="text-lg font-semibold">{account.name}</div>
+          </div>
+        </div>
+
+        <div className="mt-6 space-y-1">
+          {account.type === "credit" ? (
+            <>
+              <div className="text-xs uppercase opacity-80">{t("accounts.used")}</div>
+              <div className="text-3xl font-mono font-semibold">{fmt(account.current_used)}</div>
+              <div className="text-xs opacity-80 mt-1">
+                {t("accounts.available")}: <span className="font-mono">{fmt(account.available_credit)}</span>
+                {" / "}
+                {t("accounts.limit")}: <span className="font-mono">{fmt(account.credit_limit)}</span>
+              </div>
+              <div className="mt-3 w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-white"
+                  style={{
+                    width: `${Math.min(100, account.credit_limit > 0 ? (account.current_used / account.credit_limit) * 100 : 0)}%`,
+                  }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-xs uppercase opacity-80">{t("accounts.balance")}</div>
+              <div className="text-3xl font-mono font-semibold">{fmt(account.current_balance)}</div>
+            </>
+          )}
+        </div>
+
+        <div className="mt-4 flex items-center gap-1.5 text-xs opacity-60">
+          {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          {expanded ? "Ocultar movimientos" : "Ver movimientos"}
         </div>
       </div>
 
-      <button
-        className="mt-6 space-y-1 w-full text-left cursor-pointer"
-        onClick={() => router.push(`/transactions?account_id=${account.id}`)}
-        title="Ver movimientos"
-      >
-        {account.type === "credit" ? (
-          <>
-            <div className="text-xs uppercase opacity-80">{t("accounts.used")}</div>
-            <div className="text-3xl font-mono font-semibold">{fmt(account.current_used)}</div>
-            <div className="text-xs opacity-80 mt-1">
-              {t("accounts.available")}: <span className="font-mono">{fmt(account.available_credit)}</span>
-              {" / "}
-              {t("accounts.limit")}: <span className="font-mono">{fmt(account.credit_limit)}</span>
-            </div>
-            <div className="mt-3 w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-white"
-                style={{
-                  width: `${Math.min(100, account.credit_limit > 0 ? (account.current_used / account.credit_limit) * 100 : 0)}%`,
-                }}
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="text-xs uppercase opacity-80">{t("accounts.balance")}</div>
-            <div className="text-3xl font-mono font-semibold">{fmt(account.current_balance)}</div>
-          </>
-        )}
-        <div className="text-xs opacity-60 mt-2">Toca para ver movimientos →</div>
-      </button>
+      {/* Accordion: transactions */}
+      {expanded && (
+        <div className="bg-white border-t border-slate-100">
+          {loadingTxs ? (
+            <p className="text-xs text-slate-400 px-4 py-3">Cargando…</p>
+          ) : txs && txs.length === 0 ? (
+            <p className="text-xs text-slate-400 px-4 py-3">Sin movimientos registrados.</p>
+          ) : txs ? (
+            <TransactionList
+              txs={txs}
+              accounts={allAccounts}
+              onRefresh={async () => {
+                const data = await listTransactions({ account_id: account.id });
+                setTxs(data);
+                onRefresh();
+              }}
+            />
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }

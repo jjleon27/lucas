@@ -1,7 +1,7 @@
 "use client";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { X } from "lucide-react";
+import { ChevronDown, ChevronUp, X } from "lucide-react";
 import {
   Account,
   Transaction,
@@ -237,100 +237,221 @@ function TransactionsInner() {
   const { t } = useT();
 
   const pending = params.get("transfers") === "pending";
-  const filterAccountId = params.get("account_id") ? Number(params.get("account_id")) : null;
-  const [txs, setTxs] = useState<Transaction[] | null>(null);
+
+  // URL params become initial filter state
+  const initAccountId = params.get("account_id") ? Number(params.get("account_id")) : null;
+  const initType = (params.get("type") as "expense" | "income") || "all";
+  const initCategory = params.get("category") || "";
+
+  const [allTxs, setAllTxs] = useState<Transaction[] | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [showManual, setShowManual] = useState(false);
 
+  // ── Filter state ─────────────────────────────────────────────────────────
+  const [search, setSearch] = useState("");
+  const [fType, setFType] = useState<"all" | "expense" | "income">(initType as any);
+  const [fCategory, setFCategory] = useState(initCategory);
+  const [fAccountId, setFAccountId] = useState<number | null>(initAccountId);
+  const [fDateFrom, setFDateFrom] = useState(
+    // Pre-fill current month when coming from dashboard type/category filter
+    (initType || initCategory) ? new Date().toISOString().slice(0, 7) + "-01" : ""
+  );
+  const [fDateTo, setFDateTo] = useState("");
+  const [fAmountMin, setFAmountMin] = useState("");
+  const [fAmountMax, setFAmountMax] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+
   const load = useCallback(async () => {
-    setTxs(null);
+    setAllTxs(null);
     try {
-      const [list, accs] = await Promise.all([
-        listTransactions(
-          pending ? { pending_transfers: true }
-          : filterAccountId ? { account_id: filterAccountId }
-          : undefined,
-        ),
-        listAccounts(),
-      ]);
-      setTxs(list);
+      const [list, accs] = await Promise.all([listTransactions(), listAccounts()]);
+      setAllTxs(list);
       setAccounts(accs);
     } catch {
       router.replace("/");
     }
-  }, [pending, filterAccountId, router]);
+  }, [router]);
 
   useEffect(() => {
-    if (!getToken()) {
-      router.replace("/");
-      return;
-    }
+    if (!getToken()) { router.replace("/"); return; }
     load();
   }, [router, load]);
 
+  // ── Apply all filters client-side ────────────────────────────────────────
+  const filtered = useMemo(() => {
+    if (!allTxs) return null;
+    return allTxs.filter((tx) => {
+      if (search && !tx.merchant?.toLowerCase().includes(search.toLowerCase()) &&
+          !tx.category?.toLowerCase().includes(search.toLowerCase())) return false;
+      if (fType === "expense" && (tx.is_income || tx.is_transfer)) return false;
+      if (fType === "income" && !tx.is_income) return false;
+      if (fCategory && tx.category !== fCategory) return false;
+      if (fAccountId && tx.account_id !== fAccountId) return false;
+      if (fDateFrom && tx.date < fDateFrom) return false;
+      if (fDateTo && tx.date > fDateTo) return false;
+      if (fAmountMin && Math.abs(tx.amount) < Number(fAmountMin)) return false;
+      if (fAmountMax && Math.abs(tx.amount) > Number(fAmountMax)) return false;
+      return true;
+    });
+  }, [allTxs, search, fType, fCategory, fAccountId, fDateFrom, fDateTo, fAmountMin, fAmountMax]);
+
+  const activeFilterCount = [
+    fType !== "all", fCategory, fAccountId, fDateFrom, fDateTo, fAmountMin, fAmountMax,
+  ].filter(Boolean).length;
+
+  function clearFilters() {
+    setSearch(""); setFType("all"); setFCategory(""); setFAccountId(null);
+    setFDateFrom(""); setFDateTo(""); setFAmountMin(""); setFAmountMax("");
+  }
+
+  const backHref = initAccountId ? "/accounts" : (initType || initCategory) ? "/dashboard" : null;
+
   return (
-    <div className="max-w-5xl mx-auto w-full space-y-6 pb-24 md:pb-0">
+    <div className="max-w-5xl mx-auto w-full space-y-4 pb-24 md:pb-0">
       {pending ? (
         <>
           <header className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h1 className="text-3xl font-semibold tracking-tight">
-                {t("tx.pending.title")}
-              </h1>
-              <p className="text-slate-500 text-sm max-w-2xl mt-1">
-                {t("tx.pending.subtitle")}
-              </p>
+              <h1 className="text-3xl font-semibold tracking-tight">{t("tx.pending.title")}</h1>
+              <p className="text-slate-500 text-sm max-w-2xl mt-1">{t("tx.pending.subtitle")}</p>
             </div>
-            <a href="/transactions" className="btn-ghost text-sm">
-              ← {t("tx.pending.clearFilter")}
-            </a>
+            <a href="/transactions" className="btn-ghost text-sm">← {t("tx.pending.clearFilter")}</a>
           </header>
-
-          {txs === null ? (
+          {allTxs === null ? (
             <div className="text-slate-500">{t("tx.loading")}</div>
           ) : (
-            <PendingTransferList txs={txs} accounts={accounts} onLinked={load} />
+            <PendingTransferList txs={allTxs} accounts={accounts} onLinked={load} />
           )}
         </>
       ) : (
         <>
+          {/* Header */}
           <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
-              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
-                {filterAccountId
-                  ? (accounts.find((a) => a.id === filterAccountId)?.name ?? t("tx.title"))
-                  : t("tx.title")}
-              </h1>
-              {filterAccountId && (
-                <a href="/accounts" className="text-xs text-slate-400 hover:text-slate-600">
-                  ← Volver a cuentas
+              <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">{t("tx.title")}</h1>
+              {backHref && (
+                <a href={backHref} className="text-xs text-slate-400 hover:text-slate-600">
+                  ← {initAccountId ? "Volver a cuentas" : "Volver al resumen"}
                 </a>
               )}
             </div>
             <div className="flex items-center gap-2">
-              <a href="/upload" className="btn-ghost text-sm">
-                📷 <span className="hidden sm:inline">Subir foto</span>
-              </a>
-              <button className="btn-primary text-sm" onClick={() => setShowManual(true)}>
-                ✏️ {t("tx.add")}
-              </button>
+              <a href="/upload" className="btn-ghost text-sm">📷 <span className="hidden sm:inline">Subir foto</span></a>
+              <button className="btn-primary text-sm" onClick={() => setShowManual(true)}>✏️ {t("tx.add")}</button>
             </div>
           </header>
 
-          {txs === null ? (
+          {/* ── Filter bar ─────────────────────────────────────────────────── */}
+          <div className="space-y-2">
+            {/* Search + toggle */}
+            <div className="flex gap-2">
+              <input
+                className="input flex-1"
+                placeholder="Buscar por descripción o categoría…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <button
+                onClick={() => setShowFilters((v) => !v)}
+                className={`btn text-sm flex items-center gap-1.5 shrink-0 ${
+                  activeFilterCount > 0
+                    ? "bg-brand-600 text-white hover:bg-brand-700"
+                    : "btn-ghost"
+                }`}
+              >
+                {showFilters ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                Filtros{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
+              </button>
+            </div>
+
+            {/* Quick type chips */}
+            <div className="flex gap-1.5">
+              {(["all", "expense", "income"] as const).map((tp) => (
+                <button
+                  key={tp}
+                  onClick={() => setFType(tp)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border transition ${
+                    fType === tp
+                      ? tp === "expense" ? "bg-rose-500 border-rose-500 text-white"
+                        : tp === "income" ? "bg-emerald-500 border-emerald-500 text-white"
+                        : "bg-slate-800 border-slate-800 text-white"
+                      : "border-slate-200 text-slate-500 hover:border-slate-400"
+                  }`}
+                >
+                  {tp === "all" ? "Todos" : tp === "expense" ? "Gastos" : "Ingresos"}
+                </button>
+              ))}
+              {activeFilterCount > 0 && (
+                <button
+                  onClick={clearFilters}
+                  className="ml-auto px-2.5 py-1 rounded-full text-xs text-slate-400 hover:text-slate-600 border border-slate-200 hover:border-slate-400 transition flex items-center gap-1"
+                >
+                  <X className="w-3 h-3" /> Limpiar
+                </button>
+              )}
+            </div>
+
+            {/* Expanded filter panel */}
+            {showFilters && (
+              <div className="card p-4 grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                {/* Category */}
+                <label className="block">
+                  <span className="text-xs uppercase text-slate-400 font-semibold tracking-wide">Categoría</span>
+                  <select className="input mt-1" value={fCategory} onChange={(e) => setFCategory(e.target.value)}>
+                    <option value="">Todas</option>
+                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                {/* Account */}
+                <label className="block">
+                  <span className="text-xs uppercase text-slate-400 font-semibold tracking-wide">Cuenta</span>
+                  <select className="input mt-1" value={fAccountId ?? ""} onChange={(e) => setFAccountId(e.target.value ? Number(e.target.value) : null)}>
+                    <option value="">Todas</option>
+                    {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                </label>
+                {/* Date from */}
+                <label className="block">
+                  <span className="text-xs uppercase text-slate-400 font-semibold tracking-wide">Desde</span>
+                  <input type="date" className="input mt-1" value={fDateFrom} onChange={(e) => setFDateFrom(e.target.value)} />
+                </label>
+                {/* Date to */}
+                <label className="block">
+                  <span className="text-xs uppercase text-slate-400 font-semibold tracking-wide">Hasta</span>
+                  <input type="date" className="input mt-1" value={fDateTo} onChange={(e) => setFDateTo(e.target.value)} />
+                </label>
+                {/* Amount min */}
+                <label className="block">
+                  <span className="text-xs uppercase text-slate-400 font-semibold tracking-wide">Monto mín.</span>
+                  <input type="number" min="0" className="input mt-1 font-mono" placeholder="0" value={fAmountMin} onChange={(e) => setFAmountMin(e.target.value)} />
+                </label>
+                {/* Amount max */}
+                <label className="block">
+                  <span className="text-xs uppercase text-slate-400 font-semibold tracking-wide">Monto máx.</span>
+                  <input type="number" min="0" className="input mt-1 font-mono" placeholder="∞" value={fAmountMax} onChange={(e) => setFAmountMax(e.target.value)} />
+                </label>
+              </div>
+            )}
+
+            {/* Result count */}
+            {filtered !== null && (
+              <p className="text-xs text-slate-400">
+                {filtered.length} movimiento{filtered.length !== 1 ? "s" : ""}
+                {activeFilterCount > 0 || search ? " con los filtros aplicados" : ""}
+              </p>
+            )}
+          </div>
+
+          {filtered === null ? (
             <div className="text-slate-500">{t("tx.loading")}</div>
           ) : (
-            <TransactionList txs={txs} accounts={accounts} onRefresh={load} />
+            <TransactionList txs={filtered} accounts={accounts} onRefresh={load} />
           )}
         </>
       )}
 
       {showManual && (
-        <ManualTxModal
-          accounts={accounts}
-          onClose={() => setShowManual(false)}
-          onSaved={load}
-        />
+        <ManualTxModal accounts={accounts} onClose={() => setShowManual(false)} onSaved={load} />
       )}
     </div>
   );

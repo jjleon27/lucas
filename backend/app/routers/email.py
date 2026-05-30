@@ -261,6 +261,53 @@ async def email_inbound(request: Request, db: Session = Depends(get_db)):
             return {"ok": True, "action": "cc_payment_pending_review",
                     "transaction_id": debit_tx.id, "cc_name": cc_name}
 
+    # ── Own-account transfer: same person, different accounts ────────────────
+    if parsed.get("is_own_transfer"):
+        dest_bank = parsed.get("dest_bank", "").strip().lower()
+        # Try to find source account via sender bank
+        if not account_id and sender_bank:
+            all_accs = db.query(models.Account).filter(
+                models.Account.user_id == user.id,
+                models.Account.archived.is_(False),
+            ).all()
+            for a in all_accs:
+                if sender_bank in a.name.lower() or sender_bank in (a.bank or "").lower():
+                    account_id = a.id
+                    break
+
+        # Dedupe: check for existing own-transfer on same date/amount
+        from ..schemas import ParsedReceipt
+        proposal = ParsedReceipt(
+            amount=amount, date=tx_date, merchant=merchant, category="Transferencia",
+            currency=currency, is_income=False,
+        )
+        existing = dedupe_svc.find_duplicate(db, user_id=user.id, account_id=account_id, proposed=proposal)
+        if existing:
+            return {"ok": True, "action": "duplicate", "existing_id": existing.id}
+
+        tx = models.Transaction(
+            user_id=user.id,
+            account_id=account_id,
+            amount=amount,
+            currency=currency,
+            category="Transferencia",
+            date=tx_date,
+            merchant=merchant or "Transferencia entre cuentas",
+            notes=f"Importado desde email: {subject[:120]}" + (f" | Destino: {parsed['dest_bank']}" if parsed.get("dest_bank") else ""),
+            is_income=False,
+            is_transfer=True,
+            image_url="",
+            status="pending_review",
+        )
+        db.add(tx)
+        db.commit()
+        db.refresh(tx)
+        logger.info(
+            "email_inbound: own-transfer pending review tx#%d ($%.0f) for user#%d",
+            tx.id, tx.amount, user.id,
+        )
+        return {"ok": True, "action": "own_transfer_pending_review", "transaction_id": tx.id, "dest_bank": dest_bank}
+
     # ── Regular transaction ───────────────────────────────────────────────────
     tx = models.Transaction(
         user_id=user.id,
@@ -366,6 +413,59 @@ def review_transaction(
 
         account_svc.reconcile_new_transaction(db, current.id, tx)
         db.refresh(tx)
+        return tx
+
+    if action == "confirm_own_transfer":
+        # User confirmed a self-transfer, selecting source and destination accounts.
+        if not payload.source_account_id or not payload.target_account_id:
+            raise HTTPException(400, "source_account_id and target_account_id required for confirm_own_transfer")
+
+        source_acc = db.query(models.Account).filter(
+            models.Account.id == payload.source_account_id,
+            models.Account.user_id == current.id,
+        ).first()
+        dest_acc = db.query(models.Account).filter(
+            models.Account.id == payload.target_account_id,
+            models.Account.user_id == current.id,
+        ).first()
+        if not source_acc or not dest_acc:
+            raise HTTPException(404, "Account not found")
+
+        # Debit side (expense from source account)
+        tx.account_id = source_acc.id
+        tx.is_transfer = True
+        tx.is_income = False
+        tx.category = "Transferencia"
+        tx.status = "confirmed"
+
+        # Credit side (income to destination account)
+        credit_tx = models.Transaction(
+            user_id=current.id,
+            account_id=dest_acc.id,
+            amount=tx.amount,
+            currency=tx.currency,
+            category="Transferencia",
+            date=tx.date,
+            merchant=tx.merchant or "Transferencia recibida",
+            notes=f"Transferencia desde {source_acc.name} — tx#{tx.id}",
+            is_income=True,
+            is_transfer=True,
+            linked_transaction_id=tx.id,
+            image_url="",
+            status="confirmed",
+        )
+        db.add(credit_tx)
+        db.flush()
+
+        tx.linked_transaction_id = credit_tx.id
+        db.commit()
+        db.refresh(tx)
+        account_svc.reconcile_new_transaction(db, current.id, tx)
+        db.refresh(tx)
+        logger.info(
+            "review: own-transfer confirmed tx#%d ($%.0f) %s → %s",
+            tx.id, tx.amount, source_acc.name, dest_acc.name,
+        )
         return tx
 
     if action == "confirm_cc_payment":

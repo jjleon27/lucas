@@ -2,8 +2,8 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  LayoutDashboard, Upload, Receipt, Scissors, LogOut,
-  MessageCircle, Globe, CreditCard, Inbox, UserCircle,
+  LayoutDashboard, Upload, Scissors, LogOut,
+  MessageCircle, Globe, CreditCard, Inbox, UserCircle, Receipt,
   MoreHorizontal, X, type LucideIcon,
 } from "lucide-react";
 
@@ -14,8 +14,16 @@ interface NavItem {
   badge?: number;
 }
 import { useEffect, useState } from "react";
-import { clearToken, getToken, listPendingTransactions } from "@/lib/api";
+import { clearToken, getToken, listPendingTransactions, me, updateMe } from "@/lib/api";
 import { LOCALES, useT } from "@/lib/i18n";
+
+const CURRENCIES = [
+  { code: "CLP", flag: "🇨🇱", label: "CLP" },
+  { code: "USD", flag: "🇺🇸", label: "USD" },
+  { code: "EUR", flag: "🇪🇺", label: "EUR" },
+  { code: "BRL", flag: "🇧🇷", label: "BRL" },
+  { code: "ARS", flag: "🇦🇷", label: "ARS" },
+];
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -25,6 +33,9 @@ export default function Sidebar() {
   const { t, locale, setLocale } = useT();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [currency, setCurrency] = useState<string>(
+    typeof window !== "undefined" ? (window.localStorage.getItem("lucas_currency") || "CLP") : "CLP"
+  );
 
   useEffect(() => {
     const hasToken = !!getToken();
@@ -33,6 +44,10 @@ export default function Sidebar() {
       listPendingTransactions()
         .then((txs) => setPendingCount(txs.length))
         .catch(() => {});
+      me().then((u) => {
+        const c = u.settings?.currency;
+        if (c) { setCurrency(c); window.localStorage.setItem("lucas_currency", c); }
+      }).catch(() => {});
     }
   }, [pathname]);
 
@@ -42,18 +57,18 @@ export default function Sidebar() {
 
   // Mobile: 4 primary tabs
   const primaryNav: NavItem[] = [
-    { href: "/dashboard",    label: t("nav.dashboard"),    icon: LayoutDashboard },
-    { href: "/upload",       label: t("nav.upload"),       icon: Upload },
-    { href: "/transactions", label: t("nav.transactions"), icon: Receipt },
-    { href: "/accounts",     label: t("nav.accounts"),     icon: CreditCard },
+    { href: "/dashboard", label: t("nav.dashboard"), icon: LayoutDashboard },
+    { href: "/accounts",  label: t("nav.accounts"),  icon: CreditCard },
+    { href: "/upload",    label: t("nav.upload"),     icon: Upload },
+    { href: "/review",    label: "Revisar",            icon: Inbox, badge: pendingCount > 0 ? pendingCount : undefined },
   ];
 
   // Mobile: overflow items inside "Más" sheet
   const moreNav: NavItem[] = [
-    { href: "/split",    label: t("nav.split"),  icon: Scissors },
-    { href: "/review",   label: "Revisar",        icon: Inbox,        badge: pendingCount > 0 ? pendingCount : undefined },
-    { href: "/chat",     label: t("nav.chat"),   icon: MessageCircle },
-    { href: "/settings", label: "Perfil",         icon: UserCircle },
+    { href: "/transactions", label: "Ver movimientos", icon: Receipt },
+    { href: "/chat",         label: t("nav.chat"),     icon: MessageCircle },
+    { href: "/settings",     label: "Perfil",           icon: UserCircle },
+    { href: "/split",        label: t("nav.split"),    icon: Scissors },
   ];
 
   // Desktop: all items in sidebar
@@ -138,7 +153,7 @@ export default function Sidebar() {
         </nav>
 
 
-        {/* Desktop: language + logout */}
+        {/* Desktop: language + currency + logout */}
         <div className="hidden md:block absolute bottom-4 left-3 right-3 space-y-2">
           <div className="relative">
             <button
@@ -148,6 +163,7 @@ export default function Sidebar() {
               <Globe className="w-4 h-4" />
               <span>{currentFlag}</span>
               <span>{LOCALES.find((l) => l.code === locale)?.label}</span>
+              <span className="ml-auto text-xs font-medium text-slate-400">{currency}</span>
             </button>
             {pickerOpen && (
               <div className="absolute bottom-full mb-2 left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-soft overflow-hidden">
@@ -163,6 +179,28 @@ export default function Sidebar() {
                     <span>{l.label}</span>
                   </button>
                 ))}
+                <div className="border-t border-slate-100 px-3 py-2">
+                  <p className="text-[10px] uppercase text-slate-400 font-semibold mb-1.5">Moneda</p>
+                  <div className="flex flex-wrap gap-1">
+                    {CURRENCIES.map((c) => (
+                      <button
+                        key={c.code}
+                        onClick={async () => {
+                          setCurrency(c.code);
+                          window.localStorage.setItem("lucas_currency", c.code);
+                          try { await updateMe({ settings: { currency: c.code } as any }); } catch { /* */ }
+                          setPickerOpen(false);
+                          if (window.location.pathname === "/dashboard") window.location.reload();
+                        }}
+                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition ${
+                          c.code === currency ? "bg-brand-50 text-brand-700" : "text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        {c.flag} {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -218,8 +256,8 @@ export default function Sidebar() {
                 );
               })}
 
-              {/* Language selector */}
-              <div className="mt-1 pt-3 border-t border-slate-100">
+              {/* Language + Currency selectors */}
+              <div className="mt-1 pt-3 border-t border-slate-100 space-y-1">
                 <div className="flex items-center gap-3 px-4 py-2">
                   <Globe className="w-5 h-5 text-slate-400 shrink-0" />
                   <div className="flex gap-2 flex-wrap">
@@ -235,6 +273,32 @@ export default function Sidebar() {
                       >
                         <span>{l.flag}</span>
                         <span>{l.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 px-4 py-2">
+                  <span className="text-base shrink-0">💱</span>
+                  <div className="flex gap-2 flex-wrap">
+                    {CURRENCIES.map((c) => (
+                      <button
+                        key={c.code}
+                        onClick={async () => {
+                          setCurrency(c.code);
+                          window.localStorage.setItem("lucas_currency", c.code);
+                          try { await updateMe({ settings: { currency: c.code } as any }); } catch { /* */ }
+                          setMoreOpen(false);
+                          // Reload dashboard if on it
+                          if (window.location.pathname === "/dashboard") window.location.reload();
+                        }}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium transition ${
+                          c.code === currency
+                            ? "bg-brand-50 text-brand-700"
+                            : "text-slate-500 hover:bg-slate-50"
+                        }`}
+                      >
+                        <span>{c.flag}</span>
+                        <span>{c.label}</span>
                       </button>
                     ))}
                   </div>
