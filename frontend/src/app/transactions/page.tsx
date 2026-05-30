@@ -48,7 +48,7 @@ function ManualTxModal({
   async function save() {
     if (!amount || amount <= 0) { setErr("Escribe un monto válido"); return; }
     if (!merchant.trim()) { setErr("Escribe una descripción"); return; }
-    if (!accountId) { setErr("Selecciona una cuenta para este movimiento"); return; }
+    if (accounts.length > 0 && !accountId) { setErr("Selecciona una cuenta para este movimiento"); return; }
     setBusy(true);
     setErr("");
     try {
