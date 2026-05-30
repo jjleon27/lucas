@@ -117,8 +117,12 @@ export default function AccountsPage() {
 
   async function remove(id: number) {
     if (!confirm(t("accounts.confirmDelete"))) return;
-    await deleteAccount(id);
-    setAccounts((prev) => (prev ?? []).filter((a) => a.id !== id));
+    try {
+      await deleteAccount(id);
+      setAccounts((prev) => (prev ?? []).filter((a) => a.id !== id));
+    } catch (e: any) {
+      alert(e?.message || "No se pudo eliminar la cuenta");
+    }
   }
 
   if (!accounts) return <div className="p-8 text-slate-500">{t("tx.loading")}</div>;

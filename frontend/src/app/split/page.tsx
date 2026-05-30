@@ -401,7 +401,6 @@ export default function SplitPage() {
     }
 
     const assignees: AssigneeIn[] = newIds.map((pid) => {
-      // Preserve existing split rules for this person if any
       const existing = item.assignees.find((a) => a.person_id === pid);
       return {
         person_id: pid,
@@ -410,8 +409,12 @@ export default function SplitPage() {
       };
     });
 
-    await assignItemV2(itemId, assignees);
-    if (txId) await refreshResult(txId);
+    try {
+      await assignItemV2(itemId, assignees);
+      if (txId) await refreshResult(txId);
+    } catch (e: any) {
+      alert(e?.message || "Error al asignar");
+    }
   }
 
   // ── Assign all people to one item in a single call ────────
@@ -421,14 +424,22 @@ export default function SplitPage() {
       split_type: "equal",
       value: null,
     }));
-    await assignItemV2(itemId, assignees);
-    if (txId) await refreshResult(txId);
+    try {
+      await assignItemV2(itemId, assignees);
+      if (txId) await refreshResult(txId);
+    } catch (e: any) {
+      alert(e?.message || "Error al asignar");
+    }
   }
 
   // ── Save adjusted split for one item ──────────────────────
   async function handleSaveAdjust(itemId: number, assignees: AssigneeIn[]) {
-    await assignItemV2(itemId, assignees);
-    if (txId) await refreshResult(txId);
+    try {
+      await assignItemV2(itemId, assignees);
+      if (txId) await refreshResult(txId);
+    } catch (e: any) {
+      alert(e?.message || "Error al guardar ajuste");
+    }
   }
 
   // ── Settle ─────────────────────────────────────────────────
@@ -452,17 +463,29 @@ export default function SplitPage() {
 
   // ── People management ──────────────────────────────────────
   async function handleAddPerson(name: string, color: string) {
-    const p = await createPerson(name, color);
-    setPeople((prev) => [...prev, p]);
+    try {
+      const p = await createPerson(name, color);
+      setPeople((prev) => [...prev, p]);
+    } catch (e: any) {
+      alert(e?.message || "Error al agregar persona");
+    }
   }
   async function handleRemovePerson(id: number) {
-    await deletePerson(id);
-    setPeople((prev) => prev.filter((x) => x.id !== id));
+    try {
+      await deletePerson(id);
+      setPeople((prev) => prev.filter((x) => x.id !== id));
+    } catch (e: any) {
+      alert(e?.message || "Error al eliminar persona");
+    }
   }
   async function handleClearPeople() {
-    const toRemove = people.filter((p) => !p.is_me);
-    await Promise.all(toRemove.map((p) => deletePerson(p.id)));
-    setPeople((prev) => prev.filter((p) => p.is_me));
+    try {
+      const toRemove = people.filter((p) => !p.is_me);
+      await Promise.all(toRemove.map((p) => deletePerson(p.id)));
+      setPeople((prev) => prev.filter((p) => p.is_me));
+    } catch (e: any) {
+      alert(e?.message || "Error al limpiar lista");
+    }
   }
 
   // ── Add propina ────────────────────────────────────────────
@@ -512,34 +535,51 @@ export default function SplitPage() {
 
   // ── Update / delete / add item ────────────────────────────
   async function handleUpdateItem(itemId: number, patch: { name?: string; price?: number }) {
-    await updateSplitItem(itemId, patch);
-    // Optimistic update — keep items in their current order, no refetch
-    setResult((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        items: prev.items.map((it) => {
-          if (it.id !== itemId) return it;
-          const newPrice = patch.price ?? it.price;
-          const newName = patch.name ?? it.name;
-          return { ...it, name: newName, price: newPrice, line_total: newPrice * Math.max(it.quantity, 1) };
-        }),
-      };
-    });
+    try {
+      await updateSplitItem(itemId, patch);
+      // Optimistic local update (preserves order) + server sync for accurate totals/amounts
+      setResult((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          items: prev.items.map((it) => {
+            if (it.id !== itemId) return it;
+            const newPrice = patch.price ?? it.price;
+            const newName = patch.name ?? it.name;
+            return { ...it, name: newName, price: newPrice, line_total: newPrice * Math.max(it.quantity, 1) };
+          }),
+        };
+      });
+      if (txId) await refreshResult(txId);
+    } catch (e: any) {
+      alert(e?.message || "Error al actualizar ítem");
+    }
   }
 
   async function handleDeleteItem(itemId: number) {
-    await deleteSplitItem(itemId);
-    setResult((prev) => {
-      if (!prev) return prev;
-      return { ...prev, items: prev.items.filter((it) => it.id !== itemId) };
-    });
+    try {
+      await deleteSplitItem(itemId);
+      if (txId) {
+        await refreshResult(txId);
+      } else {
+        setResult((prev) => {
+          if (!prev) return prev;
+          return { ...prev, items: prev.items.filter((it) => it.id !== itemId) };
+        });
+      }
+    } catch (e: any) {
+      alert(e?.message || "Error al eliminar ítem");
+    }
   }
 
   async function handleAddItem(name: string, price: number) {
     if (!txId) return;
-    await addSplitItem(txId, { name, price, quantity: 1 });
-    await refreshResult(txId);
+    try {
+      await addSplitItem(txId, { name, price, quantity: 1 });
+      await refreshResult(txId);
+    } catch (e: any) {
+      alert(e?.message || "Error al agregar ítem");
+    }
   }
 
   // ── Add IVA manually ──────────────────────────────────────
