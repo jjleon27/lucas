@@ -25,6 +25,71 @@ function todayDay(): number {
   return new Date().getDate();
 }
 
+interface ItemRowProps {
+  item: FixedItem;
+  state: "confirmed" | "rejected" | null;
+  today: number;
+  saving: boolean;
+  fmt: (v: number) => string;
+  onConfirm: (item: FixedItem, s: "confirmed" | "rejected") => void;
+  onRemove: (item: FixedItem) => void;
+}
+
+function ItemRow({ item, state, today, saving, fmt, onConfirm, onRemove }: ItemRowProps) {
+  const overdue = item.day <= today && !state;
+  const upcoming = item.day > today;
+  return (
+    <div className={`flex items-center gap-3 py-2 px-3 rounded-xl ${
+      state === "confirmed" ? "bg-green-50"
+      : state === "rejected" ? "bg-slate-50 opacity-60"
+      : overdue ? "bg-amber-50 border border-amber-200"
+      : "bg-white border border-slate-100"
+    }`}>
+      <div className={`text-sm font-mono w-6 text-center ${overdue && !state ? "text-amber-600 font-bold" : "text-slate-400"}`}>
+        {item.day}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium truncate">{item.name}</div>
+        <div className={`text-xs ${item.is_income ? "text-green-600" : "text-rose-600"}`}>
+          {item.is_income ? "+" : "-"}{fmt(item.amount)}
+          {upcoming && <span className="text-slate-400 ml-1">· en {item.day - today} días</span>}
+          {overdue && !state && <span className="text-amber-600 ml-1 font-medium">· vencido</span>}
+        </div>
+      </div>
+      {state === "confirmed" && <Check className="w-4 h-4 text-green-600 shrink-0" />}
+      {state === "rejected" && <X className="w-4 h-4 text-slate-400 shrink-0" />}
+      {!state && (
+        <div className="flex gap-1 shrink-0">
+          <button
+            onClick={() => onConfirm(item, "confirmed")}
+            disabled={saving}
+            className="p-1.5 rounded-lg bg-green-100 hover:bg-green-200 text-green-700"
+            title="Confirmar — sí ocurrió"
+          >
+            <Check className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => onConfirm(item, "rejected")}
+            disabled={saving}
+            className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500"
+            title="No ocurrió este mes"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => onRemove(item)}
+            disabled={saving}
+            className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-300 hover:text-rose-400"
+            title="Eliminar ítem"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface Props {
   user: User;
   currency: string;
@@ -102,62 +167,6 @@ export default function FixedItemsPanel({ user, currency, onUpdated }: Props) {
 
   const today = todayDay();
 
-  function ItemRow({ item }: { item: FixedItem }) {
-    const state = confirmations[itemKey(item)] ?? null;
-    const overdue = item.day <= today && !state;
-    const upcoming = item.day > today;
-    return (
-      <div className={`flex items-center gap-3 py-2 px-3 rounded-xl ${
-        state === "confirmed" ? "bg-green-50"
-        : state === "rejected" ? "bg-slate-50 opacity-60"
-        : overdue ? "bg-amber-50 border border-amber-200"
-        : "bg-white border border-slate-100"
-      }`}>
-        <div className={`text-sm font-mono w-6 text-center ${overdue && !state ? "text-amber-600 font-bold" : "text-slate-400"}`}>
-          {item.day}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium truncate">{item.name}</div>
-          <div className={`text-xs ${item.is_income ? "text-green-600" : "text-rose-600"}`}>
-            {item.is_income ? "+" : "-"}{fmt(item.amount)}
-            {upcoming && <span className="text-slate-400 ml-1">· en {item.day - today} días</span>}
-            {overdue && !state && <span className="text-amber-600 ml-1 font-medium">· vencido</span>}
-          </div>
-        </div>
-        {state === "confirmed" && <Check className="w-4 h-4 text-green-600 shrink-0" />}
-        {state === "rejected" && <X className="w-4 h-4 text-slate-400 shrink-0" />}
-        {!state && (
-          <div className="flex gap-1 shrink-0">
-            <button
-              onClick={() => setConfirmation(item, "confirmed")}
-              disabled={saving}
-              className="p-1.5 rounded-lg bg-green-100 hover:bg-green-200 text-green-700"
-              title="Confirmar — sí ocurrió"
-            >
-              <Check className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => setConfirmation(item, "rejected")}
-              disabled={saving}
-              className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-500"
-              title="No ocurrió este mes"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-            <button
-              onClick={() => removeItem(item)}
-              disabled={saving}
-              className="p-1.5 rounded-lg hover:bg-rose-50 text-slate-300 hover:text-rose-400"
-              title="Eliminar ítem"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  }
-
   return (
     <div className="card">
       <button
@@ -188,7 +197,18 @@ export default function FixedItemsPanel({ user, currency, onUpdated }: Props) {
           )}
 
           {/* Pending items */}
-          {pending.map((it) => <ItemRow key={itemKey(it)} item={it} />)}
+          {pending.map((it) => (
+            <ItemRow
+              key={itemKey(it)}
+              item={it}
+              state={confirmations[itemKey(it)] ?? null}
+              today={today}
+              saving={saving}
+              fmt={fmt}
+              onConfirm={setConfirmation}
+              onRemove={removeItem}
+            />
+          ))}
 
           {/* Done items (collapsible) */}
           {done.length > 0 && (
@@ -198,7 +218,18 @@ export default function FixedItemsPanel({ user, currency, onUpdated }: Props) {
                 {done.length} confirmado(s) este mes
               </summary>
               <div className="mt-1 space-y-1.5">
-                {done.map((it) => <ItemRow key={itemKey(it)} item={it} />)}
+                {done.map((it) => (
+                  <ItemRow
+                    key={itemKey(it)}
+                    item={it}
+                    state={confirmations[itemKey(it)] ?? null}
+                    today={today}
+                    saving={saving}
+                    fmt={fmt}
+                    onConfirm={setConfirmation}
+                    onRemove={removeItem}
+                  />
+                ))}
               </div>
             </details>
           )}

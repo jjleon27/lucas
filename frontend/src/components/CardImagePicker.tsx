@@ -196,15 +196,19 @@ export default function CardImagePicker({ value, accountId, onSelect, onUpload }
             </button>
           </div>
         ) : null}
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          className="btn-ghost flex items-center gap-2 text-sm"
-          disabled={uploading}
-        >
-          <Camera size={15} />
-          {uploading ? "Subiendo…" : "Subir foto de mi tarjeta"}
-        </button>
+        {onUpload ? (
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="btn-ghost flex items-center gap-2 text-sm"
+            disabled={uploading}
+          >
+            <Camera size={15} />
+            {uploading ? "Subiendo…" : "Subir foto de mi tarjeta"}
+          </button>
+        ) : (
+          <span className="text-xs text-slate-400">Guarda la cuenta primero para subir foto</span>
+        )}
         <input
           ref={fileRef}
           type="file"
