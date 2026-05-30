@@ -5,7 +5,6 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip,
 } from "recharts";
 import StatCard from "@/components/StatCard";
-import VoiceButton from "@/components/VoiceButton";
 import BudgetPanel from "@/components/BudgetPanel";
 import { DashboardData, User, getDashboard, getToken, me, updateMe } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
@@ -238,9 +237,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="hidden md:block">
-        <VoiceButton onSaved={() => { getDashboard().then(setData).catch(() => {}); }} />
-      </div>
     </div>
   );
 }
