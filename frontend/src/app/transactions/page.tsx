@@ -5,6 +5,7 @@ import { ChevronDown, ChevronUp, X } from "lucide-react";
 import {
   Account,
   Transaction,
+  createOwnTransfer,
   createTransaction,
   getToken,
   listAccounts,
@@ -28,7 +29,8 @@ function ManualTxModal({
   const { t, locale } = useT();
   const today = new Date().toISOString().slice(0, 10);
 
-  const [isIncome, setIsIncome] = useState(false);
+  type Mode = "expense" | "income" | "transfer";
+  const [mode, setMode] = useState<Mode>("expense");
   const [amount, setAmount] = useState(0);
   const [merchant, setMerchant] = useState("");
   const [category, setCategory] = useState("Alimentación");
@@ -36,6 +38,9 @@ function ManualTxModal({
   const [date, setDate] = useState(today);
   const [accountId, setAccountId] = useState<number | null>(
     accounts.length > 0 ? accounts[0].id : null,
+  );
+  const [destAccountId, setDestAccountId] = useState<number | null>(
+    accounts.length > 1 ? accounts[1].id : null,
   );
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
@@ -45,23 +50,45 @@ function ManualTxModal({
     ? customCategory.trim()
     : category === "__otra__" ? "Otros" : category;
 
+  function switchMode(m: Mode) {
+    setMode(m);
+    setErr("");
+    if (m === "income" && category === "Alimentación") setCategory("Ingresos");
+    if (m === "expense" && category === "Ingresos") setCategory("Alimentación");
+  }
+
   async function save() {
     if (!amount || amount <= 0) { setErr("Escribe un monto válido"); return; }
-    if (!merchant.trim()) { setErr("Escribe una descripción"); return; }
-    if (accounts.length > 0 && !accountId) { setErr("Selecciona una cuenta para este movimiento"); return; }
     setBusy(true);
     setErr("");
     try {
-      await createTransaction({
-        amount,
-        currency: accounts.find((a) => a.id === accountId)?.currency || "CLP",
-        category: effectiveCategory,
-        date,
-        merchant: merchant.trim(),
-        notes,
-        is_income: isIncome,
-        account_id: accountId,
-      });
+      if (mode === "transfer") {
+        if (!accountId) { setErr("Selecciona la cuenta origen"); setBusy(false); return; }
+        if (!destAccountId) { setErr("Selecciona la cuenta destino"); setBusy(false); return; }
+        if (accountId === destAccountId) { setErr("Las cuentas deben ser distintas"); setBusy(false); return; }
+        await createOwnTransfer({
+          from_account_id: accountId,
+          to_account_id: destAccountId,
+          amount,
+          date,
+          merchant: merchant.trim() || "Transferencia entre cuentas",
+          notes,
+          currency: accounts.find((a) => a.id === accountId)?.currency || "CLP",
+        });
+      } else {
+        if (!merchant.trim()) { setErr("Escribe una descripción"); setBusy(false); return; }
+        if (accounts.length > 0 && !accountId) { setErr("Selecciona una cuenta"); setBusy(false); return; }
+        await createTransaction({
+          amount,
+          currency: accounts.find((a) => a.id === accountId)?.currency || "CLP",
+          category: effectiveCategory,
+          date,
+          merchant: merchant.trim(),
+          notes,
+          is_income: mode === "income",
+          account_id: accountId,
+        });
+      }
       onSaved();
       onClose();
     } catch (e: any) {
@@ -90,25 +117,34 @@ function ManualTxModal({
           </button>
         </div>
 
-        {/* Income / expense toggle */}
+        {/* Mode toggle */}
         <div className="flex rounded-xl overflow-hidden border border-slate-200 text-sm font-medium">
           <button
             type="button"
-            onClick={() => { setIsIncome(false); if (category === "Ingresos") setCategory("Alimentación"); }}
+            onClick={() => switchMode("expense")}
             className={`flex-1 py-2.5 transition ${
-              !isIncome ? "bg-rose-500 text-white" : "text-slate-500 hover:bg-slate-50"
+              mode === "expense" ? "bg-rose-500 text-white" : "text-slate-500 hover:bg-slate-50"
             }`}
           >
             💸 Gasto
           </button>
           <button
             type="button"
-            onClick={() => { setIsIncome(true); setCategory("Ingresos"); }}
+            onClick={() => switchMode("income")}
             className={`flex-1 py-2.5 transition ${
-              isIncome ? "bg-emerald-500 text-white" : "text-slate-500 hover:bg-slate-50"
+              mode === "income" ? "bg-emerald-500 text-white" : "text-slate-500 hover:bg-slate-50"
             }`}
           >
             💰 Ingreso
+          </button>
+          <button
+            type="button"
+            onClick={() => switchMode("transfer")}
+            className={`flex-1 py-2.5 transition ${
+              mode === "transfer" ? "bg-sky-500 text-white" : "text-slate-500 hover:bg-slate-50"
+            }`}
+          >
+            🔄 Transferir
           </button>
         </div>
 
@@ -127,74 +163,129 @@ function ManualTxModal({
           )}
         </label>
 
-        {/* Description */}
-        <label className="block">
-          <span className="text-xs uppercase text-slate-500">Descripción</span>
-          <input
-            className="input mt-1"
-            placeholder={isIncome ? "Ej: Sueldo, Show de magia, Freelance…" : "Ej: Almuerzo, Arriendo, Uber…"}
-            value={merchant}
-            onChange={(e) => setMerchant(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && save()}
-          />
-        </label>
-
-        {/* Category + Date row */}
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="text-xs uppercase text-slate-500">Categoría</span>
-            <select
-              className="input mt-1"
-              value={category}
-              onChange={(e) => { setCategory(e.target.value); if (e.target.value !== "__otra__") setCustomCategory(""); }}
-            >
-              {(isIncome
-                ? ["Ingresos", "Transferencia", "Otros"]
-                : CATEGORIES.filter((c) => c !== "Ingresos")
-              ).map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-              <option value="__otra__">✏️ Otra…</option>
-            </select>
-            {category === "__otra__" && (
-              <input
-                autoFocus
-                className="input mt-1 text-sm"
-                placeholder="Nueva categoría"
-                value={customCategory}
-                onChange={(e) => setCustomCategory(e.target.value)}
-              />
+        {mode === "transfer" ? (
+          /* ── Transfer mode ─────────────────────────────────────────────── */
+          <div className="space-y-3">
+            {accounts.length > 0 && (
+              <label className="block">
+                <span className="text-xs uppercase text-slate-500">Cuenta origen</span>
+                <select
+                  className="input mt-1"
+                  value={accountId ?? ""}
+                  onChange={(e) => setAccountId(Number(e.target.value))}
+                >
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+                  ))}
+                </select>
+              </label>
             )}
-          </label>
-          <label className="block">
-            <span className="text-xs uppercase text-slate-500">Fecha</span>
-            <input
-              type="date"
-              lang={locale}
-              className="input mt-1"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </label>
-        </div>
+            {accounts.length > 0 && (
+              <label className="block">
+                <span className="text-xs uppercase text-slate-500">Cuenta destino</span>
+                <select
+                  className="input mt-1"
+                  value={destAccountId ?? ""}
+                  onChange={(e) => setDestAccountId(Number(e.target.value))}
+                >
+                  {accounts.filter((a) => a.id !== accountId).map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="text-xs uppercase text-slate-500">Descripción (opcional)</span>
+                <input
+                  className="input mt-1"
+                  placeholder="Transferencia entre cuentas"
+                  value={merchant}
+                  onChange={(e) => setMerchant(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs uppercase text-slate-500">Fecha</span>
+                <input
+                  type="date"
+                  lang={locale}
+                  className="input mt-1"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+        ) : (
+          /* ── Expense / Income mode ──────────────────────────────────────── */
+          <>
+            <label className="block">
+              <span className="text-xs uppercase text-slate-500">Descripción</span>
+              <input
+                className="input mt-1"
+                placeholder={mode === "income" ? "Ej: Sueldo, Freelance…" : "Ej: Almuerzo, Arriendo, Uber…"}
+                value={merchant}
+                onChange={(e) => setMerchant(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && save()}
+              />
+            </label>
 
-        {/* Account — obligatorio */}
-        {accounts.length > 0 && (
-          <label className="block">
-            <span className="text-xs uppercase text-slate-500">Cuenta <span className="text-rose-500">*</span></span>
-            <select
-              className={`input mt-1 ${!accountId ? "border-rose-300" : ""}`}
-              value={accountId ?? ""}
-              onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : null)}
-            >
-              {!accountId && <option value="" disabled>Selecciona una cuenta…</option>}
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}{a.bank ? ` — ${a.bank}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="text-xs uppercase text-slate-500">Categoría</span>
+                <select
+                  className="input mt-1"
+                  value={category}
+                  onChange={(e) => { setCategory(e.target.value); if (e.target.value !== "__otra__") setCustomCategory(""); }}
+                >
+                  {(mode === "income"
+                    ? ["Ingresos", "Transferencia", "Otros"]
+                    : CATEGORIES.filter((c) => c !== "Ingresos")
+                  ).map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                  <option value="__otra__">✏️ Otra…</option>
+                </select>
+                {category === "__otra__" && (
+                  <input
+                    autoFocus
+                    className="input mt-1 text-sm"
+                    placeholder="Nueva categoría"
+                    value={customCategory}
+                    onChange={(e) => setCustomCategory(e.target.value)}
+                  />
+                )}
+              </label>
+              <label className="block">
+                <span className="text-xs uppercase text-slate-500">Fecha</span>
+                <input
+                  type="date"
+                  lang={locale}
+                  className="input mt-1"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                />
+              </label>
+            </div>
+
+            {accounts.length > 0 && (
+              <label className="block">
+                <span className="text-xs uppercase text-slate-500">Cuenta <span className="text-rose-500">*</span></span>
+                <select
+                  className={`input mt-1 ${!accountId ? "border-rose-300" : ""}`}
+                  value={accountId ?? ""}
+                  onChange={(e) => setAccountId(e.target.value ? Number(e.target.value) : null)}
+                >
+                  {!accountId && <option value="" disabled>Selecciona una cuenta…</option>}
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}{a.bank ? ` — ${a.bank}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </>
         )}
 
         {/* Notes */}

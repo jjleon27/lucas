@@ -153,6 +153,16 @@ class LinkTransferIn(BaseModel):
     b_id: int
 
 
+class OwnTransferCreate(BaseModel):
+    from_account_id: int
+    to_account_id: int
+    amount: float
+    date: _date
+    merchant: str = "Transferencia entre cuentas"
+    notes: str = ""
+    currency: str = "CLP"
+
+
 # ---------- OCR / Upload ----------
 class ParsedItem(BaseModel):
     name: str

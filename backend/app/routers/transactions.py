@@ -145,6 +145,52 @@ def update_transaction(
     return tx
 
 
+@router.post("/transfer", response_model=list[schemas.TransactionOut], status_code=201)
+def create_own_transfer(
+    payload: schemas.OwnTransferCreate,
+    current: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create an internal transfer between two of the user's own accounts."""
+    if payload.from_account_id == payload.to_account_id:
+        raise HTTPException(400, "from and to accounts must be different")
+    from_acc = db.query(models.Account).filter(
+        models.Account.id == payload.from_account_id,
+        models.Account.user_id == current.id,
+    ).first()
+    if not from_acc:
+        raise HTTPException(400, "from_account_id does not belong to this user")
+    to_acc = db.query(models.Account).filter(
+        models.Account.id == payload.to_account_id,
+        models.Account.user_id == current.id,
+    ).first()
+    if not to_acc:
+        raise HTTPException(400, "to_account_id does not belong to this user")
+
+    currency = payload.currency or from_acc.currency or "CLP"
+    shared = dict(
+        user_id=current.id,
+        amount=payload.amount,
+        currency=currency,
+        category="Transferencia",
+        date=payload.date,
+        merchant=payload.merchant,
+        notes=payload.notes,
+        is_transfer=True,
+        image_url="",
+    )
+    tx_out = models.Transaction(**shared, account_id=payload.from_account_id, is_income=False)
+    tx_in  = models.Transaction(**shared, account_id=payload.to_account_id,   is_income=True)
+    db.add(tx_out)
+    db.add(tx_in)
+    db.flush()
+    account_svc.link_as_transfer(db, tx_out, tx_in)
+    db.commit()
+    db.refresh(tx_out)
+    db.refresh(tx_in)
+    return [tx_out, tx_in]
+
+
 @router.delete("/{tx_id}", status_code=204)
 def delete_transaction(
     tx_id: int,

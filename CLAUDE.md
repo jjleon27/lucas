@@ -24,6 +24,11 @@ ANTES de responder al usuario, actualiza `docs/SESSION_STATE.md` añadiendo esta
     Bugs pendientes: [lista]
     Archivos clave para continuar: [rutas relevantes]
 
+## Principios de código
+
+- Antes de añadir código nuevo, revisar si existe algo reutilizable o si el problema puede resolverse modificando lo existente.
+- No añadir complejidad nueva cuando se puede limpiar o reutilizar lo actual.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.

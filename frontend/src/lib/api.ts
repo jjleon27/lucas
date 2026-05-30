@@ -262,6 +262,21 @@ export async function suggestTransferMatches(tx_id: number): Promise<Transaction
   return request(`/accounts/transfer/suggest/${tx_id}`);
 }
 
+export async function createOwnTransfer(payload: {
+  from_account_id: number;
+  to_account_id: number;
+  amount: number;
+  date: string;
+  merchant?: string;
+  notes?: string;
+  currency?: string;
+}): Promise<Transaction[]> {
+  return request("/transactions/transfer", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function createTransaction(
   body: Omit<Transaction, "id" | "image_url" | "created_at" | "is_transfer" | "linked_transaction_id"> & {
     image_url?: string;
