@@ -253,8 +253,8 @@ function TransactionsInner() {
   const [fCategory, setFCategory] = useState(initCategory);
   const [fAccountId, setFAccountId] = useState<number | null>(initAccountId);
   const [fDateFrom, setFDateFrom] = useState(
-    // Pre-fill current month when coming from dashboard type/category filter
-    (initType || initCategory) ? new Date().toISOString().slice(0, 7) + "-01" : ""
+    // Pre-fill current month only when coming from dashboard with explicit params
+    (params.get("type") || params.get("category")) ? new Date().toISOString().slice(0, 7) + "-01" : ""
   );
   const [fDateTo, setFDateTo] = useState("");
   const [fAmountMin, setFAmountMin] = useState("");
@@ -264,13 +264,16 @@ function TransactionsInner() {
   const load = useCallback(async () => {
     setAllTxs(null);
     try {
-      const [list, accs] = await Promise.all([listTransactions(), listAccounts()]);
+      const [list, accs] = await Promise.all([
+        listTransactions(pending ? { pending_transfers: true } : {}),
+        listAccounts(),
+      ]);
       setAllTxs(list);
       setAccounts(accs);
     } catch {
       router.replace("/");
     }
-  }, [router]);
+  }, [router, pending]);
 
   useEffect(() => {
     if (!getToken()) { router.replace("/"); return; }
@@ -284,7 +287,7 @@ function TransactionsInner() {
       if (search && !tx.merchant?.toLowerCase().includes(search.toLowerCase()) &&
           !tx.category?.toLowerCase().includes(search.toLowerCase())) return false;
       if (fType === "expense" && (tx.is_income || tx.is_transfer)) return false;
-      if (fType === "income" && !tx.is_income) return false;
+      if (fType === "income" && (!tx.is_income || (tx.is_transfer && tx.linked_transaction_id != null))) return false;
       if (fCategory && tx.category !== fCategory) return false;
       if (fAccountId && tx.account_id !== fAccountId) return false;
       if (fDateFrom && tx.date < fDateFrom) return false;
@@ -304,7 +307,7 @@ function TransactionsInner() {
     setFDateFrom(""); setFDateTo(""); setFAmountMin(""); setFAmountMax("");
   }
 
-  const backHref = initAccountId ? "/accounts" : (initType || initCategory) ? "/dashboard" : null;
+  const backHref = initAccountId ? "/accounts" : (params.get("type") || params.get("category")) ? "/dashboard" : null;
 
   return (
     <div className="max-w-5xl mx-auto w-full space-y-4 pb-24 md:pb-0">

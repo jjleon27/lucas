@@ -93,13 +93,19 @@ def summarize(db: Session, user: models.User, today: date | None = None) -> dict
     income_target: float = float(settings.get("income_target") or 0)
 
     # Fixed monthly expenses (rent, phone, gym, subscriptions…)
-    # Stored as: settings.fixed_expenses = [{"name": str, "amount": float}, ...]
     raw_fixed: list = settings.get("fixed_expenses") or []
     fixed_expenses = [
         {"name": str(fe.get("name", "")), "amount": float(fe.get("amount", 0))}
         for fe in raw_fixed if isinstance(fe, dict)
     ]
     fixed_total = sum(fe["amount"] for fe in fixed_expenses)
+
+    # Fixed monthly incomes (salary, pension, rental income…)
+    raw_fixed_incomes: list = settings.get("fixed_incomes") or []
+    fixed_incomes = [
+        {"name": str(fi.get("name", "")), "amount": float(fi.get("amount", 0))}
+        for fi in raw_fixed_incomes if isinstance(fi, dict)
+    ]
 
     # Historical average — always computed (shown as a hint in the UI)
     historical_avg_income = _avg_monthly_income(db, user.id, today, months=3)
@@ -189,7 +195,8 @@ def summarize(db: Session, user: models.User, today: date | None = None) -> dict
         "days_elapsed": days_elapsed,
         "days_in_month": days_in_month,
         # ── Fixed vs variable budget ──
-        "fixed_expenses": fixed_expenses,       # [{"name": str, "amount": float}]
+        "fixed_expenses": fixed_expenses,
+        "fixed_incomes": fixed_incomes,
         "fixed_total": round(fixed_total, 2),
-        "variable_budget": round(variable_budget, 2),  # income_target - fixed_total
+        "variable_budget": round(variable_budget, 2),
     }

@@ -51,7 +51,7 @@ function ReviewCard({
   onAction: (
     action: "confirm" | "skip" | "not_expense" | "pending" | "confirm_cc_payment" | "confirm_own_transfer",
     overrides?: { category?: string; merchant?: string; amount?: number; remember?: boolean; account_id?: number; target_account_id?: number; source_account_id?: number }
-  ) => void;
+  ) => Promise<void> | void;
 }) {
   const [category, setCategory] = useState(tx.category || "Otros");
   const [customCategory, setCustomCategory] = useState(
@@ -102,23 +102,27 @@ function ReviewCard({
   ) {
     if (acting) return;
     setActing(true);
-    if (action === "confirm_cc_payment") {
-      onAction(action, {
-        target_account_id: selectedCCId ?? undefined,
-        source_account_id: selectedDebitId ?? undefined,
-      });
-    } else if (action === "confirm_own_transfer") {
-      onAction(action, {
-        source_account_id: selectedExpenseAccountId ?? undefined,
-        target_account_id: selectedIncomeAccountId ?? undefined,
-      });
-    } else {
-      onAction(action, {
-        category: effectiveCategory, merchant, amount, remember,
-        account_id: tx.is_income
-          ? (selectedIncomeAccountId ?? undefined)
-          : (selectedExpenseAccountId ?? undefined),
-      });
+    try {
+      if (action === "confirm_cc_payment") {
+        await onAction(action, {
+          target_account_id: selectedCCId ?? undefined,
+          source_account_id: selectedDebitId ?? undefined,
+        });
+      } else if (action === "confirm_own_transfer") {
+        await onAction(action, {
+          source_account_id: selectedExpenseAccountId ?? undefined,
+          target_account_id: selectedIncomeAccountId ?? undefined,
+        });
+      } else {
+        await onAction(action, {
+          category: effectiveCategory, merchant, amount, remember,
+          account_id: tx.is_income
+            ? (selectedIncomeAccountId ?? undefined)
+            : (selectedExpenseAccountId ?? undefined),
+        });
+      }
+    } finally {
+      setActing(false);
     }
   }
 
@@ -177,7 +181,7 @@ function ReviewCard({
             />
           ) : (
             <button
-              className="font-mono font-bold text-xl text-rose-500 hover:text-rose-600 transition"
+              className={`font-mono font-bold text-xl transition ${tx.is_income ? "text-emerald-500 hover:text-emerald-600" : "text-rose-500 hover:text-rose-600"}`}
               onClick={() => setEditingAmount(true)}
               title="Toca para editar el monto"
             >

@@ -376,7 +376,7 @@ function AccountFormModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="card max-w-lg w-full space-y-4 overflow-y-auto max-h-[90dvh]" onClick={(e) => e.stopPropagation()}>
-        <h3 className="text-lg font-semibold">{value.id ? t("accounts.name") : t("accounts.add")}</h3>
+        <h3 className="text-lg font-semibold">{value.id ? t("accounts.edit") : t("accounts.add")}</h3>
 
         <label className="block">
           <span className="text-xs uppercase text-slate-500">{t("accounts.name")}</span>

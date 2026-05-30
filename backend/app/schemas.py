@@ -448,6 +448,7 @@ class DashboardOut(BaseModel):
     days_in_month: int = 30
     # ── Fixed vs variable budget ──
     fixed_expenses: list[dict] = []     # [{"name": str, "amount": float}]
+    fixed_incomes: list[dict] = []      # [{"name": str, "amount": float}]
     fixed_total: float = 0.0            # sum of all fixed expenses
     variable_budget: float = 0.0        # income_target - fixed_total
     # ── Review queue ──

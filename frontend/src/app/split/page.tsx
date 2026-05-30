@@ -568,11 +568,17 @@ export default function SplitPage() {
     setMultiSettlement(null);
     setMultiPayer(false);
     setPayerAmounts({});
+    setPayerPersonId(null);
+    setPayerAccountId(null);
     setManualAmount(0);
     setManualMerchant("");
     setUploadErr("");
     setPropinaAmount(0);
+    setPropinaPct(10);
+    setPropinaMode("pct");
     setDiscountAmount(0);
+    setDiscountPct(10);
+    setDiscountMode("pct");
     setIvaIncluded(false);
     setDupeDetected(false);
   }

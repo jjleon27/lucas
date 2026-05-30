@@ -7,7 +7,7 @@
  * When 2+ people share an item, an "Ajustar" row lets you pick
  * equal / % / exact-amount per person.
  */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Plus, Trash2, ChevronDown, ChevronUp, Check, Pencil, X } from "lucide-react";
 import NumericInput from "@/components/NumericInput";
 import {
@@ -255,6 +255,14 @@ function ItemCard({
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(item.name);
   const [editPrice, setEditPrice] = useState(item.line_total / Math.max(item.quantity, 1));
+
+  // Sync edit fields when item data changes externally (e.g. after a remote update)
+  useEffect(() => {
+    if (!editing) {
+      setEditName(item.name);
+      setEditPrice(item.line_total / Math.max(item.quantity, 1));
+    }
+  }, [item.name, item.line_total, item.quantity, editing]);
 
   const assignedIds = new Set(item.assignees.map((a) => a.person_id));
   const assignedPeople = people.filter((p) => assignedIds.has(p.id));

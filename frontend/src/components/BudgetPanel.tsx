@@ -34,7 +34,7 @@ export default function BudgetPanel({ data, currency, onSaved }: Props) {
   // ── Local edit state ──────────────────────────────────────────────────────
   const [incomeTarget, setIncomeTarget] = useState(data.income_target);
   const [fixedIncomes, setFixedIncomes] = useState<FixedItem[]>(
-    ((data as any).fixed_incomes || []).map((fi: FixedItem) => ({ name: fi.name, amount: fi.amount })),
+    (data.fixed_incomes || []).map((fi) => ({ name: fi.name, amount: fi.amount })),
   );
   const [fixedExpenses, setFixedExpenses] = useState<FixedItem[]>(
     (data.fixed_expenses || []).map((fe) => ({ name: fe.name, amount: fe.amount })),

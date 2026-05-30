@@ -117,7 +117,7 @@ export default function Sidebar() {
 
         {/* Mobile nav: 4 primary tabs + "Más" */}
         <nav className="md:hidden flex items-stretch h-16">
-          {primaryNav.map(({ href, label, icon: Icon }) => {
+          {primaryNav.map(({ href, label, icon: Icon, badge }) => {
             const active = pathname?.startsWith(href);
             return (
               <Link
@@ -127,7 +127,14 @@ export default function Sidebar() {
                   active ? "text-brand-700" : "text-slate-400 hover:text-slate-600"
                 }`}
               >
-                <Icon className="w-6 h-6" />
+                <span className="relative">
+                  <Icon className="w-6 h-6" />
+                  {badge != null && (
+                    <span className="absolute -top-1 -right-1.5 bg-rose-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                      {badge > 9 ? "9+" : badge}
+                    </span>
+                  )}
+                </span>
                 <span className="text-[10px] font-medium leading-none">{label}</span>
               </Link>
             );

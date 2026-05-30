@@ -329,6 +329,7 @@ export interface DashboardData {
   days_in_month: number;
   // Fixed vs variable budget
   fixed_expenses: { name: string; amount: number }[];
+  fixed_incomes: { name: string; amount: number }[];
   fixed_total: number;
   variable_budget: number;
   // Review queue

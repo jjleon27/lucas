@@ -26,7 +26,7 @@ export default function StatCard({ label, value, hint, tone = "default", href }:
             {t(`status.${tone}`)}
           </span>
         )}
-        {href && tone === "default" && (
+        {href && (
           <span className="text-slate-300 shrink-0 text-xs">→</span>
         )}
       </div>

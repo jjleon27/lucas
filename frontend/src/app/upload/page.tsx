@@ -172,7 +172,7 @@ export default function UploadPage() {
           is_income: Boolean(d.is_income),
           date: String(d.date ?? new Date().toISOString().slice(0, 10)),
         });
-        setVoiceAccount(accounts[0]?.id ?? null);
+        setVoiceAccount((prev) => prev ?? accounts[0]?.id ?? null);
       } else {
         alert(out.reply || "No pude entender el gasto. Intentá de nuevo.");
       }

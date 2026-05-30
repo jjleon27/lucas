@@ -126,6 +126,8 @@ def update_transaction(
         raise HTTPException(404, "Transaction not found")
 
     patch = payload.model_dump(exclude_none=True)
+    if "amount" in patch and patch["amount"] <= 0:
+        raise HTTPException(400, "amount must be greater than 0")
     # If the user is changing the category manually, remember it so next time
     # the same merchant auto-categorises without an LLM call.
     category_changed = "category" in patch and patch["category"] != tx.category
