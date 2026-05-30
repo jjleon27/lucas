@@ -160,6 +160,7 @@ export default function SplitPage() {
   const [multiPayer, setMultiPayer] = useState(false);
   const [payerAmounts, setPayerAmounts] = useState<Record<number, number>>({});
   const [multiSettlement, setMultiSettlement] = useState<Transfer[] | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // ── Boot ───────────────────────────────────────────────────
   useEffect(() => {
@@ -983,14 +984,16 @@ export default function SplitPage() {
             </ul>
           </div>
 
-          <button type="button" className="btn-ghost w-full flex items-center justify-center gap-2 text-sm"
+          <button type="button" className={`btn-ghost w-full flex items-center justify-center gap-2 text-sm ${copied ? "text-emerald-600" : ""}`}
             onClick={() => {
               const lines = ["💰 División de cuenta", ""];
               result.people.forEach((p) => lines.push(`${p.person_name}: ${formatMoney(p.total, currency)}`));
               lines.push(`\nTotal: ${formatMoney(result.total_amount, currency)}`);
-              navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
+              navigator.clipboard.writeText(lines.join("\n"))
+                .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })
+                .catch(() => alert("No se pudo copiar al portapapeles"));
             }}>
-            📋 Copiar para WhatsApp
+            {copied ? "✓ Copiado" : "📋 Copiar para WhatsApp"}
           </button>
 
           <div className="flex gap-3">
