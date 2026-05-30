@@ -221,7 +221,7 @@ export default function DashboardPage() {
             <FixedItemsPanel
               user={user}
               currency={currency}
-              onUpdated={(u) => setUser(u)}
+              onUpdated={(u) => { setUser(u); getDashboard().then(setData).catch(() => {}); }}
             />
           )}
 

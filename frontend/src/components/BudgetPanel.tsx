@@ -20,6 +20,7 @@ import NumericInput from "@/components/NumericInput";
 interface FixedItem {
   name: string;
   amount: number;
+  day?: number;
 }
 
 interface Props {
@@ -62,7 +63,7 @@ export default function BudgetPanel({ data, currency, onSaved }: Props) {
 
   function addFixedIncome() {
     if (!newIncomeName.trim() || newIncomeAmount <= 0) return;
-    const updated = [...fixedIncomes, { name: newIncomeName.trim(), amount: newIncomeAmount }];
+    const updated = [...fixedIncomes, { name: newIncomeName.trim(), amount: newIncomeAmount, day: 1 }];
     setFixedIncomes(updated);
     setNewIncomeName("");
     setNewIncomeAmount(0);
@@ -99,7 +100,7 @@ export default function BudgetPanel({ data, currency, onSaved }: Props) {
 
   function addFixed() {
     if (!newName.trim() || newAmount <= 0) return;
-    setFixedExpenses((prev) => [...prev, { name: newName.trim(), amount: newAmount }]);
+    setFixedExpenses((prev) => [...prev, { name: newName.trim(), amount: newAmount, day: 1 }]);
     setNewName("");
     setNewAmount(0);
   }

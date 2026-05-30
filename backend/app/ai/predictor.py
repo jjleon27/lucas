@@ -95,7 +95,11 @@ def summarize(db: Session, user: models.User, today: date | None = None) -> dict
     # Fixed monthly expenses (rent, phone, gym, subscriptions…)
     raw_fixed: list = settings.get("fixed_expenses") or []
     fixed_expenses = [
-        {"name": str(fe.get("name", "")), "amount": float(fe.get("amount", 0))}
+        {
+            "name": str(fe.get("name", "")),
+            "amount": float(fe.get("amount", 0)),
+            "day": int(fe["day"]) if fe.get("day") is not None else 1,
+        }
         for fe in raw_fixed if isinstance(fe, dict)
     ]
     fixed_total = sum(fe["amount"] for fe in fixed_expenses)
@@ -103,7 +107,11 @@ def summarize(db: Session, user: models.User, today: date | None = None) -> dict
     # Fixed monthly incomes (salary, pension, rental income…)
     raw_fixed_incomes: list = settings.get("fixed_incomes") or []
     fixed_incomes = [
-        {"name": str(fi.get("name", "")), "amount": float(fi.get("amount", 0))}
+        {
+            "name": str(fi.get("name", "")),
+            "amount": float(fi.get("amount", 0)),
+            "day": int(fi["day"]) if fi.get("day") is not None else 1,
+        }
         for fi in raw_fixed_incomes if isinstance(fi, dict)
     ]
 
