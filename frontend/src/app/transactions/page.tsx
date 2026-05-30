@@ -172,7 +172,14 @@ function ManualTxModal({
                 <select
                   className="input mt-1"
                   value={accountId ?? ""}
-                  onChange={(e) => setAccountId(Number(e.target.value))}
+                  onChange={(e) => {
+                    const newId = Number(e.target.value);
+                    setAccountId(newId);
+                    if (destAccountId === newId) {
+                      const other = accounts.find((a) => a.id !== newId);
+                      setDestAccountId(other?.id ?? null);
+                    }
+                  }}
                 >
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>

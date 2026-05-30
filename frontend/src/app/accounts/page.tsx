@@ -76,11 +76,13 @@ export default function AccountsPage() {
       card_image_url: a.card_image_url || "",
       credit_limit: a.credit_limit,
       anchor_date: a.anchor_date || new Date().toISOString().slice(0, 10),
-      // For credit: store as "available" (limit - used) so the form field is intuitive
+      // For credit: store as "available" (limit - used) so the form field is intuitive.
+      // For debit/savings: use the stored anchor_balance directly — using current_balance
+      // here would corrupt future balance calculations if the anchor_date stays unchanged.
       anchor_balance:
         a.type === "credit"
-          ? (a.credit_limit ?? 0) - (a.current_used ?? a.anchor_balance ?? 0)
-          : a.current_balance ?? a.anchor_balance ?? 0,
+          ? (a.credit_limit ?? 0) - (a.current_used ?? 0)
+          : a.anchor_balance ?? 0,
     });
   }
 
@@ -93,10 +95,13 @@ export default function AccountsPage() {
     setBusy(true);
     setErr("");
     try {
-      // Credit cards: form stores "available", backend expects "used" (owed)
+      // Credit cards: form stores "available", backend expects "used" (owed).
+      // Force anchor_date = today so the stored anchor represents the current state,
+      // preventing the formula from double-counting past transactions.
+      const today = new Date().toISOString().slice(0, 10);
       const payload =
         editing.type === "credit"
-          ? { ...editing, anchor_balance: (editing.credit_limit ?? 0) - (editing.anchor_balance ?? 0) }
+          ? { ...editing, anchor_balance: (editing.credit_limit ?? 0) - (editing.anchor_balance ?? 0), anchor_date: today }
           : editing;
       if (editing.id) {
         const upd = await updateAccount(editing.id, payload);
