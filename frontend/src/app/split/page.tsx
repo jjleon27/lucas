@@ -1042,13 +1042,15 @@ export default function SplitPage() {
             )}
           </div>
 
-          <button className="btn-ghost w-full flex items-center justify-center gap-2"
+          <button className={`btn-ghost w-full flex items-center justify-center gap-2 ${copied ? "text-emerald-600" : ""}`}
             onClick={() => {
               const lines = ["💰 División de cuenta", ""];
               multiSettlement.forEach((tr) => lines.push(`${tr.fromName} → ${tr.toName}: ${formatMoney(tr.amount, currency)}`));
-              navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
+              navigator.clipboard.writeText(lines.join("\n"))
+                .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })
+                .catch(() => alert("No se pudo copiar al portapapeles"));
             }}>
-            📋 Copiar para WhatsApp
+            {copied ? "✓ Copiado" : "📋 Copiar para WhatsApp"}
           </button>
           <button className="btn-ghost w-full" onClick={reset}>{t("split.splitAnother")}</button>
         </div>
@@ -1113,7 +1115,7 @@ export default function SplitPage() {
           </div>
 
           <button
-            className="btn-ghost w-full flex items-center justify-center gap-2"
+            className={`btn-ghost w-full flex items-center justify-center gap-2 ${copied ? "text-emerald-600" : ""}`}
             onClick={() => {
               const payerIsMe = settlement.payer_person_id === null ||
                 people.find((p) => p.id === settlement.payer_person_id)?.is_me;
@@ -1131,10 +1133,12 @@ export default function SplitPage() {
               }
               lines.push("");
               lines.push(`Mi parte: ${formatMoney(settlement.my_total, currency)}`);
-              navigator.clipboard.writeText(lines.join("\n")).catch(() => {});
+              navigator.clipboard.writeText(lines.join("\n"))
+                .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })
+                .catch(() => alert("No se pudo copiar al portapapeles"));
             }}
           >
-            📋 Copiar para WhatsApp
+            {copied ? "✓ Copiado" : "📋 Copiar para WhatsApp"}
           </button>
 
           <button className="btn-ghost w-full" onClick={reset}>

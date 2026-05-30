@@ -536,12 +536,3 @@ function AccountFormModal({
     </div>
   );
 }
-
-// Tiny helper to darken a hex color for the gradient.
-function shade(hex: string, percent: number): string {
-  const m = hex.replace("#", "").match(/.{2}/g);
-  if (!m) return hex;
-  const [r, g, b] = m.map((h) => parseInt(h, 16));
-  const f = (n: number) => Math.max(0, Math.min(255, Math.round(n + (n * percent) / 100)));
-  return `#${[f(r), f(g), f(b)].map((n) => n.toString(16).padStart(2, "0")).join("")}`;
-}
