@@ -369,6 +369,23 @@ function ReviewStep({
     return groupColorByName[key] || dividedNameColors[key];
   }
 
+  // Keep divided items together at their original position (new items arrive at end from API)
+  const displayItems = useMemo(() => {
+    const idxMap = new Map(items.map((it, i) => [it.id, i]));
+    const firstColorIdx: Record<string, number> = {};
+    items.forEach((it, i) => {
+      const c = getItemColor(it);
+      if (c && !(c in firstColorIdx)) firstColorIdx[c] = i;
+    });
+    return [...items].sort((a, b) => {
+      const ca = getItemColor(a), cb = getItemColor(b);
+      const ka = ca !== undefined ? firstColorIdx[ca] : (idxMap.get(a.id) ?? 0);
+      const kb = cb !== undefined ? firstColorIdx[cb] : (idxMap.get(b.id) ?? 0);
+      if (ka !== kb) return ka - kb;
+      return (idxMap.get(a.id) ?? 0) - (idxMap.get(b.id) ?? 0);
+    });
+  }, [items, groupColorByName, dividedNameColors]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Divide action ─────────────────────────────────────────────
   const [divideItemId, setDivideItemId] = useState<number | null>(null);
 
@@ -458,7 +475,7 @@ function ReviewStep({
                   className={`p-1.5 rounded-full backdrop-blur-sm transition ${
                     drawMode ? "bg-rose-500 text-white ring-2 ring-rose-300" : "bg-black/50 text-white hover:bg-black/70"
                   }`}
-                  title={drawMode ? "Desactivar lápiz" : "Dibujar en la foto"}
+                  title={drawMode ? "Lápiz activo · 2 dedos para mover" : "Dibujar en la foto"}
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </button>
@@ -524,11 +541,11 @@ function ReviewStep({
 
           <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
             {(() => {
-              // Pre-compute global last index and total for each color group
+              // Pre-compute global last index and total for each color group (using display order)
               const lastIdxByColor: Record<string, number> = {};
               const totalByColor: Record<string, number> = {};
               const countByColor: Record<string, number> = {};
-              items.forEach((it, i) => {
+              displayItems.forEach((it, i) => {
                 const c = getItemColor(it);
                 if (c) {
                   lastIdxByColor[c] = i;
@@ -536,7 +553,7 @@ function ReviewStep({
                   countByColor[c] = (countByColor[c] || 0) + 1;
                 }
               });
-              return items.map((item, idx) => {
+              return displayItems.map((item, idx) => {
               const color = getItemColor(item);
               const isLastInGroup = color ? lastIdxByColor[color] === idx : false;
               const groupTotal = color ? totalByColor[color] : 0;
