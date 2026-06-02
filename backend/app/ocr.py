@@ -474,7 +474,9 @@ CRITICAL RULES:
       → Store as: {"name": description, "price": LINE_TOTAL/N, "quantity": N}
       → Example: "3 vienesa italiana 13200" → price=4400, quantity=3
       → Example: "6 schop medio royal 28800" → price=4800, quantity=6
+      → Example: "3 completos por 13200" → price=4400, quantity=3  ("por" = "for", LINE_TOTAL not unit price)
       CRITICAL: Even without "x", a leading integer IS the quantity. ALWAYS divide LINE_TOTAL by it.
+      CRITICAL: "N items por TOTAL" — "por" means "for (the total)", NOT "at (unit price)".
       CRITICAL: Never store LINE_TOTAL (13200, 28800, 8800) as the unit price when a leading quantity exists.
 
    b) All other lines: quantity = 1, price = the printed number (= line total)
@@ -1181,23 +1183,29 @@ def vision_parse(
                 # ── C / D: Fall back to LLM items ────────────────────────
                 items = [ParsedItem(**it) for it in t.get("items", []) if it.get("name")]
 
+                # Detect "line total stored as unit price" for ALL receipts
+                # (restaurant receipts have no IVA so total_neto_val = 0).
+                # If sum(price × qty) is much larger than the known total, the
+                # LLM stored LINE TOTALS as unit prices ("3 completos por 13200"
+                # → stored 13200 instead of 4400). Fix: divide each price by qty.
+                ref_total = (total_neto_val + iva_amount_val) if total_neto_val > 0 else raw_amount
+                if items and ref_total > 0:
+                    sum_with_qty = sum(it.price * it.quantity for it in items)
+                    sum_flat     = sum(it.price for it in items)
+                    if sum_with_qty / ref_total > 1.5 and abs(sum_flat / ref_total - 1.0) < 0.15:
+                        print("[ocr] Detected line-total-as-unit-price (no-IVA path): dividing by qty")
+                        items = [
+                            ParsedItem(
+                                name=it.name,
+                                price=round(it.price / it.quantity) if it.quantity > 1 else it.price,
+                                quantity=it.quantity,
+                            )
+                            for it in items
+                        ]
+
                 if total_neto_val > 0 and iva_amount_val > 0:
                     auth_total = round(total_neto_val + iva_amount_val)
                     if items:
-                        # Detect "line total stored as unit price" bug:
-                        # If sum(price) ≈ total (ignoring qty), the LLM stored
-                        # LINE TOTALS as unit prices. Fix by dividing each price by qty.
-                        sum_prices_flat = sum(it.price for it in items)
-                        if auth_total > 0 and abs(sum_prices_flat / auth_total - 1.0) < 0.05:
-                            print(f"[ocr] Detected line-total-as-unit-price: dividing by qty")
-                            items = [
-                                ParsedItem(
-                                    name=it.name,
-                                    price=round(it.price / it.quantity) if it.quantity > 1 else it.price,
-                                    quantity=it.quantity,
-                                )
-                                for it in items
-                            ]
                         # Proportional normalization — fixes total, best-effort items
                         items, raw_amount = _normalize_boleta_items(
                             items, total_neto_val, iva_amount_val
