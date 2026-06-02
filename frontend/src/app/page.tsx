@@ -209,7 +209,7 @@ export default function Landing() {
               <p className="text-xs text-slate-500 text-center">{t("auth.noPassword")}</p>
             </form>
           ) : (
-            <div className="space-y-3">
+            <form className="space-y-3" onSubmit={(e) => handlePassword(e, "login")}>
               <input
                 className="input"
                 type="email"
@@ -239,21 +239,22 @@ export default function Landing() {
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <button
+                  type="submit"
                   className="btn-ghost border border-slate-200"
-                  onClick={(e) => handlePassword(e, "login")}
                   disabled={loading}
                 >
-                  {t("auth.login")}
+                  {loading ? "…" : t("auth.login")}
                 </button>
                 <button
+                  type="button"
                   className="btn-primary"
                   onClick={(e) => handlePassword(e, "signup")}
                   disabled={loading}
                 >
-                  {t("auth.signup")}
+                  {loading ? "…" : t("auth.signup")}
                 </button>
               </div>
-            </div>
+            </form>
           )}
 
           {err && <p className="text-sm text-rose-600 text-center">{err}</p>}
