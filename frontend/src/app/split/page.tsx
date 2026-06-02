@@ -272,10 +272,11 @@ function ReviewStep({
   // Mouse pan (drag when not drawing)
   useEffect(() => {
     function onMove(e: MouseEvent) {
-      if (!panMouseRef.current) return;
-      const dx = e.clientX - panMouseRef.current.sx;
-      const dy = e.clientY - panMouseRef.current.sy;
-      setImgTransform(prev => ({ ...prev, x: panMouseRef.current!.tx + dx, y: panMouseRef.current!.ty + dy }));
+      const start = panMouseRef.current;
+      if (!start) return;
+      const dx = e.clientX - start.sx, dy = e.clientY - start.sy;
+      const tx = start.tx + dx, ty = start.ty + dy;
+      setImgTransform(prev => ({ ...prev, x: tx, y: ty }));
     }
     function onUp() { panMouseRef.current = null; }
     document.addEventListener("mousemove", onMove);
@@ -301,39 +302,39 @@ function ReviewStep({
   }
 
   function onPanelTouchMove(e: React.TouchEvent) {
-    if (e.touches.length === 2 && pinchRef.current) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.hypot(dx, dy);
-      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      const el = imgPanelRef.current;
-      if (el) {
-        const r = el.getBoundingClientRect();
-        const ratio = dist / pinchRef.current.dist;
-        setImgTransform(prev => {
-          const z = Math.min(5, Math.max(1, prev.zoom * ratio));
-          if (z <= 1) return { zoom: 1, x: 0, y: 0 };
-          const fx = mx - r.left, fy = my - r.top;
-          const zr = z / prev.zoom;
-          // Also pan with midpoint movement
-          const dmx = mx - pinchRef.current!.mx, dmy = my - pinchRef.current!.my;
-          return { zoom: z, x: fx - (fx - prev.x) * zr + dmx, y: fy - (fy - prev.y) * zr + dmy };
-        });
-      }
+    // Extract ALL coordinates immediately — synthetic events are nullified after handler returns
+    if (e.touches.length === 2) {
+      const t0x = e.touches[0].clientX, t0y = e.touches[0].clientY;
+      const t1x = e.touches[1].clientX, t1y = e.touches[1].clientY;
+      const dist = Math.hypot(t0x - t1x, t0y - t1y);
+      const mx = (t0x + t1x) / 2, my = (t0y + t1y) / 2;
+      const prev2 = pinchRef.current;
       pinchRef.current = { dist, mx, my };
+      if (!prev2 || dist === 0) return;
+      const el = imgPanelRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const ratio = dist / prev2.dist;
+      const dmx = mx - prev2.mx, dmy = my - prev2.my;
+      const fx = mx - r.left, fy = my - r.top;
+      setImgTransform(prev => {
+        const z = Math.min(5, Math.max(1, prev.zoom * ratio));
+        if (z <= 1) return { zoom: 1, x: 0, y: 0 };
+        const zr = z / prev.zoom;
+        return { zoom: z, x: fx - (fx - prev.x) * zr + dmx, y: fy - (fy - prev.y) * zr + dmy };
+      });
     } else if (e.touches.length === 1 && !drawMode) {
-      // Single-finger pan when not drawing
-      if (!pinchRef.current) {
+      const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
+      const start = panMouseRef.current;
+      if (!start) {
+        // Initialize on first move event (touchstart doesn't give us start transform easily)
         setImgTransform(prev => {
-          if (!panMouseRef.current) {
-            panMouseRef.current = { sx: e.touches[0].clientX, sy: e.touches[0].clientY, tx: prev.x, ty: prev.y };
-            return prev;
-          }
-          const dx = e.touches[0].clientX - panMouseRef.current.sx;
-          const dy = e.touches[0].clientY - panMouseRef.current.sy;
-          return { ...prev, x: panMouseRef.current.tx + dx, y: panMouseRef.current.ty + dy };
+          panMouseRef.current = { sx: cx, sy: cy, tx: prev.x, ty: prev.y };
+          return prev;
         });
+      } else {
+        const tx = start.tx + (cx - start.sx), ty = start.ty + (cy - start.sy);
+        setImgTransform(prev => ({ ...prev, x: tx, y: ty }));
       }
     }
   }
