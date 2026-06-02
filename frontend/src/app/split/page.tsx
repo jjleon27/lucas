@@ -118,7 +118,9 @@ function StepBar({ step }: { step: Step }) {
   );
 }
 
-// ── Review Step ─────────────────────────────────────────────
+// ── Review Step — side-by-side layout ──────────────────────
+// Left panel: receipt image (scrollable, tappable to fullscreen)
+// Right panel: items with checkboxes to mark as verified
 function ReviewStep({
   items,
   imageUrl,
@@ -140,123 +142,151 @@ function ReviewStep({
   onAddItem: (name: string, price: number) => void;
   onConfirm: () => void;
 }) {
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
+  const [showAdd, setShowAdd] = useState(false);
   const [addName, setAddName] = useState("");
   const [addPrice, setAddPrice] = useState(0);
-  const [showAdd, setShowAdd] = useState(false);
+
+  function toggleCheck(id: number) {
+    setCheckedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  const allChecked = items.length > 0 && checkedIds.size >= items.length;
+  const pct = items.length > 0 ? Math.round((checkedIds.size / items.length) * 100) : 0;
 
   return (
-    <div className="pb-24">
-      {/* ── Sticky receipt image ─────────────────────────────── */}
-      {imageUrl && (
-        <div className="sticky top-0 z-10 -mx-4 px-4 bg-white/95 backdrop-blur-sm pt-1 pb-2">
+    <div className="space-y-3">
+      {/* ── Split panel ──────────────────────────────────────── */}
+      <div
+        className="flex rounded-2xl border border-slate-200 overflow-hidden bg-white"
+        style={{ height: "60vh" }}
+      >
+        {/* Left: receipt image */}
+        {imageUrl ? (
           <div
-            className="relative rounded-2xl overflow-hidden bg-slate-100 cursor-pointer"
-            onClick={onOpenFullscreen}
+            className="relative flex-shrink-0 bg-slate-100 overflow-auto border-r border-slate-200"
+            style={{ width: "43%", touchAction: "pinch-zoom" }}
           >
-            <img
-              src={imageUrl}
-              alt="Boleta"
-              className="w-full object-contain"
-              style={{ maxHeight: "38vh" }}
-            />
-            {/* "Ver completa" overlay button */}
+            <img src={imageUrl} alt="Boleta" className="w-full" />
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); onOpenFullscreen(); }}
-              className="absolute top-2 right-2 flex items-center gap-1 bg-black/50 backdrop-blur-sm text-white text-[11px] font-medium px-2 py-1 rounded-full"
+              onClick={onOpenFullscreen}
+              className="absolute top-2 right-2 bg-black/50 backdrop-blur-sm text-white rounded-full p-1.5"
+              title="Ver completa"
             >
-              <ZoomIn className="w-3 h-3" />
-              Ver completa
-            </button>
-            {/* Bottom label */}
-            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/40 to-transparent px-3 py-2">
-              <p className="text-white text-[11px] font-medium">
-                Compara cada ítem con tu boleta · toca para ampliar
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Items list ──────────────────────────────────────── */}
-      <div className="card mt-3">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-base font-semibold">Ítems reconocidos</h2>
-          <span className="text-xs text-slate-400">{items.length} ítems · toca ✏️ para editar</span>
-        </div>
-        <ul className="divide-y divide-slate-100">
-          {items.map((item) => (
-            <ReviewItemRow
-              key={item.id}
-              item={item}
-              onUpdate={(patch) => onUpdateItem(item.id, patch)}
-              onDelete={() => onDeleteItem(item.id)}
-            />
-          ))}
-        </ul>
-
-        {/* Add item */}
-        {showAdd ? (
-          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
-            <input
-              className="input flex-1 text-sm py-1.5"
-              placeholder="Nombre del ítem"
-              value={addName}
-              onChange={(e) => setAddName(e.target.value)}
-              autoFocus
-            />
-            <NumericInput
-              className="input w-24 text-sm py-1.5 font-mono"
-              placeholder="Precio"
-              value={addPrice}
-              onChange={setAddPrice}
-              allowDecimals
-            />
-            <button
-              type="button"
-              className="text-emerald-600 hover:text-emerald-700"
-              onClick={() => {
-                if (addName.trim() && addPrice > 0) {
-                  onAddItem(addName.trim(), addPrice);
-                  setAddName(""); setAddPrice(0); setShowAdd(false);
-                }
-              }}
-            >
-              <Check className="w-5 h-5" />
-            </button>
-            <button type="button" className="text-slate-400"
-              onClick={() => { setAddName(""); setAddPrice(0); setShowAdd(false); }}
-            >
-              <X className="w-5 h-5" />
+              <ZoomIn className="w-3.5 h-3.5" />
             </button>
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={() => setShowAdd(true)}
-            className="mt-3 w-full flex items-center justify-center gap-1.5 text-sm text-slate-500 hover:text-indigo-600 py-2 border border-dashed border-slate-300 rounded-xl hover:border-indigo-300 transition"
-          >
-            <Plus className="w-4 h-4" />
-            Agregar ítem faltante
-          </button>
+          <div className="flex-shrink-0 bg-slate-50 border-r border-slate-200 flex items-center justify-center text-slate-400 text-xs text-center px-2"
+            style={{ width: "43%" }}>
+            Sin imagen
+          </div>
         )}
-      </div>
 
-      {/* ── Sticky confirm button at bottom ─────────────────── */}
-      <div className="fixed bottom-0 left-0 right-0 z-10 p-4 bg-white/90 backdrop-blur-sm border-t border-slate-100">
-        <div className="max-w-2xl mx-auto">
-          <button
-            type="button"
-            className="btn-primary w-full py-3 text-base font-semibold shadow-lg"
-            onClick={onConfirm}
-          >
-            Todo correcto — Asignar →
-          </button>
+        {/* Right: items list */}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {/* Progress header */}
+          <div className="px-2.5 py-2 border-b border-slate-100 flex-shrink-0">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Ítems
+              </span>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {checkedIds.size}/{items.length}
+              </span>
+            </div>
+            <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className="h-1 bg-emerald-500 rounded-full transition-all duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Scrollable items */}
+          <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
+            {items.map((item) => (
+              <ReviewItemRow
+                key={item.id}
+                item={item}
+                checked={checkedIds.has(item.id)}
+                onToggleCheck={() => toggleCheck(item.id)}
+                onUpdate={(patch) => onUpdateItem(item.id, patch)}
+                onDelete={() => onDeleteItem(item.id)}
+              />
+            ))}
+
+            {/* Add item (inline at bottom of list) */}
+            {showAdd ? (
+              <li className="p-2 space-y-1.5 bg-indigo-50/50">
+                <input
+                  className="input w-full text-xs py-1 px-2"
+                  placeholder="Nombre"
+                  value={addName}
+                  onChange={(e) => setAddName(e.target.value)}
+                  autoFocus
+                />
+                <div className="flex gap-1">
+                  <NumericInput
+                    className="input flex-1 text-xs py-1 px-2 font-mono"
+                    placeholder="Precio"
+                    value={addPrice}
+                    onChange={setAddPrice}
+                    allowDecimals
+                  />
+                  <button type="button" className="text-emerald-600 px-1"
+                    onClick={() => {
+                      if (addName.trim() && addPrice > 0) {
+                        onAddItem(addName.trim(), addPrice);
+                        setAddName(""); setAddPrice(0); setShowAdd(false);
+                      }
+                    }}>
+                    <Check className="w-4 h-4" />
+                  </button>
+                  <button type="button" className="text-slate-400 px-1"
+                    onClick={() => { setAddName(""); setAddPrice(0); setShowAdd(false); }}>
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </li>
+            ) : (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => setShowAdd(true)}
+                  className="w-full flex items-center gap-1.5 px-2.5 py-2.5 text-[11px] text-slate-400 hover:text-indigo-500 hover:bg-indigo-50/50 transition"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Agregar ítem
+                </button>
+              </li>
+            )}
+          </ul>
         </div>
       </div>
 
+      {/* ── Confirm button ──────────────────────────────────── */}
+      <button
+        type="button"
+        className={`w-full py-3 text-base font-semibold rounded-xl transition ${
+          allChecked
+            ? "btn-primary shadow-lg"
+            : "bg-indigo-600 text-white opacity-80 rounded-xl"
+        }`}
+        onClick={onConfirm}
+      >
+        {allChecked
+          ? "Todo revisado — Asignar →"
+          : `Continuar${checkedIds.size > 0 ? ` (${items.length - checkedIds.size} sin revisar)` : ""} →`}
+      </button>
+
       {/* ── Fullscreen image modal ───────────────────────────── */}
-      {imageFullscreen && (
+      {imageFullscreen && imageUrl && (
         <div
           className="fixed inset-0 z-50 bg-black/95 overflow-auto"
           onClick={onCloseFullscreen}
@@ -281,13 +311,17 @@ function ReviewStep({
   );
 }
 
-// ── Inline editable row for review step ─────────────────────
+// ── Compact item row for review step (narrow right panel) ───
 function ReviewItemRow({
   item,
+  checked,
+  onToggleCheck,
   onUpdate,
   onDelete,
 }: {
   item: ReceiptItemV2;
+  checked: boolean;
+  onToggleCheck: () => void;
   onUpdate: (patch: { name?: string; price?: number }) => void;
   onDelete: () => void;
 }) {
@@ -304,60 +338,65 @@ function ReviewItemRow({
 
   if (editing) {
     return (
-      <li className="flex items-center gap-2 py-2.5">
+      <li className="p-2 space-y-1 bg-indigo-50/40">
         <input
-          className="input flex-1 text-sm py-1 px-2"
+          className="input w-full text-xs py-1 px-2"
           value={editName}
           onChange={(e) => setEditName(e.target.value)}
           autoFocus
         />
-        <NumericInput
-          className="input w-24 font-mono text-sm py-1 px-2"
-          value={editPrice}
-          onChange={setEditPrice}
-          allowDecimals
-          placeholder="0"
-        />
-        <button
-          type="button"
-          className="text-emerald-600 hover:text-emerald-700"
-          onClick={() => { onUpdate({ name: editName, price: editPrice }); setEditing(false); }}
-        >
-          <Check className="w-4 h-4" />
-        </button>
-        <button
-          type="button"
-          className="text-slate-400"
-          onClick={() => setEditing(false)}
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex gap-1">
+          <NumericInput
+            className="input flex-1 text-xs py-1 px-2 font-mono"
+            value={editPrice}
+            onChange={setEditPrice}
+            allowDecimals
+            placeholder="0"
+          />
+          <button type="button" className="text-emerald-600 px-1"
+            onClick={() => { onUpdate({ name: editName, price: editPrice }); setEditing(false); }}>
+            <Check className="w-4 h-4" />
+          </button>
+          <button type="button" className="text-slate-400 px-1" onClick={() => setEditing(false)}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </li>
     );
   }
 
   return (
-    <li className="flex items-center gap-2 py-2.5">
-      <span className="flex-1 text-sm text-slate-800 truncate">{item.name}</span>
-      {item.quantity > 1 && (
-        <span className="text-xs text-slate-400 shrink-0">×{item.quantity}</span>
-      )}
-      <span className="font-mono text-sm text-slate-700 shrink-0">
-        ${item.line_total.toLocaleString("es-CL")}
-      </span>
+    <li className={`flex items-center gap-1.5 px-2 py-2 transition ${checked ? "bg-emerald-50/60" : ""}`}>
+      {/* Checkbox */}
       <button
         type="button"
-        className="text-slate-400 hover:text-indigo-500 transition shrink-0"
-        onClick={() => setEditing(true)}
+        onClick={onToggleCheck}
+        className={`w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all ${
+          checked ? "bg-emerald-500 border-emerald-500" : "border-slate-300"
+        }`}
       >
-        <Pencil className="w-4 h-4" />
+        {checked && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
       </button>
-      <button
-        type="button"
-        className="text-slate-400 hover:text-rose-500 transition shrink-0"
-        onClick={onDelete}
-      >
-        <Trash2 className="w-4 h-4" />
+
+      {/* Name + price */}
+      <div className="flex-1 min-w-0">
+        <p className={`text-[11px] font-medium leading-tight truncate ${checked ? "line-through text-slate-400" : "text-slate-800"}`}>
+          {item.name}
+          {item.quantity > 1 && <span className="text-slate-400"> ×{item.quantity}</span>}
+        </p>
+        <p className="text-[10px] font-mono text-slate-500">
+          ${item.line_total.toLocaleString("es-CL")}
+        </p>
+      </div>
+
+      {/* Edit / delete */}
+      <button type="button" onClick={() => setEditing(true)}
+        className="text-slate-300 hover:text-indigo-500 transition flex-shrink-0">
+        <Pencil className="w-3.5 h-3.5" />
+      </button>
+      <button type="button" onClick={onDelete}
+        className="text-slate-300 hover:text-rose-500 transition flex-shrink-0">
+        <Trash2 className="w-3.5 h-3.5" />
       </button>
     </li>
   );
