@@ -550,7 +550,7 @@ def _detect_mime(image_bytes: bytes) -> str:
     return "image/png"
 
 
-def _shrink_for_vision(image_bytes: bytes, max_side: int = 1600) -> bytes:
+def _shrink_for_vision(image_bytes: bytes, max_side: int = 2048) -> bytes:
     """Downscale large screenshots so the API call is cheap & fast."""
     try:
         img = Image.open(io.BytesIO(image_bytes))
@@ -1164,10 +1164,11 @@ def vision_parse(
             #   C) LLM items + proportional normalization (fallback)
             #   D) No items (bank statements, non-boleta receipts)
             # ═══════════════════════════════════════════════════════════════
-            if tess_conf >= 0.97 and tess_items:
+            if tess_conf >= 0.97 and tess_items and not is_pos_per_seat:
                 # ── A: Tesseract exact ────────────────────────────────────
                 # Prices are directly from text — no scaling needed.
                 # Append IVA row so the split screen shows the tax correctly.
+                # NOT used for POS per-seat receipts — LLM handles those better.
                 items = list(tess_items)
                 if total_neto_val > 0 and iva_amount_val > 0:
                     items.append(ParsedItem(
@@ -1179,7 +1180,7 @@ def vision_parse(
                 else:
                     raw_amount = float(sum(it.price * it.quantity for it in items))
 
-            elif tess_conf >= 0.80 and tess_items and total_neto_val > 0 and iva_amount_val > 0:
+            elif tess_conf >= 0.80 and tess_items and total_neto_val > 0 and iva_amount_val > 0 and not is_pos_per_seat:
                 # ── B: Tesseract good but small rounding gap — light normalize
                 items, raw_amount = _normalize_boleta_items(
                     tess_items, total_neto_val, iva_amount_val
