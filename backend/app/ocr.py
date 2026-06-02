@@ -676,11 +676,13 @@ _SKIP_BOLETA_LINE = re.compile(
     # Any line starting with TOTAL or SUBTOTAL (footer summaries)
     r"^\s*T[O0]TAL\b|^\s*SUBTOTAL\b|"
     # POS restaurant receipt summary lines (Toteat, etc.)
-    r"CONSUMO\s+CLIENTE|TOTAL\s+GENERAL\s+MESA|TOTAL\s+MESA|"
-    r"PROPINA\s+SUGERIDA|TOTAL\s+C[/\\]PROPINA|COMENSAL\b|COMENSALES\b|"
+    r"CONSUMO\s+CLIENTE|CONSUMO\s+MESA|CONSUMO\s+GENERAL|"
+    r"TOTAL\s+GENERAL\s+MESA|TOTAL\s+MESA|"
+    r"\bPROPINA\b|TOTAL\s+C[/\\]PROPINA|COMENSAL\b|COMENSALES\b|"
     r"CAMARERO\b|COMANDA\b|TOTEAT|RESTAU?RANT|"
-    # Payment method lines
+    # Payment method and change lines
     r"TARJETA\s+DE|EFECTIVO|\bDEBITO\b|\bCREDITO\b|"
+    r"\bVISA\b|\bMASTERCARD\b|\bAMEX\b|\bREDCOMPRA\b|\bWEBPAY\b|\bTRANSBANK\b|\bVUELTO\b|"
     # Branch/address lines like "SUC: AV. AMERICO VESPUCIO SUR 881"
     r"\bSUC[\s:]|"
     # Boleta/document header lines like "Boleta Electronica N° 003214567"

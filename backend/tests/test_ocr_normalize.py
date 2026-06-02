@@ -965,3 +965,298 @@ def test_normalize_sum_always_equals_neto(item_prices_qtys, total_neto):
     assert abs(product_sum - total_neto) <= 1, \
         f"product_sum={product_sum} should ≈ total_neto={total_neto}"
     assert auth_total == total_neto + iva
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TESTS COMPLEJOS — Boletas de restaurantes/bares chilenos
+# Cubre formatos reales: El Hoyo, Fuente Alemana, POS Toteat, IVA restaurant
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 7: Ninguna línea de metadata se convierte en item
+#
+# Propiedad: líneas de resumen (CONSUMO MESA, PROPINA, VISA, etc.) nunca deben
+# aparecer en la lista de items. La detección de precio en estas líneas no debe
+# generar un ParsedItem.
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("summary_line,price_suffix", [
+    # Líneas de resumen de POS restaurante
+    ("CONSUMO MESA",          "20.000"),
+    ("CONSUMO GENERAL",       "20.000"),
+    ("PROPINA 10%",           "2.000"),
+    ("PROPINA SUGERIDA 10%",  "2.000"),
+    ("TOTAL C/PROPINA",       "22.000"),
+    ("TOTAL MESA",            "20.000"),
+    ("TOTAL GENERAL MESA",    "20.000"),
+    # Métodos de pago
+    ("VISA",                  "20.000"),
+    ("MASTERCARD",            "20.000"),
+    ("REDCOMPRA",             "20.000"),
+    ("WEBPAY",                "20.000"),
+    # Cambio
+    ("VUELTO",                "5.000"),
+])
+def test_summary_lines_never_become_items(summary_line, price_suffix):
+    """INVARIANTE: ninguna línea de resumen/pago se convierte en ParsedItem."""
+    text = (
+        f"RESTAURANTE\nMesa 5\n\n"
+        f"2 Cerveza  8.000\n1 Agua    1.500\n\n"
+        f"{summary_line}  {price_suffix}\n"
+    )
+    items, _, _, _ = _parse_boleta_from_text(text)
+    leaked = [it for it in items if summary_line.split()[0].lower() in it.name.lower()]
+    assert not leaked, (
+        f"Summary line '{summary_line}' leaked as item: {[it.name for it in leaked]}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 8: Recibo complejo (9 items, bar chileno)
+#
+# Propiedad: sum(price×qty) == total impreso para recibo de 9 items multi-qty
+# ─────────────────────────────────────────────────────────────────────────────
+_EL_HOYO_RECEIPT = """\
+EL HOYO BAR
+Mesa 14  Mozo: Carlos
+
+6 Schop Medio Cristal       24.000
+4 Schop Grande Austral      20.000
+2 Pisco Sour                12.000
+3 Cerveza Austral 330ml      7.500
+1 Copa Vino Tinto            5.000
+2 Porcion Papas Fritas       7.000
+3 Empanada Queso            10.500
+2 Chorrillana Porcion       20.000
+1 Tabla Fria Mixta          15.000
+
+TOTAL                      121.000
+"""
+
+def test_el_hoyo_9_items_count():
+    items, _, _, _ = _parse_boleta_from_text(_EL_HOYO_RECEIPT)
+    assert len(items) == 9, f"Expected 9 items, got {len(items)}: {[i.name for i in items]}"
+
+
+def test_el_hoyo_9_items_sum():
+    items, _, _, _ = _parse_boleta_from_text(_EL_HOYO_RECEIPT)
+    total = sum(it.price * it.quantity for it in items)
+    assert total == 121000, f"Expected sum=121000, got {total}"
+
+
+def test_el_hoyo_unit_prices_correct():
+    """6 Schop Medio → unit=4000; 4 Schop Grande → unit=5000; 3 Empanada → unit=3500."""
+    items, _, _, _ = _parse_boleta_from_text(_EL_HOYO_RECEIPT)
+    by_name = {it.name.lower(): it for it in items}
+    schop_medio = next((it for it in items if "medio" in it.name.lower() and "cristal" in it.name.lower()), None)
+    assert schop_medio and schop_medio.price == 4000 and schop_medio.quantity == 6
+    empanada = next((it for it in items if "empanada" in it.name.lower()), None)
+    assert empanada and empanada.price == 3500 and empanada.quantity == 3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 9: Restaurant con IVA — confianza alta
+#
+# Propiedad: cuando items suman = total (neto + iva), confidence == 1.0
+# ─────────────────────────────────────────────────────────────────────────────
+_DIVINA_IVA_RECEIPT = """\
+RESTAURANT LA DIVINA
+BOLETA ELECTRONICA 0011234
+
+1 FILETE AL PIMIENTA        22.000
+2 COPA VINO SANTA RITA      14.000
+1 ENSALADA CAPRESE           9.500
+1 POSTRE TIRAMISU            8.500
+1 AGUA SAN BENEDETTO         3.500
+
+TOTAL NETO                  48.319
+IVA 19%                      9.181
+TOTAL                       57.500
+VISA                        57.500
+"""
+
+def test_iva_restaurant_confidence_high():
+    """Items a precio IVA-incluido: confidence debe ser 1.0 (items_sum == total_with_iva)."""
+    items, neto, iva, conf = _parse_boleta_from_text(_DIVINA_IVA_RECEIPT)
+    assert neto == 48319.0
+    assert iva == 9181.0
+    total = sum(it.price * it.quantity for it in items)
+    assert total == 57500.0
+    assert conf == 1.0, f"confidence should be 1.0, got {conf}"
+
+
+def test_iva_restaurant_no_visa_item():
+    """Línea de pago VISA no debe aparecer como item."""
+    items, _, _, _ = _parse_boleta_from_text(_DIVINA_IVA_RECEIPT)
+    assert not any("visa" in it.name.lower() for it in items)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 10: Pipe-table grande (7 items)
+#
+# Propiedad: 7 items parseados, sum == total exacto
+# ─────────────────────────────────────────────────────────────────────────────
+_TOTEAT_7_ITEMS = """\
+| Cant | Descripción                | Total   |
+|    1 | Pizza Margherita Familiar  |  24.000 |
+|    3 | Cerveza Austral 500cc      |  12.000 |
+|    1 | Ensalada César             |   9.500 |
+|    2 | Agua Mineral 500ml         |   3.000 |
+|    1 | Tiramisú                   |   7.500 |
+|    2 | Jugo Natural               |   5.000 |
+|    1 | Pan y mantequilla          |   2.500 |
+TOTAL CONSUMO CLIENTE               63.500
+"""
+
+def test_pipe_table_7_items_count():
+    items = _parse_pipe_table(_TOTEAT_7_ITEMS)
+    assert len(items) == 7, f"Expected 7 items, got {len(items)}"
+
+
+def test_pipe_table_7_items_sum():
+    items = _parse_pipe_table(_TOTEAT_7_ITEMS)
+    total = sum(it.price * it.quantity for it in items)
+    assert total == 63500, f"Expected 63500, got {total}"
+
+
+def test_pipe_table_7_items_unit_prices():
+    """Cerveza 500cc qty=3: unit=4000 (12000/3). Agua 500ml qty=2: unit=1500."""
+    items = _parse_pipe_table(_TOTEAT_7_ITEMS)
+    cerveza = next((it for it in items if "cerveza" in it.name.lower()), None)
+    assert cerveza and cerveza.quantity == 3 and cerveza.price == 4000
+    agua = next((it for it in items if "agua" in it.name.lower()), None)
+    assert agua and agua.quantity == 2 and agua.price == 1500
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 11: _fix_line_total_items — global fix con 5+ items
+#
+# Propiedad: cuando TODOS los items multi-qty están mal (global fix),
+# sum(fixed) == ref_total exactamente, incluso con 5 items
+# ─────────────────────────────────────────────────────────────────────────────
+def test_fix_global_five_wrong_items():
+    """5 items, todos con qty>1 y line_total como unit_price → global fix."""
+    items = [
+        make_item("Schop Medio",    24000, 6),   # unit=4000
+        make_item("Schop Grande",   20000, 4),   # unit=5000
+        make_item("Pisco Sour",     12000, 2),   # unit=6000
+        make_item("Empanada",       10500, 3),   # unit=3500
+        make_item("Porcion Papas",   7000, 2),   # unit=3500
+    ]
+    # correct: 4000*6 + 5000*4 + 6000*2 + 3500*3 + 3500*2
+    # = 24000 + 20000 + 12000 + 10500 + 7000 = 73500
+    ref_total = 73500.0
+    fixed = _fix_line_total_items(items, ref_total)
+    total = sum(it.price * it.quantity for it in fixed)
+    assert abs(total - ref_total) <= 1, f"sum {total} should == {ref_total}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 12: Fuente Alemana — recibo clásico chileno, texto plano
+# ─────────────────────────────────────────────────────────────────────────────
+_FUENTE_ALEMANA = """\
+FUENTE ALEMANA
+Nunoa - Santiago
+
+2 CHURRASCO ITALIANO        15.600
+1 BARROS LUCO                7.800
+3 BEBIDA GRANDE              5.700
+1 JUGO NATURAL               3.500
+1 SOPAIPILLA PASADA          1.500
+
+TOTAL                       34.100
+"""
+
+def test_fuente_alemana_item_count():
+    items, _, _, _ = _parse_boleta_from_text(_FUENTE_ALEMANA)
+    assert len(items) == 5, f"Expected 5 items, got {len(items)}: {[i.name for i in items]}"
+
+
+def test_fuente_alemana_sum():
+    items, _, _, _ = _parse_boleta_from_text(_FUENTE_ALEMANA)
+    total = sum(it.price * it.quantity for it in items)
+    assert total == 34100, f"Expected 34100, got {total}"
+
+
+def test_fuente_alemana_unit_prices():
+    """2 CHURRASCO ITALIANO 15600 → unit=7800, qty=2."""
+    items, _, _, _ = _parse_boleta_from_text(_FUENTE_ALEMANA)
+    churrasco = next((it for it in items if "churrasco" in it.name.lower()), None)
+    assert churrasco and churrasco.quantity == 2 and churrasco.price == 7800
+    bebida = next((it for it in items if "bebida" in it.name.lower()), None)
+    assert bebida and bebida.quantity == 3 and bebida.price == 1900
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 13: Bar Nacional — 9 items con propina y subtotal (ambos skipped)
+# ─────────────────────────────────────────────────────────────────────────────
+_BAR_NACIONAL = """\
+BAR NACIONAL
+PATIO 2 - Mesa 8
+
+6 Schop Medio               24.000
+4 Schop Grande              24.000
+2 Piscola Mistral 35        18.000
+3 Cerveza Artesanal 330ml    7.500
+1 Copa Vino Tinto            5.000
+2 Porcion Papas Fritas       7.000
+3 Empanada Queso            10.500
+2 Choripan                   9.000
+1 Tabla Fria Mixta          15.000
+
+SUBTOTAL                   120.000
+PROPINA SUGERIDA (10%)      12.000
+TOTAL C/PROPINA            132.000
+"""
+
+def test_bar_nacional_9_items_no_propina():
+    """SUBTOTAL y PROPINA deben ser skipped — solo los 9 productos reales."""
+    items, _, _, _ = _parse_boleta_from_text(_BAR_NACIONAL)
+    assert len(items) == 9, f"Expected 9 items, got {len(items)}: {[i.name for i in items]}"
+
+
+def test_bar_nacional_no_summary_leakage():
+    """Ningún item debe tener 'propina', 'subtotal' o 'total' en el nombre."""
+    items, _, _, _ = _parse_boleta_from_text(_BAR_NACIONAL)
+    banned = ["propina", "subtotal", "total"]
+    leaked = [it for it in items if any(b in it.name.lower() for b in banned)]
+    assert not leaked, f"Summary lines leaked: {[it.name for it in leaked]}"
+
+
+def test_bar_nacional_sum():
+    """Sum of parsed items = 120.000 (sin propina)."""
+    items, _, _, _ = _parse_boleta_from_text(_BAR_NACIONAL)
+    total = sum(it.price * it.quantity for it in items)
+    assert total == 120000, f"Expected 120000, got {total}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 14: Casino / comida simple — items sin barcode, precio bajo
+# ─────────────────────────────────────────────────────────────────────────────
+_CASINO_RECEIPT = """\
+CASINO EMPRESARIAL
+CLIENTE: MESA 3
+
+SOPA DEL DIA                 2.500
+CARNE CON PURE               4.800
+ENSALADA CHILENA             1.800
+JUGO NATURAL                 1.200
+
+TOTAL                       10.300
+"""
+
+def test_casino_receipt_items():
+    items, _, _, _ = _parse_boleta_from_text(_CASINO_RECEIPT)
+    assert len(items) == 4, f"Expected 4 items, got {len(items)}: {[i.name for i in items]}"
+
+
+def test_casino_receipt_sum():
+    items, _, _, _ = _parse_boleta_from_text(_CASINO_RECEIPT)
+    total = sum(it.price * it.quantity for it in items)
+    assert total == 10300, f"Expected 10300, got {total}"
+
+
+def test_casino_no_cliente_mesa_item():
+    """'CLIENTE: MESA 3' no debe convertirse en item."""
+    items, _, _, _ = _parse_boleta_from_text(_CASINO_RECEIPT)
+    assert not any("cliente" in it.name.lower() or "mesa" in it.name.lower() for it in items)
