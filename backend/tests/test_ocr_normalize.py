@@ -15,7 +15,7 @@ _mock.patch.dict("sys.modules", {
     "PIL.Image": _mock.MagicMock(),
 }).start()
 
-from app.ocr import _normalize_boleta_items, _to_float
+from app.ocr import _normalize_boleta_items, _fix_line_total_items, _scale_to_total, _to_float
 from app.schemas import ParsedItem
 
 
@@ -196,3 +196,90 @@ def test_normalize_fixes_llm_line_total_as_price():
     # Unit price should be roughly half of what was given (since qty=2)
     assert burger.price <= 6000, \
         f"Unit price {burger.price} seems too high after normalization (expected ~5000)"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _fix_line_total_items — real-world restaurant receipt regressions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_fix_single_item_vienesa():
+    """Regression: '3 VIENESA ITALIANA 13200' → LLM returns price=13200,qty=3.
+    Only VIENESA is wrong; SCHOP items are correct. Single-item algebraic fix."""
+    items = [
+        make_item("VIENESA ITALIANA", 13200, qty=3),   # wrong: should be 4400
+        make_item("SCHOP MEDIO ROYAL", 4800, qty=6),   # correct
+        make_item("SCHOP MEDIO ESCUDO", 4400, qty=2),  # correct
+    ]
+    ref_total = 50800.0
+    fixed = _fix_line_total_items(items, ref_total)
+    assert fixed[0].price == 4400, f"VIENESA unit price should be 4400, got {fixed[0].price}"
+    assert fixed[1].price == 4800, "SCHOP ROYAL should be unchanged"
+    assert fixed[2].price == 4400, "SCHOP ESCUDO should be unchanged"
+    assert sum(it.price * it.quantity for it in fixed) == ref_total
+
+
+def test_fix_pair_two_items_wrong():
+    """Two items have line-total-as-unit-price. Pair algebraic fix."""
+    items = [
+        make_item("Cerveza", 9600, qty=2),   # should be 4800 (9600/2)
+        make_item("Papas", 6000, qty=3),     # should be 2000 (6000/3)
+        make_item("Agua", 1500, qty=1),      # correct
+    ]
+    # correct sum: 4800*2 + 2000*3 + 1500*1 = 9600 + 6000 + 1500 = 17100
+    ref_total = 17100.0
+    fixed = _fix_line_total_items(items, ref_total)
+    assert fixed[0].price == 4800
+    assert fixed[1].price == 2000
+    assert fixed[2].price == 1500
+    assert sum(it.price * it.quantity for it in fixed) == ref_total
+
+
+def test_fix_global_all_items_wrong():
+    """All multi-qty items store line total. Global fix divides all by qty."""
+    items = [
+        make_item("Completo", 12000, qty=3),  # should be 4000
+        make_item("Schop", 8800, qty=2),      # should be 4400
+    ]
+    ref_total = 20800.0  # 4000*3 + 4400*2
+    fixed = _fix_line_total_items(items, ref_total)
+    assert fixed[0].price == 4000
+    assert fixed[1].price == 4400
+    assert sum(it.price * it.quantity for it in fixed) == ref_total
+
+
+def test_fix_already_correct():
+    """No fix applied when sum already matches total."""
+    items = [
+        make_item("SCHOP MEDIO ROYAL", 4800, qty=6),
+        make_item("SCHOP MEDIO ESCUDO", 4400, qty=2),
+    ]
+    ref_total = 37600.0  # 28800 + 8800
+    fixed = _fix_line_total_items(items, ref_total)
+    assert fixed[0].price == 4800
+    assert fixed[1].price == 4400
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _scale_to_total — final proportional normalization guarantee
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_scale_guarantees_sum_equals_total():
+    """After scale_to_total, sum(price*qty) must equal ref_total exactly."""
+    # cur = 5100*3 + 1200*2 = 17700; ref = 20000 → >2% difference, scaling applies
+    items = [
+        make_item("Cerveza", 5100, qty=3),
+        make_item("Agua", 1200, qty=2),
+    ]
+    ref_total = 20000.0
+    scaled, amount = _scale_to_total(items, ref_total)
+    assert amount == ref_total
+    # ±1 CLP tolerance: unavoidable when remainder is not divisible by qty
+    assert abs(sum(it.price * it.quantity for it in scaled) - ref_total) <= 1
+
+
+def test_scale_no_op_when_already_correct():
+    """_scale_to_total is a no-op when sum is already within 2% of ref."""
+    items = [make_item("Item", 5000, qty=2)]
+    ref_total = 10000.0
+    scaled, amount = _scale_to_total(items, ref_total)
+    assert scaled[0].price == 5000  # unchanged

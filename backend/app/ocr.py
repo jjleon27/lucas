@@ -1049,6 +1049,85 @@ def _normalize_boleta_items(
     return normalised, auth_total
 
 
+def _fix_line_total_items(items: list[ParsedItem], ref_total: float) -> list[ParsedItem]:
+    """
+    Fix items where the LLM stored LINE_TOTAL as unit price instead of dividing.
+
+    Three passes (cheapest first):
+      1. Single-item algebraic: excess == price×(qty−1) for exactly one item
+      2. Pair algebraic: two items whose combined excess matches
+      3. Global: every multi-qty item is wrong (sum_flat ≈ ref_total)
+    """
+    if not items or ref_total <= 0:
+        return items
+
+    def _sum(its: list[ParsedItem]) -> float:
+        return sum(it.price * it.quantity for it in its)
+
+    excess = _sum(items) - ref_total
+    if excess <= ref_total * 0.02:
+        return items  # already correct
+
+    multi = [(i, it) for i, it in enumerate(items) if it.quantity > 1]
+
+    # Pass 1 — single item
+    for i, it in multi:
+        if abs(it.price * (it.quantity - 1) - excess) / ref_total < 0.02:
+            fixed = list(items)
+            fixed[i] = ParsedItem(name=it.name, price=round(it.price / it.quantity), quantity=it.quantity)
+            print(f"[ocr] fix(1-item): {it.name} {it.price}×{it.quantity} → {fixed[i].price}×{it.quantity}")
+            return fixed
+
+    # Pass 2 — pairs
+    for a, (i, ita) in enumerate(multi):
+        for (j, itb) in multi[a + 1:]:
+            ra = ita.price * (ita.quantity - 1)
+            rb = itb.price * (itb.quantity - 1)
+            if abs(ra + rb - excess) / ref_total < 0.02:
+                fixed = list(items)
+                fixed[i] = ParsedItem(name=ita.name, price=round(ita.price / ita.quantity), quantity=ita.quantity)
+                fixed[j] = ParsedItem(name=itb.name, price=round(itb.price / itb.quantity), quantity=itb.quantity)
+                print(f"[ocr] fix(pair): {ita.name}, {itb.name}")
+                return fixed
+
+    # Pass 3 — global (every item stores line total as unit price)
+    sum_flat = sum(it.price for it in items)
+    if _sum(items) / ref_total > 1.5 and abs(sum_flat / ref_total - 1.0) < 0.15:
+        fixed = [
+            ParsedItem(name=it.name,
+                       price=round(it.price / it.quantity) if it.quantity > 1 else it.price,
+                       quantity=it.quantity)
+            for it in items
+        ]
+        print("[ocr] fix(global): divided all multi-qty prices by quantity")
+        return fixed
+
+    return items  # couldn't determine a clean fix
+
+
+def _scale_to_total(items: list[ParsedItem], ref_total: float) -> tuple[list[ParsedItem], float]:
+    """
+    Proportionally scale item prices so sum(price×qty) == ref_total exactly.
+    Last item absorbs rounding remainder.  Used as final-guarantee fallback.
+    """
+    cur = sum(it.price * it.quantity for it in items)
+    if cur <= 0 or abs(cur - ref_total) / ref_total < 0.02:
+        return items, ref_total
+    scale = ref_total / cur
+    result: list[ParsedItem] = []
+    running = 0.0
+    for it in items[:-1]:
+        p = round(it.price * scale)
+        result.append(ParsedItem(name=it.name, price=p, quantity=it.quantity))
+        running += p * it.quantity
+    last = items[-1]
+    remainder = round(ref_total - running)
+    last_p = round(remainder / last.quantity) if last.quantity > 1 else remainder
+    result.append(ParsedItem(name=last.name, price=last_p, quantity=last.quantity))
+    print(f"[ocr] scale_to_total: {cur} → {ref_total} (scale={scale:.3f})")
+    return result, ref_total
+
+
 def vision_parse(
     image_bytes: bytes, *, db=None, user_id=None,
 ) -> Optional[ParseResult]:
@@ -1094,29 +1173,50 @@ def vision_parse(
         is_pos_per_seat = ocr_totals.get("is_pos_per_seat", False)
         pos_consumo = ocr_totals.get("total") if is_pos_per_seat else None
 
-        # ═══════════════════════════════════════════════════════════════════
-        # FAST PATH — skip LLM when Tesseract is exact and totals are verified
-        # ═══════════════════════════════════════════════════════════════════
-        if (not is_pos_per_seat and tess_conf >= 0.97 and tess_items
-                and gt_neto and gt_iva):
-            print(f"[ocr] Fast path: high-confidence Tesseract (conf={tess_conf:.2f}), skipping LLM")
-            items_fp: list[ParsedItem] = list(tess_items)
-            items_fp.append(ParsedItem(name="IVA (19%)", price=round(gt_iva), quantity=1))
-            auth_amount = float(round(gt_neto + gt_iva))
+        ocr_simple_total = float(ocr_totals.get("total") or 0)
+
+        def _fp_metadata() -> tuple:
+            """Extract date + merchant from raw OCR text (fast path helper)."""
             d_m = _DATE_RE.search(raw_ocr_text)
             sd_m = _SPANISH_DATE_RE.search(raw_ocr_text)
             fp_date = _parse_spanish_date(sd_m) if sd_m else (_parse_date(d_m.group(1)) if d_m else date.today())
             fp_merchant = ""
-            for _line in raw_ocr_text.splitlines():
-                _line = _line.strip()
-                if _line and not _is_junk_merchant(_line) and not _MONEY_TOKEN.fullmatch(_line) and len(_line) > 2:
-                    fp_merchant = _line[:80]
+            for _ln in raw_ocr_text.splitlines():
+                _ln = _ln.strip()
+                if _ln and not _is_junk_merchant(_ln) and not _MONEY_TOKEN.fullmatch(_ln) and len(_ln) > 2:
+                    fp_merchant = _ln[:80]
                     break
+            return fp_date, fp_merchant
+
+        # ═══════════════════════════════════════════════════════════════════
+        # FAST PATH A — IVA boleta: Tesseract exact + ground-truth neto+IVA
+        # ═══════════════════════════════════════════════════════════════════
+        if (not is_pos_per_seat and tess_conf >= 0.97 and tess_items and gt_neto and gt_iva):
+            print(f"[ocr] Fast path A (IVA boleta, conf={tess_conf:.2f}): skipping LLM")
+            items_fp: list[ParsedItem] = list(tess_items)
+            items_fp.append(ParsedItem(name="IVA (19%)", price=round(gt_iva), quantity=1))
+            fp_date, fp_merchant = _fp_metadata()
             return ParseResult(transactions=[ParsedReceipt(
-                amount=auth_amount, is_income=False, date=fp_date,
+                amount=float(round(gt_neto + gt_iva)), is_income=False, date=fp_date,
                 merchant=fp_merchant, description="", category="Supermercado",
                 currency="CLP", items=items_fp,
             )])
+
+        # ═══════════════════════════════════════════════════════════════════
+        # FAST PATH B — No-IVA receipt: Tesseract items sum ≈ OCR total
+        # (restaurant, bar, etc. — no tax anchor, but total is reliable)
+        # ═══════════════════════════════════════════════════════════════════
+        if (not is_pos_per_seat and not (gt_neto and gt_iva)
+                and ocr_simple_total > 0 and tess_items):
+            tess_sum = sum(it.price * it.quantity for it in tess_items)
+            if tess_sum > 0 and abs(tess_sum / ocr_simple_total - 1.0) < 0.03:
+                print(f"[ocr] Fast path B (no-IVA, ratio={tess_sum/ocr_simple_total:.3f}): skipping LLM")
+                fp_date, fp_merchant = _fp_metadata()
+                return ParseResult(transactions=[ParsedReceipt(
+                    amount=ocr_simple_total, is_income=False, date=fp_date,
+                    merchant=fp_merchant, description="", category="Alimentación",
+                    currency="CLP", items=list(tess_items),
+                )])
 
         # Build grounding text for the LLM prompt
         grounding_text = ""
@@ -1127,6 +1227,14 @@ def vision_parse(
                 f"  amount = {int(pos_consumo)} (Consumo Cliente — this customer's portion ONLY)\n"
                 f"  DO NOT use 'Total General Mesa' as amount.\n"
                 f"  Modifier items starting with '+' (e.g. +Coca Zero) have price=0."
+            )
+        elif ocr_simple_total > 0 and not (gt_neto and gt_iva):
+            # No-IVA restaurant receipt — ground with the Tesseract-verified total
+            grounding_text = (
+                f"\n\nGROUNDING (verified from receipt — use EXACTLY):\n"
+                f"  amount = {int(ocr_simple_total)}\n"
+                f"  sum(price × quantity for ALL items) MUST equal {int(ocr_simple_total)}.\n"
+                f"  Dots ('....') between item name and price are spacing only — ignore them."
             )
         elif gt_neto and gt_iva:
             tn = int(gt_neto)
@@ -1268,55 +1376,26 @@ def vision_parse(
                 # ── C / D: Fall back to LLM items ────────────────────────
                 items = [ParsedItem(**it) for it in t.get("items", []) if it.get("name")]
 
-                # Detect "line total stored as unit price".
-                # Use OCR-verified total as ref (falls back to LLM amount).
-                # Two complementary fixes:
-                #   1) Per-item: excess = price×(qty-1) identifies the one bad item
-                #   2) Global: all items bad when sum_flat ≈ ref_total
+                # Prefer Tesseract-verified total over LLM amount as reference.
                 ref_total = (
                     (total_neto_val + iva_amount_val) if total_neto_val > 0
-                    else (ocr_totals.get("total") or raw_amount)
+                    else (ocr_simple_total or raw_amount)
                 )
+
                 if items and ref_total > 0:
-                    sum_with_qty = sum(it.price * it.quantity for it in items)
-                    excess = sum_with_qty - ref_total
-                    if excess > ref_total * 0.05:
-                        # Try per-item fix first: find the single item whose
-                        # price×(qty-1) equals the excess (algebraically exact).
-                        fixed = False
-                        for i, it in enumerate(items):
-                            if it.quantity > 1:
-                                reduction = it.price * (it.quantity - 1)
-                                if abs(reduction - excess) / max(ref_total, 1) < 0.02:
-                                    new_price = round(it.price / it.quantity)
-                                    print(f"[ocr] Per-item line-total fix: {it.name} "
-                                          f"{it.price}×{it.quantity} → {new_price}×{it.quantity}")
-                                    items = list(items)
-                                    items[i] = ParsedItem(name=it.name, price=new_price, quantity=it.quantity)
-                                    fixed = True
-                                    break
-                    sum_with_qty = sum(it.price * it.quantity for it in items)
-                    sum_flat     = sum(it.price for it in items)
-                    if sum_with_qty / ref_total > 1.5 and abs(sum_flat / ref_total - 1.0) < 0.15:
-                        print("[ocr] Detected line-total-as-unit-price (no-IVA path): dividing by qty")
-                        items = [
-                            ParsedItem(
-                                name=it.name,
-                                price=round(it.price / it.quantity) if it.quantity > 1 else it.price,
-                                quantity=it.quantity,
-                            )
-                            for it in items
-                        ]
+                    # Fix 1+2+3: algebraic single/pair/global line-total fix
+                    items = _fix_line_total_items(items, ref_total)
 
                 if total_neto_val > 0 and iva_amount_val > 0:
-                    auth_total = round(total_neto_val + iva_amount_val)
+                    # IVA boleta: strict proportional normalization (includes IVA row)
                     if items:
-                        # Proportional normalization — fixes total, best-effort items
-                        items, raw_amount = _normalize_boleta_items(
-                            items, total_neto_val, iva_amount_val
-                        )
+                        items, raw_amount = _normalize_boleta_items(items, total_neto_val, iva_amount_val)
                     else:
-                        raw_amount = float(auth_total)
+                        raw_amount = float(round(total_neto_val + iva_amount_val))
+                elif items and ref_total > 0:
+                    # No-IVA receipt: proportional scale as final guarantee
+                    # Ensures sum(items) == verified_total even if LLM was wrong
+                    items, raw_amount = _scale_to_total(items, ref_total)
 
             out.append(ParsedReceipt(
                 amount=raw_amount,
