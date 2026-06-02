@@ -1268,13 +1268,33 @@ def vision_parse(
                 # ── C / D: Fall back to LLM items ────────────────────────
                 items = [ParsedItem(**it) for it in t.get("items", []) if it.get("name")]
 
-                # Detect "line total stored as unit price" for ALL receipts
-                # (restaurant receipts have no IVA so total_neto_val = 0).
-                # If sum(price × qty) is much larger than the known total, the
-                # LLM stored LINE TOTALS as unit prices ("3 completos por 13200"
-                # → stored 13200 instead of 4400). Fix: divide each price by qty.
-                ref_total = (total_neto_val + iva_amount_val) if total_neto_val > 0 else raw_amount
+                # Detect "line total stored as unit price".
+                # Use OCR-verified total as ref (falls back to LLM amount).
+                # Two complementary fixes:
+                #   1) Per-item: excess = price×(qty-1) identifies the one bad item
+                #   2) Global: all items bad when sum_flat ≈ ref_total
+                ref_total = (
+                    (total_neto_val + iva_amount_val) if total_neto_val > 0
+                    else (ocr_totals.get("total") or raw_amount)
+                )
                 if items and ref_total > 0:
+                    sum_with_qty = sum(it.price * it.quantity for it in items)
+                    excess = sum_with_qty - ref_total
+                    if excess > ref_total * 0.05:
+                        # Try per-item fix first: find the single item whose
+                        # price×(qty-1) equals the excess (algebraically exact).
+                        fixed = False
+                        for i, it in enumerate(items):
+                            if it.quantity > 1:
+                                reduction = it.price * (it.quantity - 1)
+                                if abs(reduction - excess) / max(ref_total, 1) < 0.02:
+                                    new_price = round(it.price / it.quantity)
+                                    print(f"[ocr] Per-item line-total fix: {it.name} "
+                                          f"{it.price}×{it.quantity} → {new_price}×{it.quantity}")
+                                    items = list(items)
+                                    items[i] = ParsedItem(name=it.name, price=new_price, quantity=it.quantity)
+                                    fixed = True
+                                    break
                     sum_with_qty = sum(it.price * it.quantity for it in items)
                     sum_flat     = sum(it.price for it in items)
                     if sum_with_qty / ref_total > 1.5 and abs(sum_flat / ref_total - 1.0) < 0.15:
