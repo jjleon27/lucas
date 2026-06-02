@@ -227,20 +227,121 @@ function ReviewStep({
 
   function onDrawEnd() { drawingRef.current = false; }
 
-  // ── Image zoom ───────────────────────────────────────────────
-  const [imgZoom, setImgZoom] = useState(1.0);
+  // ── Image zoom + pan ────────────────────────────────────────
+  const [imgTransform, setImgTransform] = useState({ zoom: 1, x: 0, y: 0 });
   const imgPanelRef = useRef<HTMLDivElement>(null);
+  const pinchRef = useRef<{ dist: number; mx: number; my: number } | null>(null);
+  const panMouseRef = useRef<{ sx: number; sy: number; tx: number; ty: number } | null>(null);
 
+  /** Zoom around a focal point (container-relative px). */
+  function zoomAround(newZoom: number, fx: number, fy: number) {
+    setImgTransform(prev => {
+      const z = Math.min(5, Math.max(1, newZoom));
+      if (z <= 1) return { zoom: 1, x: 0, y: 0 };
+      const ratio = z / prev.zoom;
+      return { zoom: z, x: fx - (fx - prev.x) * ratio, y: fy - (fy - prev.y) * ratio };
+    });
+  }
+
+  function zoomBtn(delta: number) {
+    const el = imgPanelRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    zoomAround(imgTransform.zoom + delta, r.width / 2, r.height / 2);
+  }
+
+  // Wheel zoom centered on cursor
   useEffect(() => {
     const el = imgPanelRef.current;
     if (!el) return;
     function onWheel(e: WheelEvent) {
       e.preventDefault();
-      setImgZoom(z => Math.min(4, Math.max(1, z - e.deltaY * 0.003)));
+      const r = el!.getBoundingClientRect();
+      setImgTransform(prev => {
+        const z = Math.min(5, Math.max(1, prev.zoom - e.deltaY * 0.003));
+        if (z <= 1) return { zoom: 1, x: 0, y: 0 };
+        const fx = e.clientX - r.left, fy = e.clientY - r.top;
+        const ratio = z / prev.zoom;
+        return { zoom: z, x: fx - (fx - prev.x) * ratio, y: fy - (fy - prev.y) * ratio };
+      });
     }
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  // Mouse pan (drag when not drawing)
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!panMouseRef.current) return;
+      const dx = e.clientX - panMouseRef.current.sx;
+      const dy = e.clientY - panMouseRef.current.sy;
+      setImgTransform(prev => ({ ...prev, x: panMouseRef.current!.tx + dx, y: panMouseRef.current!.ty + dy }));
+    }
+    function onUp() { panMouseRef.current = null; }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+  }, []);
+
+  function onPanelMouseDown(e: React.MouseEvent) {
+    if (drawMode) return;
+    panMouseRef.current = { sx: e.clientX, sy: e.clientY, tx: imgTransform.x, ty: imgTransform.y };
+  }
+
+  function onPanelTouchStart(e: React.TouchEvent) {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchRef.current = {
+        dist: Math.hypot(dx, dy),
+        mx: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        my: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+      };
+    }
+  }
+
+  function onPanelTouchMove(e: React.TouchEvent) {
+    if (e.touches.length === 2 && pinchRef.current) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const el = imgPanelRef.current;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        const ratio = dist / pinchRef.current.dist;
+        setImgTransform(prev => {
+          const z = Math.min(5, Math.max(1, prev.zoom * ratio));
+          if (z <= 1) return { zoom: 1, x: 0, y: 0 };
+          const fx = mx - r.left, fy = my - r.top;
+          const zr = z / prev.zoom;
+          // Also pan with midpoint movement
+          const dmx = mx - pinchRef.current!.mx, dmy = my - pinchRef.current!.my;
+          return { zoom: z, x: fx - (fx - prev.x) * zr + dmx, y: fy - (fy - prev.y) * zr + dmy };
+        });
+      }
+      pinchRef.current = { dist, mx, my };
+    } else if (e.touches.length === 1 && !drawMode) {
+      // Single-finger pan when not drawing
+      if (!pinchRef.current) {
+        setImgTransform(prev => {
+          if (!panMouseRef.current) {
+            panMouseRef.current = { sx: e.touches[0].clientX, sy: e.touches[0].clientY, tx: prev.x, ty: prev.y };
+            return prev;
+          }
+          const dx = e.touches[0].clientX - panMouseRef.current.sx;
+          const dy = e.touches[0].clientY - panMouseRef.current.sy;
+          return { ...prev, x: panMouseRef.current.tx + dx, y: panMouseRef.current.ty + dy };
+        });
+      }
+    }
+  }
+
+  function onPanelTouchEnd() {
+    pinchRef.current = null;
+    panMouseRef.current = null;
+  }
 
   // ── Item group colors ────────────────────────────────────────
   const [dividedNameColors, setDividedNameColors] = useState<Record<string, string>>({});
@@ -307,34 +408,48 @@ function ReviewStep({
         {imageUrl ? (
           <div
             ref={imgPanelRef}
-            className="relative flex-shrink-0 bg-slate-100 overflow-auto border-r border-slate-200"
-            style={{ width: `${panelWidth}%`, touchAction: drawMode ? "none" : "auto" }}
+            className="relative flex-shrink-0 bg-slate-100 overflow-hidden border-r border-slate-200"
+            style={{ width: `${panelWidth}%`, touchAction: "none", cursor: drawMode ? "crosshair" : "grab" }}
+            onMouseDown={onPanelMouseDown}
+            onTouchStart={onPanelTouchStart}
+            onTouchMove={onPanelTouchMove}
+            onTouchEnd={onPanelTouchEnd}
           >
-            <div className="relative" style={{ width: `${100 * imgZoom}%` }}>
+            {/* Transformed image + canvas — controls are OUTSIDE this div */}
+            <div
+              className="relative"
+              style={{
+                transformOrigin: "0 0",
+                transform: `translate(${imgTransform.x}px, ${imgTransform.y}px) scale(${imgTransform.zoom})`,
+                willChange: "transform",
+              }}
+            >
               <img
                 ref={imgRef}
                 src={imageUrl}
                 alt="Boleta"
                 className="w-full block"
                 onLoad={initCanvas}
+                draggable={false}
               />
               <canvas
                 ref={canvasRef}
                 className="absolute inset-0 w-full h-full"
                 style={{
-                  cursor: drawMode ? "crosshair" : "default",
+                  cursor: drawMode ? "crosshair" : "inherit",
                   pointerEvents: drawMode ? "auto" : "none",
                 }}
                 onMouseDown={onDrawStart}
                 onMouseMove={onDrawMove}
                 onMouseUp={onDrawEnd}
-                onTouchStart={onDrawStart}
-                onTouchMove={onDrawMove}
+                onTouchStart={(e) => { if (e.touches.length === 1) onDrawStart(e); }}
+                onTouchMove={(e) => { if (e.touches.length === 1) onDrawMove(e); }}
                 onTouchEnd={onDrawEnd}
               />
             </div>
-            {/* Controls */}
-            <div className="absolute top-2 right-2 flex flex-col gap-1 z-10 items-end">
+
+            {/* Controls — outside transform, always fixed top-right */}
+            <div className="absolute top-2 right-2 flex flex-col gap-1 z-10 items-end pointer-events-auto">
               <div className="flex gap-1">
                 <button
                   type="button"
@@ -367,10 +482,10 @@ function ReviewStep({
               </div>
               {/* Zoom controls */}
               <div className="flex items-center bg-black/50 backdrop-blur-sm rounded-full px-1.5 py-0.5 gap-1">
-                <button type="button" onClick={() => setImgZoom(z => Math.max(1, z - 0.5))}
+                <button type="button" onClick={() => zoomBtn(-0.5)}
                   className="text-white text-sm font-bold w-4 text-center leading-none">−</button>
-                <span className="text-white text-[9px] font-mono w-7 text-center">{Math.round(imgZoom * 100)}%</span>
-                <button type="button" onClick={() => setImgZoom(z => Math.min(4, z + 0.5))}
+                <span className="text-white text-[9px] font-mono w-7 text-center">{Math.round(imgTransform.zoom * 100)}%</span>
+                <button type="button" onClick={() => zoomBtn(0.5)}
                   className="text-white text-sm font-bold w-4 text-center leading-none">+</button>
               </div>
             </div>
@@ -407,15 +522,24 @@ function ReviewStep({
           </div>
 
           <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
-            {items.map((item, idx) => {
+            {(() => {
+              // Pre-compute global last index and total for each color group
+              const lastIdxByColor: Record<string, number> = {};
+              const totalByColor: Record<string, number> = {};
+              const countByColor: Record<string, number> = {};
+              items.forEach((it, i) => {
+                const c = getItemColor(it);
+                if (c) {
+                  lastIdxByColor[c] = i;
+                  totalByColor[c] = (totalByColor[c] || 0) + it.line_total;
+                  countByColor[c] = (countByColor[c] || 0) + 1;
+                }
+              });
+              return items.map((item, idx) => {
               const color = getItemColor(item);
-              const nextItem = items[idx + 1];
-              const nextColor = nextItem ? getItemColor(nextItem) : undefined;
-              const isLastInGroup = color && nextColor !== color;
-              const groupTotal = color
-                ? items.filter(it => getItemColor(it) === color).reduce((s, it) => s + it.line_total, 0)
-                : 0;
-              const groupCount = color ? items.filter(it => getItemColor(it) === color).length : 0;
+              const isLastInGroup = color ? lastIdxByColor[color] === idx : false;
+              const groupTotal = color ? totalByColor[color] : 0;
+              const groupCount = color ? countByColor[color] : 0;
               return (
                 <Fragment key={item.id}>
                   {divideItemId === item.id ? (
@@ -447,7 +571,8 @@ function ReviewStep({
                   )}
                 </Fragment>
               );
-            })}
+            });
+            })()}
             {showAdd ? (
               <li className="p-2 space-y-1.5 bg-indigo-50/50">
                 <input
