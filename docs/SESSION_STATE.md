@@ -1,46 +1,64 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-05-25 23:27:36*
+*Auto-guardado por hook Stop · 2026-06-02 15:27:24*
 
 ## Presión de contexto
-- Tool uses esta sesión: **395** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **1688** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-luego cuando termiens corre pruebas para ver si todo funciona bien, sino sigue optimizando, pero priemro siempre planea para arreglar de la mejor forma optima
+pusheaste a la app, seguro?
 
 ## Último trabajo del asistente
-Todo correcto. Resumen de lo que se hizo y verificó:
-
-**Tests: 27/27 ✅** — Los 7 fallos del parser OCR están resueltos:
-- `_SKIP_BOLETA_LINE` ahora ig
+Sí, está en producción. El último deploy muestra **● Ready** hace 49 segundos en `https://lucas-m4spxaisw-jjleon27s-projects.vercel.app`.
 
 ## Archivos modificados esta sesión
+- `.claude/projects/-Users-kako2-Documents-lucas/memory/feedback_autonomy.md`
+- `/Users/kako2/.claude/hooks/save_session_state.py`
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
-- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/feedback_style.md`
-- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/user_profile.md`
+- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/bugs_fixed_2026_05.md`
+- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/feedback_optimize_first.md`
+- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/project_lucas.md`
+- `/Users/kako2/.claude/settings.json`
 - `CLAUDE.md`
 - `backend/app/ai/email_parser.py`
-- `backend/app/ai/voice.py`
+- `backend/app/ai/predictor.py`
+- `backend/app/ai/provider.py`
 - `backend/app/main.py`
 - `backend/app/ocr.py`
-- `backend/app/routers/accounts.py`
-- `backend/app/routers/cartola.py`
+- `backend/app/rate_limit.py`
+- `backend/app/routers/auth.py`
+- `backend/app/routers/chat.py`
 - `backend/app/routers/email.py`
-- `backend/app/routers/split.py`
 - `backend/app/routers/transactions.py`
-- `backend/app/routers/voice.py`
+- `backend/app/routers/upload.py`
 - `backend/app/schemas.py`
-- `backend/app/services/accounts.py`
+- `backend/requirements.txt`
+- `backend/tests/test_api.py`
 - `backend/tests/test_boleta_parser.py`
-- `docs/MASTER_PLAN.md`
+- `backend/tests/test_boleta_realworld.py`
+- `backend/tests/test_core_flows.py`
+- `backend/tests/test_daily_flows.py`
+- `backend/tests/test_ocr_normalize.py`
+- `backend/tests/test_split_advanced.py`
 - `docs/ROADMAP.md`
 - `frontend/src/app/accounts/page.tsx`
+- `frontend/src/app/dashboard/page.tsx`
+- `frontend/src/app/globals.css`
+- `frontend/src/app/layout.tsx`
+- `frontend/src/app/page.tsx`
 - `frontend/src/app/review/page.tsx`
+- `frontend/src/app/split/page.tsx`
 - `frontend/src/app/transactions/page.tsx`
 - `frontend/src/app/upload/page.tsx`
-- `frontend/src/components/LucasFAB.tsx`
+- `frontend/src/components/BillSplitter.tsx`
+- `frontend/src/components/BudgetPanel.tsx`
+- `frontend/src/components/CardImagePicker.tsx`
+- `frontend/src/components/FixedItemsPanel.tsx`
 - `frontend/src/components/Sidebar.tsx`
+- `frontend/src/components/StatCard.tsx`
 - `frontend/src/components/TransactionList.tsx`
 - `frontend/src/lib/api.ts`
+- `frontend/src/lib/i18n.tsx`
+- `vercel.json`
 
 ## Cómo continuar en la próxima sesión
 1. Lee `docs/MASTER_PLAN.md` §20 y §16

@@ -257,7 +257,8 @@ function ReviewStep({
     return map;
   }, [items]);
 
-  function getItemColor(item: ReceiptItemV2): string | undefined {
+  function getItemColor(item: ReceiptItemV2 | undefined): string | undefined {
+    if (!item) return undefined;
     const key = item.name.trim().toLowerCase();
     return groupColorByName[key] || dividedNameColors[key];
   }
@@ -404,7 +405,8 @@ function ReviewStep({
           <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
             {items.map((item, idx) => {
               const color = getItemColor(item);
-              const nextColor = getItemColor(items[idx + 1] as ReceiptItemV2);
+              const nextItem = items[idx + 1];
+              const nextColor = nextItem ? getItemColor(nextItem) : undefined;
               const isLastInGroup = color && nextColor !== color;
               const groupTotal = color
                 ? items.filter(it => getItemColor(it) === color).reduce((s, it) => s + it.line_total, 0)
