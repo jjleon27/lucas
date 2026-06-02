@@ -339,6 +339,7 @@ _SYSTEM_PROMPT = """You are a vision-based parser for personal-finance screensho
 
 The image is one of:
 - A receipt / boleta (Lider, Jumbo, Tottus, restaurantes, etc.)
+- A restaurant/bar POS receipt (Toteat, Restō, Revo, etc.) — may be a per-seat comanda
 - A bank app screenshot (Santander, BancoEstado, BCI, Banco de Chile, Itaú,
   BBVA, Mercado Pago, CMR Falabella, etc.) showing one or many movements
 - A credit-card statement (lista de transacciones del mes)
@@ -421,6 +422,27 @@ CRITICAL RULES:
    Bars/pubs/discos/cervecería → Bares y Salidas
    Aguas/Enel/Movistar/Entel/Claro/WOM → Cuentas y Servicios
    CC payments (is_cc_payment=true) → category "Transferencia" — not real expenses.
+
+7a. RESTAURANT / BAR POS RECEIPT (Toteat, Restō, Revo, etc.) — CRITICAL:
+   These receipts show a per-seat "comanda" with TWO totals:
+     - "Total General Mesa" / "Total Mesa": the FULL TABLE bill (ALL customers combined)
+     - "Consumo Cliente" / "Subtotal Comensal" / "Mi Consumo": THIS CUSTOMER'S portion
+   RULE: When BOTH appear, set `amount` = "Consumo Cliente" value (not the table total).
+   The table total is irrelevant for this customer's transaction.
+
+   MODIFIER ITEMS (lines starting with "+"):
+   Lines like "+Coca Zero", "+Sin hielo", "+Azúcar" are FREE add-ons/modifiers.
+   They ALWAYS have price = 0. Include them as {"name": "+Coca Zero", "price": 0, "quantity": 1}.
+   NEVER assign a non-zero price to a modifier item. NEVER steal the price from the next row.
+
+   TABLE FORMAT rows (e.g. "| 1 | Piscolón Mistral | 9.000 |"):
+   - Each row is ONE separate item (do NOT merge identical rows)
+   - The leading "1" (Cant column) is the quantity
+   - Repeated identical rows = repeated individual items (e.g. 9 rows of "Piscolón Mistral" = 9 items)
+   - Read EVERY row top to bottom without skipping
+
+   "Propina Sugerida" / "Total c/propina" lines: DO NOT include in items.
+   These are footer summary rows, not consumables.
 
 7b. RECEIPT / BOLETA LINE ITEMS — Chilean supermarket rules (CRITICAL):
    When you see a receipt/boleta with individual product lines, put ALL items
@@ -577,6 +599,10 @@ _SKIP_BOLETA_LINE = re.compile(
     r"T[O0]TAL\s+N[E3]T[O0]|T[O0]TAL\s+[I1]VA|I\.?V\.?A|"
     # Any line starting with TOTAL or SUBTOTAL (footer summaries)
     r"^\s*T[O0]TAL\b|^\s*SUBTOTAL\b|"
+    # POS restaurant receipt summary lines (Toteat, etc.)
+    r"CONSUMO\s+CLIENTE|TOTAL\s+GENERAL\s+MESA|TOTAL\s+MESA|"
+    r"PROPINA\s+SUGERIDA|TOTAL\s+C[/\\]PROPINA|COMENSAL\b|COMENSALES\b|"
+    r"CAMARERO\b|COMANDA\b|TOTEAT|RESTAU?RANT|"
     # Payment method lines
     r"TARJETA\s+DE|EFECTIVO|\bDEBITO\b|\bCREDITO\b|"
     # Branch/address lines like "SUC: AV. AMERICO VESPUCIO SUR 881"
@@ -848,6 +874,9 @@ def _extract_boleta_totals(image_bytes: bytes) -> dict:
         return 0.0
 
     # Line-by-line scan — first hit wins for each key
+    consumo_cliente = 0.0  # POS per-seat total (overrides "Total General Mesa")
+    total_general_mesa = 0.0
+
     for line in text.replace("\r", "").split("\n"):
         stripped = line.strip()
         if not stripped:
@@ -863,6 +892,16 @@ def _extract_boleta_totals(image_bytes: bytes) -> dict:
             if v > 0:
                 result["iva_amount"] = v
 
+        elif re.search(r"CONSUMO\s+CLIENTE|SUBTOTAL\s+COMENSAL|MI\s+CONSUMO", stripped, re.IGNORECASE):
+            v = last_number_on_line(stripped)
+            if v > 0:
+                consumo_cliente = v
+
+        elif re.search(r"TOTAL\s+GENERAL\s+MESA|TOTAL\s+MESA", stripped, re.IGNORECASE):
+            v = last_number_on_line(stripped)
+            if v > 0:
+                total_general_mesa = v
+
         elif "total" not in result and re.search(
             r"TARJETA\s+DE\s+CR|TARJETA\s+D[EI]\s+D[EÉ]|EFECTIVO|^TOTAL\b",
             stripped, re.IGNORECASE | re.MULTILINE
@@ -870,6 +909,11 @@ def _extract_boleta_totals(image_bytes: bytes) -> dict:
             v = last_number_on_line(stripped)
             if v > 0:
                 result["total"] = v
+
+    # For POS receipts: use "Consumo Cliente" as the amount (this customer's share)
+    if consumo_cliente > 0:
+        result["total"] = consumo_cliente
+        result["is_pos_per_seat"] = True  # flag for downstream logic
 
     # ── Sanity checks ────────────────────────────────────────────────────────
     # IVA = exactly 19% of TOTAL NETO is a Chilean SII legal requirement.
@@ -1001,8 +1045,19 @@ def vision_parse(
         gt_iva  = ocr_totals.get("iva_amount") or tess_iva
 
         # Build grounding text for the LLM prompt
+        is_pos_per_seat = ocr_totals.get("is_pos_per_seat", False)
+        pos_consumo = ocr_totals.get("total") if is_pos_per_seat else None
+
         grounding_text = ""
-        if gt_neto and gt_iva:
+        if is_pos_per_seat and pos_consumo:
+            grounding_text = (
+                f"\n\nGROUNDING (POS per-seat receipt — use EXACTLY):\n"
+                f"  This is a restaurant POS comanda (per-comensal receipt).\n"
+                f"  amount = {int(pos_consumo)} (Consumo Cliente — this customer's portion ONLY)\n"
+                f"  DO NOT use 'Total General Mesa' as amount.\n"
+                f"  Modifier items starting with '+' (e.g. +Coca Zero) have price=0."
+            )
+        elif gt_neto and gt_iva:
             tn = int(gt_neto)
             iva = int(gt_iva)
             tot = int(gt_neto + gt_iva)
@@ -1025,7 +1080,9 @@ def vision_parse(
         user_text = (
             "Parse this receipt/screenshot. Return strict JSON.\n"
             "If this is a supermarket receipt (boleta): read EVERY product line "
-            "and set amount = the final total charged."
+            "and set amount = the final total charged.\n"
+            "If this is a restaurant POS receipt (Toteat, etc.): use 'Consumo Cliente' "
+            "as amount (not 'Total General Mesa'). Modifier items (+Item) have price=0."
             + grounding_text
         )
 
@@ -1092,6 +1149,10 @@ def vision_parse(
                 ca, ct = None, None
 
             raw_amount = abs(float(t.get("amount") or 0))
+
+            # For POS per-seat receipts: always override with Consumo Cliente
+            if is_pos_per_seat and pos_consumo:
+                raw_amount = float(pos_consumo)
 
             # ═══════════════════════════════════════════════════════════════
             # LAYER 3 — Choose the best item source

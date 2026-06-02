@@ -290,6 +290,9 @@ export default function SplitPage() {
         // Case C: gap ≈ 0 → IVA already included in prices, do nothing
       }
 
+      // Drop free modifier items (price = 0) — they don't affect the split
+      splitItems = splitItems.filter((it) => it.price !== 0);
+
       // Auto-detect discount lines from OCR: ensure their price is negative
       splitItems = splitItems.map((it) => {
         if (/^(descuento|dscto|dcto|rebaja)/i.test(it.name.trim()) && it.price > 0) {
