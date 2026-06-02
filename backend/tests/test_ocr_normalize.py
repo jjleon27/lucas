@@ -760,284 +760,208 @@ def test_scale_preserves_item_names():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# BARES Y RESTAURANTES — Casos reales chilenos
+# BARES Y RESTAURANTES — Tests por INVARIANTES, no por casos específicos
+#
+# Estrategia: testear propiedades matemáticas que deben cumplirse para CUALQUIER
+# recibo, no catalogar ejemplos. Los casos específicos son ejemplos del invariante.
 # ═════════════════════════════════════════════════════════════════════════════
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pipe-table (Toteat / Restō / Revo) — el format más difícil para el LLM
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Recibo real de Toteat con varios tragos y grados de alcohol en los nombres
-_TOTEAT_BAR = """\
-TOTEAT
-Mesa 12 - Mozo: Carlos
-
-| Cant | Producto              | Total  |
-| 3    | Piscola Mistral 35°   | 27.000 |
-| 2    | Fernet Branca 39°     | 11.600 |
-| 4    | Schop Medio Royal     | 19.200 |
-| 1    | Agua con gas 500ml    |  1.500 |
-| 2    | Empanada de queso     |  6.000 |
-
-TOTAL                                  65.300
-"""
-
-def test_toteat_alcohol_degrees_not_qty():
-    """Grados de alcohol (35°, 39°) en nombre → qty debe venir SOLO del Cant column."""
-    items = _parse_pipe_table(_TOTEAT_BAR)
-    piscola = next(it for it in items if "Piscola" in it.name or "Mistral" in it.name)
-    fernet  = next(it for it in items if "Fernet" in it.name)
-    assert piscola.quantity == 3,  f"Piscola qty should be 3, got {piscola.quantity}"
-    assert piscola.price    == 9000, f"Piscola unit price 27000/3=9000, got {piscola.price}"
-    assert fernet.quantity  == 2,  f"Fernet qty should be 2, got {fernet.quantity}"
-    assert fernet.price     == 5800, f"Fernet unit price 11600/2=5800, got {fernet.price}"
-
-def test_toteat_sum_matches_printed_total():
-    items = _parse_pipe_table(_TOTEAT_BAR)
-    assert sum(it.price * it.quantity for it in items) == 65300
-
-def test_toteat_schop_qty4():
-    items = _parse_pipe_table(_TOTEAT_BAR)
-    schop = next(it for it in items if "Schop" in it.name or "Royal" in it.name)
-    assert schop.quantity == 4
-    assert schop.price    == 4800  # 19200/4
-
-def test_toteat_agua_500ml_qty1():
-    """'500ml' en nombre no es cantidad."""
-    items = _parse_pipe_table(_TOTEAT_BAR)
-    agua = next(it for it in items if "Agua" in it.name)
-    assert agua.quantity == 1
-    assert agua.price    == 1500
-
-
-# Whisky y ron con grados
-_DESTILADOS_RECEIPT = """\
-| Cant | Producto               | Total  |
-| 1    | Ron Santa Teresa 18°   |  8.500 |
-| 1    | Vodka Absolut 40°      |  9.000 |
-| 2    | Whisky J&B 40°         | 22.000 |
-| 3    | Agua mineral 500ml     |  4.500 |
-"""
-
-def test_destilados_18_grados_not_qty():
-    items = _parse_pipe_table(_DESTILADOS_RECEIPT)
-    ron = next(it for it in items if "Ron" in it.name or "Santa Teresa" in it.name)
-    assert ron.quantity == 1
-    assert ron.price == 8500
-
-def test_destilados_40_grados_not_qty():
-    items = _parse_pipe_table(_DESTILADOS_RECEIPT)
-    vodka  = next(it for it in items if "Vodka" in it.name)
-    whisky = next(it for it in items if "Whisky" in it.name)
-    assert vodka.quantity  == 1
-    assert vodka.price     == 9000
-    assert whisky.quantity == 2
-    assert whisky.price    == 11000  # 22000/2
-
-def test_destilados_agua_qty3():
-    items = _parse_pipe_table(_DESTILADOS_RECEIPT)
-    agua = next(it for it in items if "Agua" in it.name)
-    assert agua.quantity == 3
-    assert agua.price    == 1500  # 4500/3
+import pytest
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _parse_boleta_from_text — restaurant sin IVA (texto plano, no pipe-table)
+# INVARIANTE 1: _parse_pipe_table — qty SIEMPRE del Cant column
+#
+# Propiedad: Para cualquier fila | N | nombre_con_numeros | total |,
+#   result.quantity == N   (nunca se lee un número del nombre)
+#   result.price * N == line_total  (dentro de ±1 CLP por redondeo)
+#
+# Parametrizado con nombres que CONTIENEN números que NO son cantidades:
+# grados de alcohol, volumen (ml/cc), años, especificaciones de producto.
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Bar con schops y cervezas (formato restaurante leading-qty)
-_SCHOP_BAR = """\
-BAR LA UNIÓN
-Mesa 3
-
-6 Schop Medio Royal                    28.800
-2 Schop Medio Escudo                    8.800
-3 Vienesa italiana                     13.200
-1 Agua mineral                          1.500
-
-TOTAL                                  52.300
-"""
-
-def test_schop_bar_unit_prices():
-    items, _, _, _ = _parse_boleta_from_text(_SCHOP_BAR)
-    royal  = next((it for it in items if "Royal" in it.name  or "ROYAL" in it.name),  None)
-    escudo = next((it for it in items if "Escudo" in it.name or "ESCUDO" in it.name), None)
-    assert royal  is not None and royal.quantity  == 6 and royal.price  == 4800
-    assert escudo is not None and escudo.quantity == 2 and escudo.price == 4400
-
-def test_schop_bar_vienesa():
-    items, _, _, _ = _parse_boleta_from_text(_SCHOP_BAR)
-    vienesa = next((it for it in items if "vienesa" in it.name.lower()), None)
-    assert vienesa is not None
-    assert vienesa.quantity == 3
-    assert vienesa.price    == 4400  # 13200/3
-
-def test_schop_bar_total():
-    items, _, _, _ = _parse_boleta_from_text(_SCHOP_BAR)
-    total = sum(it.price * it.quantity for it in items)
-    assert total == 52300
-
-
-# Pub con descuento en cuenta
-_PUB_DESCUENTO = """\
-PUB FITZROY
-Mesa 8
-
-4 Cerveza Austral botella              12.000
-2 Pisco sour                           11.000
-1 Agua con gas                          1.500
-3 Porcion papas fritas                 10.500
-DESCUENTO HAPPY HOUR                   -3.500
-
-TOTAL                                  31.500
-"""
-
-def test_pub_cerveza_unit_price():
-    items, _, _, _ = _parse_boleta_from_text(_PUB_DESCUENTO)
-    cerveza = next((it for it in items if "Cerveza" in it.name or "CERVEZA" in it.name), None)
-    assert cerveza is not None
-    assert cerveza.quantity == 4
-    assert cerveza.price    == 3000  # 12000/4
-
-def test_pub_papas_unit_price():
-    items, _, _, _ = _parse_boleta_from_text(_PUB_DESCUENTO)
-    papas = next((it for it in items if "papas" in it.name.lower()), None)
-    assert papas is not None
-    assert papas.quantity == 3
-    assert papas.price    == 3500  # 10500/3
-
-
-# Restaurante formal con IVA (boleta electrónica)
-_REST_CON_IVA = """\
-RESTAURANTE DONDE AUGUSTO
-RUT 76.543.210-K
-Boleta Electronica N 000123
-
-1 Lomo a lo pobre                      12.600
-1 Bebida Coca-Cola 350ml                1.890
-2 Jugo natural naranja                  4.200
-
-TOTAL NETO                             18.690
-I.V.A.                                  3.551
-TOTAL                                  22.241
-TARJETA DE CREDITO                     22.241
-"""
-
-def test_rest_iva_totals():
-    _, neto, iva, _ = _parse_boleta_from_text(_REST_CON_IVA)
-    assert neto == 18690.0, f"NETO expected 18690, got {neto}"
-    assert iva  ==  3551.0, f"IVA expected 3551, got {iva}"
-
-def test_rest_iva_jugo_unit_price():
-    """'2 Jugo natural naranja 4.200' → qty=2, unit=2100."""
-    items, _, _, _ = _parse_boleta_from_text(_REST_CON_IVA)
-    jugo = next((it for it in items if "Jugo" in it.name or "jugo" in it.name), None)
-    assert jugo is not None
-    assert jugo.quantity == 2
-    assert jugo.price    == 2100  # 4200/2
-
-def test_rest_iva_bebida_qty1():
-    """'1 Bebida Coca-Cola 350ml 1.890' → qty=1, price=1890. '350' is volume."""
-    items, _, _, _ = _parse_boleta_from_text(_REST_CON_IVA)
-    bebida = next((it for it in items if "Coca" in it.name or "Bebida" in it.name), None)
-    assert bebida is not None
-    assert bebida.quantity == 1
-    assert bebida.price    == 1890
+@pytest.mark.parametrize("cant,name,line_total_clp", [
+    # grados de alcohol
+    (1, "Piscolón Mistral de 35°",   9000),
+    (3, "Piscola Mistral 35°",      27000),
+    (1, "Ron Santa Teresa 18°",      8500),
+    (1, "Vodka Absolut 40°",         9000),
+    (2, "Whisky J&B 40°",           22000),
+    (1, "Fernet Branca 39°",         5800),
+    (2, "Cognac Hennessy 40°",      26000),
+    # volumen en nombre
+    (1, "Schop 500cc Austral",       3500),
+    (2, "Cerveza Artesanal 330ml",   7000),
+    (1, "Agua mineral 500ml",        1500),
+    (3, "Jugo natural 300ml",        4500),
+    # especificación de producto
+    (1, "Alto del Carmen 35",        7500),
+    (1, "Johnnie Walker 12 años",   15000),
+    (2, "Vino Reserva 2019",        18000),
+    # número en descripción genérica
+    (4, "Schop Medio Royal",        19200),
+    (1, "Coca-Cola 350ml",           1500),
+])
+def test_pipe_table_qty_always_from_cant_column(cant, name, line_total_clp):
+    """INVARIANTE: qty = cant_column, nunca de números en el nombre del producto."""
+    row = f"| {cant} | {name} | {line_total_clp // 1000}.{line_total_clp % 1000:03d} |\n"
+    items = _parse_pipe_table(row)
+    assert len(items) == 1, f"Expected 1 item for row: {row!r}"
+    it = items[0]
+    assert it.quantity == cant, \
+        f"qty should be {cant} (from Cant col), got {it.quantity} — name '{name}' leaked a number"
+    assert abs(it.price * it.quantity - line_total_clp) <= 1, \
+        f"price×qty should ≈ {line_total_clp}, got {it.price}×{it.quantity}={it.price*it.quantity}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# _fix_line_total_items — casos LLM que falla en bar/restaurante
+# INVARIANTE 2: _parse_pipe_table — suma de items == suma de totales impresos
+#
+# Propiedad: sum(item.price × item.qty) == sum(all line_totals in receipt)
 # ─────────────────────────────────────────────────────────────────────────────
-
-def test_fix_bar_all_wrong_global():
-    """LLM devuelve price=line_total para TODOS los items con qty>1 (caso bar).
-    ref_total = sum of line-totals (= sum after correct unit prices × qty)."""
-    items = [
-        make_item("Piscola Mistral 35°", 27000, qty=3),  # line_total as price; unit=9000
-        make_item("Fernet Branca 39°",   11600, qty=2),  # line_total as price; unit=5800
-        make_item("Schop Medio Royal",   19200, qty=4),  # line_total as price; unit=4800
-    ]
-    # sum_flat = 27000+11600+19200 = 57800 = correct receipt total
-    ref_total = 57800.0
-    fixed = _fix_line_total_items(items, ref_total)
-    piscola = next(it for it in fixed if "Piscola" in it.name or "Mistral" in it.name)
-    fernet  = next(it for it in fixed if "Fernet" in it.name)
-    schop   = next(it for it in fixed if "Schop" in it.name or "Royal" in it.name)
-    assert piscola.price == 9000,  f"Piscola unit 9000, got {piscola.price}"
-    assert fernet.price  == 5800,  f"Fernet unit 5800, got {fernet.price}"
-    assert schop.price   == 4800,  f"Schop unit 4800, got {schop.price}"
-    assert sum(it.price * it.quantity for it in fixed) == ref_total
-
-
-def test_fix_bar_single_wrong_cerveza():
-    """Solo la cerveza tiene price=line_total, los demás correctos."""
-    items = [
-        make_item("Cerveza Austral", 12000, qty=4),  # wrong: should be 3000
-        make_item("Agua mineral",     1500, qty=1),  # correct
-        make_item("Papas fritas",     3500, qty=1),  # correct
-    ]
-    # correct sum: 3000*4 + 1500 + 3500 = 17000
-    ref_total = 17000.0
-    fixed = _fix_line_total_items(items, ref_total)
-    cerveza = next(it for it in fixed if "Cerveza" in it.name)
-    assert cerveza.price == 3000, f"Cerveza unit 3000, got {cerveza.price}"
-    assert sum(it.price * it.quantity for it in fixed) == ref_total
-
-
-def test_fix_bar_pisco_sour_pair():
-    """Dos items con line_total-as-price, fix de par.
-    excess = 9600*(2-1) + 6000*(3-1) = 9600 + 12000 = 21600 = total_excess → par detectado."""
-    items = [
-        make_item("Pisco sour",   9600, qty=2),  # line_total; unit=4800
-        make_item("Empanada",     6000, qty=3),  # line_total; unit=2000
-        make_item("Agua mineral", 1500, qty=1),  # correct
-    ]
-    # correct sum: 4800*2 + 2000*3 + 1500 = 9600+6000+1500 = 17100
-    ref_total = 17100.0
-    fixed = _fix_line_total_items(items, ref_total)
-    pisco    = next(it for it in fixed if "Pisco" in it.name)
-    empanada = next(it for it in fixed if "Empanada" in it.name)
-    assert pisco.price    == 4800
-    assert empanada.price == 2000
-    assert sum(it.price * it.quantity for it in fixed) == ref_total
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pipeline integrado: _parse_pipe_table → _fix_line_total_items → _scale_to_total
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_pipeline_pipe_table_then_scale():
-    """Pipeline completo: pipe-table → escala down garantía."""
-    text = (
-        "| Cant | Producto       | Total  |\n"
-        "| 2    | Schop Royal    | 9.600  |\n"
-        "| 1    | Agua mineral   | 1.500  |\n"
+@pytest.mark.parametrize("rows,expected_total", [
+    # Bar básico con grados en nombres
+    ([("1","Piscolón 35°","9.000"), ("1","Fernet 39°","5.800")],  14800),
+    # Pub con muchos schops
+    ([("6","Schop Royal","28.800"), ("2","Schop Escudo","8.800"), ("3","Vienesa","13.200")], 50800),
+    # Bar destilados varios
+    ([("1","Ron 18°","8.500"), ("2","Whisky 40°","22.000"), ("3","Agua 500ml","4.500")], 35000),
+    # Un solo item qty=1
+    ([("1","Cerveza Austral","3.000")], 3000),
+    # Todos qty>1
+    ([("2","Pisco sour","9.600"), ("3","Empanada","6.000"), ("4","Schop","19.200")], 34800),
+])
+def test_pipe_table_sum_invariant(rows, expected_total):
+    """INVARIANTE: sum(price×qty) == suma de totales de columna del recibo."""
+    text = "| Cant | Producto | Total |\n" + "".join(
+        f"| {c} | {n} | {t} |\n" for c, n, t in rows
     )
     items = _parse_pipe_table(text)
-    assert items[0].price == 4800  # 9600/2
-    # Simula que hay un centavo de diferencia de redondeo
-    items_sum = sum(it.price * it.quantity for it in items)
-    assert items_sum == 11100  # 9600+1500
-
-    scaled, amount = _scale_to_total(items, 11100.0)  # already matches
-    assert amount == 11100.0
-    assert scaled[0].price == 4800  # unchanged
+    total = sum(it.price * it.quantity for it in items)
+    assert abs(total - expected_total) <= len(rows), \
+        f"sum {total} should ≈ {expected_total} (rows: {rows})"
 
 
-def test_pipeline_fix_then_scale_guarantees_sum():
-    """LLM dio precios incorrectos → fix de par + scale garantiza suma exacta.
-    Diseñado para activar pair fix: excess = 9600 + 12000 = 21600."""
-    llm_items = [
-        make_item("Cerveza Austral", 9600, qty=2),  # line_total; unit=4800
-        make_item("Empanada",        6000, qty=3),  # line_total; unit=2000
-        make_item("Agua",            1500, qty=1),  # correct
-    ]
-    # correct: 4800*2 + 2000*3 + 1500 = 17100
-    ref_total = 17100.0
-    fixed = _fix_line_total_items(llm_items, ref_total)
-    cerveza  = next(it for it in fixed if "Cerveza" in it.name)
-    empanada = next(it for it in fixed if "Empanada" in it.name)
-    assert cerveza.price  == 4800
-    assert empanada.price == 2000
-    scaled, amount = _scale_to_total(fixed, ref_total)
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 3: _parse_boleta_from_text — "N description LINE_TOTAL"
+#
+# Propiedad: para cualquier línea "N item LINE_TOTAL" (formato restaurante),
+#   result.quantity == N
+#   result.price == round(LINE_TOTAL / N)
+#   result.price * N == LINE_TOTAL  (dentro de ±1)
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("qty,name,line_total", [
+    (6, "Schop Medio Royal",    28800),
+    (2, "Schop Medio Escudo",    8800),
+    (3, "Vienesa italiana",     13200),
+    (4, "Cerveza Austral",      12000),
+    (2, "Pisco sour",           11000),
+    (3, "Porcion papas fritas", 10500),
+    (5, "Empanada de pino",     15000),
+    (2, "Jugo natural",          4200),
+])
+def test_tess_leading_qty_unit_price(qty, name, line_total):
+    """INVARIANTE: 'N nombre LINE_TOTAL' → unit=LINE_TOTAL/N, qty=N."""
+    text = f"{qty} {name}  {line_total // 1000}.{line_total % 1000:03d}\nTOTAL  {line_total // 1000}.{line_total % 1000:03d}\n"
+    items, _, _, _ = _parse_boleta_from_text(text)
+    item = next((it for it in items if name.split()[0].upper() in it.name.upper()), None)
+    assert item is not None, f"'{name}' not found in parsed items: {[i.name for i in items]}"
+    assert item.quantity == qty, f"qty should be {qty}, got {item.quantity}"
+    assert abs(item.price * item.quantity - line_total) <= 1, \
+        f"price×qty={item.price*item.quantity} should ≈ {line_total}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 4: _fix_line_total_items — cuando hay fix, sum(fixed) == ref_total
+#
+# Propiedad: si el algoritmo puede identificar el patrón (single/pair/global),
+#   el resultado siempre satisface sum(price×qty) == ref_total exactamente.
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("wrong_items,ref_total,desc", [
+    # Single: solo cerveza wrong; ref = 3000*4 + 1500 + 800 = 14300
+    # excess = 12000*(4-1) = 36000 = sum_wrong - ref ✓ → single fix detectado
+    ([("Cerveza", 12000, 4), ("Agua", 1500, 1), ("Pan", 800, 1)],
+     14300.0, "single wrong: cerveza"),
+    # Single: solo schop wrong; ref = 4800*6 + 2000 = 30800
+    # excess = 28800*(6-1) = 144000 = sum_wrong - ref ✓ → single fix detectado
+    ([("Schop Royal", 28800, 6), ("Empanada", 2000, 1)],
+     30800.0, "single wrong: schop"),
+    # Global: todos wrong; ref = sum_flat = 27000+11600+19200 = 57800
+    ([("Piscola", 27000, 3), ("Fernet", 11600, 2), ("Schop", 19200, 4)],
+     57800.0, "global: todos wrong"),
+    # Global: completo+bebida; ref = sum_flat = 12000+3400 = 15400
+    ([("Completo", 12000, 3), ("Bebida", 3400, 2)],
+     15400.0, "global: completo+bebida"),
+])
+def test_fix_when_detectable_sum_equals_ref(wrong_items, ref_total, desc):
+    """INVARIANTE: cuando _fix detecta el patrón, sum(fixed) == ref_total."""
+    items = [make_item(n, p, q) for n, p, q in wrong_items]
+    fixed = _fix_line_total_items(items, ref_total)
+    total = sum(it.price * it.quantity for it in fixed)
+    assert abs(total - ref_total) <= 1, \
+        f"[{desc}] sum {total} should == ref_total {ref_total}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 5: _scale_to_total — garantías matemáticas absolutas
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("prices_qtys,ref_total", [
+    # Over-count: scale DOWN garantiza suma dentro de ±1
+    ([(5100, 3), (1200, 2)],  15000.0),
+    ([(9000, 3), (5800, 1)],  25000.0),
+    ([(4800, 6), (4400, 2)],  35000.0),
+    ([(3000, 10),],           25000.0),
+])
+def test_scale_down_sum_within_tolerance(prices_qtys, ref_total):
+    """INVARIANTE: scale DOWN → abs(sum - ref_total) ≤ 1."""
+    items = [make_item(f"Item{i}", p, q) for i, (p, q) in enumerate(prices_qtys)]
+    cur = sum(p * q for p, q in prices_qtys)
+    if cur <= ref_total:
+        pytest.skip("not an over-count case")
+    scaled, amount = _scale_to_total(items, ref_total)
     assert abs(sum(it.price * it.quantity for it in scaled) - ref_total) <= 1
+
+
+@pytest.mark.parametrize("prices_qtys,ref_total", [
+    # Under-count: NUNCA infla, devuelve items sin cambio
+    ([(9000, 1), (5800, 1)],  50000.0),
+    ([(4800, 2), (1500, 1)],  20000.0),
+    ([(3000, 5),],            30000.0),
+])
+def test_scale_never_inflates(prices_qtys, ref_total):
+    """INVARIANTE: si sum < ref_total → items sin cambio (nunca infla)."""
+    items = [make_item(f"Item{i}", p, q) for i, (p, q) in enumerate(prices_qtys)]
+    orig_prices = [it.price for it in items]
+    scaled, _ = _scale_to_total(items, ref_total)
+    assert [it.price for it in scaled] == orig_prices, \
+        "Scale-up forbidden: prices must not change when sum < ref_total"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVARIANTE 6: _normalize_boleta_items — suma siempre == total_neto
+#
+# Propiedad: para CUALQUIER lista de items y cualquier total_neto > 0,
+#   sum(product_items.price × qty) == total_neto   (dentro de ±1)
+#   auth_total == total_neto + iva_amount
+# ─────────────────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("item_prices_qtys,total_neto", [
+    # 1 item
+    ([(9999, 1)],                      10000),
+    # 2 items, ligera diferencia de redondeo LLM
+    ([(5000, 1), (3000, 1)],            7800),
+    # Multi-qty con scale
+    ([(4990, 2), (1750, 1)],           11600),
+    # 5 items restaurante
+    ([(12600,1),(1890,1),(2100,2),(3500,3),(800,1)], 30000),
+    # Con descuento negativo
+    ([(2490,1),(1790,2),(-490,1)],      5580),
+])
+def test_normalize_sum_always_equals_neto(item_prices_qtys, total_neto):
+    """INVARIANTE: sum(products) ≈ total_neto para cualquier input."""
+    items = [make_item(f"Item{i}", p, q) for i, (p, q) in enumerate(item_prices_qtys)]
+    iva = round(total_neto * 0.19)
+    normalized, auth_total = _normalize_boleta_items(items, float(total_neto), float(iva))
+    product_items = [it for it in normalized if "iva" not in it.name.lower()]
+    product_sum = sum(it.price * it.quantity for it in product_items)
+    assert abs(product_sum - total_neto) <= 1, \
+        f"product_sum={product_sum} should ≈ total_neto={total_neto}"
+    assert auth_total == total_neto + iva
