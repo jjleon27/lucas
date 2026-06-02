@@ -24,6 +24,22 @@ interface Row extends ParsedReceipt {
   _selected: boolean;
 }
 
+function groupDuplicateItems(
+  items: ParsedReceipt["items"],
+): ParsedReceipt["items"] {
+  const map = new Map<string, ParsedReceipt["items"][0]>();
+  for (const it of items) {
+    const key = `${it.name.trim().toLowerCase()}||${it.price}`;
+    const existing = map.get(key);
+    if (existing) {
+      map.set(key, { ...existing, quantity: existing.quantity + it.quantity });
+    } else {
+      map.set(key, { ...it });
+    }
+  }
+  return [...map.values()];
+}
+
 const CURRENCIES: { code: string; label: string }[] = [
   { code: "CLP", label: "🇨🇱 CLP" },
   { code: "USD", label: "🇺🇸 USD" },
@@ -207,19 +223,15 @@ export default function UploadPage() {
     try {
       const res = await uploadImage(f);
       setUpload(res);
-      // The backend auto-suggests an account based on the bank/card type it
-      // sees in the header. If the user only has one account, fall back to it.
       setPickedAccount(
         res.suggested_account_id ?? (accounts.length === 1 ? accounts[0].id : null),
       );
-      // Force every row to use the user's preferred currency by default — the
-      // OCR's guess is usually wrong (e.g. "$" interpreted as USD when it's CLP).
-      // Default-unselect rows the backend flagged as duplicates (user can opt-in).
       setRows(
         res.transactions.map((tx) => ({
           ...tx,
           currency: batchCurrency,
           _selected: tx.dupe_of == null,
+          items: groupDuplicateItems(tx.items),
         })),
       );
     } catch (e: any) {

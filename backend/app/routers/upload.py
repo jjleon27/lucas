@@ -12,6 +12,7 @@ POST /upload   → stores the image, runs OCR+parse, returns ParsedUpload.
                    frontend then asks the user to confirm before re-adding.
 POST /process  → re-parse a file without persisting it (used for "try again").
 """
+import asyncio
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 
@@ -84,9 +85,9 @@ async def upload_image(
     image_url = storage.save_image(data, filename)
 
     if is_pdf:
-        pr = ocr.parse_receipt_from_pdf(data, db=db, user_id=current.id)
+        pr = await asyncio.to_thread(ocr.parse_receipt_from_pdf, data, db=db, user_id=current.id)
     else:
-        pr = ocr.parse_receipt(data, db=db, user_id=current.id)
+        pr = await asyncio.to_thread(ocr.parse_receipt, data, db=db, user_id=current.id)
 
     user_currency = (current.settings or {}).get("currency") or "CLP"
     transactions = [_enrich(t, db=db, user_id=current.id) for t in pr.transactions]
@@ -131,9 +132,9 @@ async def process_image(
     is_pdf = (file.content_type or "").lower() == "application/pdf" or \
              (file.filename or "").lower().endswith(".pdf")
     if is_pdf:
-        pr = ocr.parse_receipt_from_pdf(data, db=db, user_id=current.id)
+        pr = await asyncio.to_thread(ocr.parse_receipt_from_pdf, data, db=db, user_id=current.id)
     else:
-        pr = ocr.parse_receipt(data, db=db, user_id=current.id)
+        pr = await asyncio.to_thread(ocr.parse_receipt, data, db=db, user_id=current.id)
 
     user_currency = (current.settings or {}).get("currency") or "CLP"
     transactions = [_enrich(t, db=db, user_id=current.id) for t in pr.transactions]

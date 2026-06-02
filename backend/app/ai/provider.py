@@ -88,14 +88,14 @@ class OpenAIProvider(LLMProvider):
                     *, model=None, temperature=0.0):
         """Image input → strict JSON object out. OpenAI-only for now."""
         from openai import OpenAI
-        client = OpenAI(api_key=settings.openai_api_key)
+        client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
         resp = client.chat.completions.create(
             model=model or settings.openai_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
                     {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
+                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "auto"}},
                 ]},
             ],
             response_format={"type": "json_object"},

@@ -550,20 +550,26 @@ def _detect_mime(image_bytes: bytes) -> str:
     return "image/png"
 
 
-def _shrink_for_vision(image_bytes: bytes, max_side: int = 2048) -> bytes:
-    """Downscale large screenshots so the API call is cheap & fast."""
+def _shrink_for_vision(image_bytes: bytes, max_side: int = 1500) -> bytes:
+    """Downscale large screenshots so the API call is cheap & fast.
+
+    Caps the longer side at 1500px (enough for gpt-4o-mini to read text
+    clearly) and limits total pixels to ~1.5M to prevent very tall receipts
+    from spawning too many vision tiles.
+    """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img = img.convert("RGB")
         w, h = img.size
-        if max(w, h) <= max_side:
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=88, optimize=True)
-            return buf.getvalue()
-        scale = max_side / max(w, h)
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Cap longer side
+        scale = min(1.0, max_side / max(w, h))
+        # Also cap total pixel area (1500×1500 = 2.25M)
+        area_scale = min(1.0, (1500 * 1500 / (w * h)) ** 0.5)
+        scale = min(scale, area_scale)
+        if scale < 1.0:
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=88, optimize=True)
+        img.save(buf, format="JPEG", quality=85, optimize=True)
         return buf.getvalue()
     except Exception:
         return image_bytes
@@ -827,42 +833,30 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
     return items, total_neto, iva_amount, confidence
 
 
-def _extract_boleta_totals(image_bytes: bytes) -> dict:
+def _extract_boleta_totals(image_bytes: bytes, text: Optional[str] = None) -> dict:
     """
     Deterministically extract TOTAL NETO, IVA, and final TOTAL from a Chilean
-    boleta/receipt using Tesseract + line-by-line regex.
+    boleta/receipt using line-by-line regex.
 
-    Works for ALL receipt types: supermarkets (Lider, Jumbo, Tottus, Unimarc),
-    restaurants, bars, pharmacies, and any other Chilean boleta.
-
-    Returns a dict with float keys: 'total_neto', 'iva_amount', 'total'.
-    Empty dict = no boleta-style totals found (e.g. a bank screenshot).
-
-    Strategy:
-    ─────────
-    1. Run Tesseract on the FULL image (not just bottom crop) — receipt layouts
-       vary widely; totals can appear anywhere in the lower half.
-    2. Scan line by line looking for TOTAL NETO / IVA / payment method rows.
-    3. Sanity-check the extracted IVA against 19% of TOTAL NETO (legal requirement
-       in Chile — if it doesn't match, fall back to computing IVA = neto × 0.19).
+    If `text` is provided (pre-computed OCR output), skips Tesseract entirely —
+    this avoids a second Tesseract pass when the caller already has the text.
     """
     result: dict = {}
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("L")  # grayscale → better OCR
-        # Scale up small images for better character recognition
-        w, h = img.size
-        if max(w, h) < 1200:
-            scale = 1200 / max(w, h)
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-        # Binarise to improve contrast (Tesseract loves clean black-on-white)
-        import numpy as _np
-        arr = _np.array(img)
-        _, arr = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        img_proc = Image.fromarray(arr)
-        text = pytesseract.image_to_string(img_proc, lang="spa", config="--psm 6 --oem 3")
-    except Exception as exc:
-        print(f"[ocr] _extract_boleta_totals: tesseract failed — {exc}")
-        return result
+    if text is None:
+        try:
+            img = Image.open(io.BytesIO(image_bytes)).convert("L")
+            w, h = img.size
+            if max(w, h) < 1200:
+                scale = 1200 / max(w, h)
+                img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+            import numpy as _np
+            arr = _np.array(img)
+            _, arr = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            img_proc = Image.fromarray(arr)
+            text = pytesseract.image_to_string(img_proc, lang="spa", config="--psm 6 --oem 3")
+        except Exception as exc:
+            print(f"[ocr] _extract_boleta_totals: tesseract failed — {exc}")
+            return result
 
     def last_number_on_line(line: str) -> float:
         """Return the rightmost CLP-style number (≥100) on a text line."""
@@ -1026,19 +1020,16 @@ def vision_parse(
         data_url = f"data:{mime};base64,{b64}"
 
         # ═══════════════════════════════════════════════════════════════════
-        # LAYER 1 — Tesseract structured parse (deterministic, exact prices)
+        # LAYER 1 — Single Tesseract pass (reused for items + totals)
         # ═══════════════════════════════════════════════════════════════════
-        # For clean printed/digital receipts, Tesseract+regex gives EXACT item
-        # prices because the text structure is deterministic. The LLM is used
-        # for semantics (merchant, category, date) and as fallback for photos.
         raw_ocr_text = run_ocr(image_bytes)
         tess_items, tess_neto, tess_iva, tess_conf = _parse_boleta_from_text(raw_ocr_text)
 
         print(f"[ocr] Tesseract boleta parse: {len(tess_items)} items, "
               f"neto={tess_neto}, iva={tess_iva}, confidence={tess_conf:.2f}")
 
-        # Also extract totals via the dedicated Tesseract scan (higher-res crop)
-        ocr_totals = _extract_boleta_totals(image_bytes)
+        # Reuse the same OCR text for totals extraction — no second Tesseract pass.
+        ocr_totals = _extract_boleta_totals(image_bytes, text=raw_ocr_text)
 
         # Prefer _extract_boleta_totals values for totals (it uses better preprocessing)
         gt_neto = ocr_totals.get("total_neto") or tess_neto
