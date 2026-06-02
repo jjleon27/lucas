@@ -386,6 +386,8 @@ function ReviewStep({
     });
   }, [items, groupColorByName, dividedNameColors]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const billTotal = useMemo(() => items.reduce((s, it) => s + it.line_total, 0), [items]);
+
   // ── Divide action ─────────────────────────────────────────────
   const [divideItemId, setDivideItemId] = useState<number | null>(null);
 
@@ -541,16 +543,20 @@ function ReviewStep({
 
           <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
             {(() => {
-              // Pre-compute global last index and total for each color group (using display order)
+              // Pre-compute group metadata (last index, total, count, within-group index)
               const lastIdxByColor: Record<string, number> = {};
               const totalByColor: Record<string, number> = {};
               const countByColor: Record<string, number> = {};
+              const groupIndexByItemId: Record<number, number> = {};
+              const groupCountSoFar: Record<string, number> = {};
               displayItems.forEach((it, i) => {
                 const c = getItemColor(it);
                 if (c) {
                   lastIdxByColor[c] = i;
                   totalByColor[c] = (totalByColor[c] || 0) + it.line_total;
                   countByColor[c] = (countByColor[c] || 0) + 1;
+                  groupCountSoFar[c] = (groupCountSoFar[c] || 0) + 1;
+                  groupIndexByItemId[it.id] = groupCountSoFar[c];
                 }
               });
               return displayItems.map((item, idx) => {
@@ -576,6 +582,8 @@ function ReviewStep({
                       onDelete={() => onDeleteItem(item.id)}
                       groupColor={color}
                       onDivide={() => setDivideItemId(item.id)}
+                      globalIndex={idx + 1}
+                      groupIndex={color ? groupIndexByItemId[item.id] : undefined}
                     />
                   )}
                   {isLastInGroup && groupCount > 1 && (
@@ -633,6 +641,12 @@ function ReviewStep({
                   <Plus className="w-3.5 h-3.5" />
                   Agregar ítem
                 </button>
+              </li>
+            )}
+            {items.length > 0 && (
+              <li className="flex justify-between px-3 py-2 text-[11px] font-bold bg-slate-100 border-t-2 border-slate-300 sticky bottom-0">
+                <span className="text-slate-600 uppercase tracking-wide">Total boleta</span>
+                <span className="font-mono text-slate-900">${billTotal.toLocaleString("es-CL")}</span>
               </li>
             )}
           </ul>
@@ -720,6 +734,8 @@ function ReviewItemRow({
   onDelete,
   groupColor,
   onDivide,
+  globalIndex,
+  groupIndex,
 }: {
   item: ReceiptItemV2;
   checked: boolean;
@@ -728,6 +744,8 @@ function ReviewItemRow({
   onDelete: () => void;
   groupColor?: string;
   onDivide?: () => void;
+  globalIndex?: number;
+  groupIndex?: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(item.name);
@@ -785,6 +803,18 @@ function ReviewItemRow({
       >
         {checked && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
       </button>
+
+      {/* Index badges */}
+      {globalIndex !== undefined && (
+        <div className="flex flex-col items-center w-4 flex-shrink-0 gap-px">
+          <span className="text-[8px] font-mono text-slate-400 leading-none">{globalIndex}</span>
+          {groupIndex !== undefined && (
+            <span className="text-[8px] font-bold leading-none" style={{ color: groupColor }}>
+              {groupIndex}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Name + price */}
       <div className="flex-1 min-w-0">

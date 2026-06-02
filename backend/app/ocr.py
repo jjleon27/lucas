@@ -539,6 +539,60 @@ CRITICAL RULES:
 Return strict JSON — no markdown, no commentary.
 """
 
+# Shorter prompt for when grounding confirms a receipt/boleta (not a bank statement).
+# ~40% fewer tokens → faster LLM response for the common split-expense case.
+_RECEIPT_PROMPT = """You are a vision-based parser for Chilean receipts and restaurant POS receipts.
+
+Return ONLY a JSON object shaped EXACTLY like:
+{
+  "type": "single",
+  "currency": "CLP",
+  "bank_hint": "",
+  "account_type_hint": "",
+  "total_neto": number | null,
+  "iva_amount": number | null,
+  "transactions": [{
+    "amount": number,
+    "is_income": false,
+    "date": "YYYY-MM-DD",
+    "description": string,
+    "merchant": string,
+    "category": "Alimentación"|"Supermercado"|"Transporte"|"Compras"|"Entretenimiento"|"Bares y Salidas"|"Cuentas y Servicios"|"Salud"|"Otros",
+    "cuota_actual": null,
+    "cuotas_total": null,
+    "is_cc_payment": false,
+    "items": [{"name": string, "price": number, "quantity": integer}]
+  }]
+}
+
+RULES:
+
+1. NUMBER FORMAT: CLP never uses decimals. "$17.517" = 17517. "$1.489.991" = 1489991.
+
+2. RESTAURANT / BAR POS RECEIPT (Toteat, Restō, Revo):
+   "Total General Mesa" = full table bill (ignore). "Consumo Cliente" = THIS customer's amount.
+   Use "Consumo Cliente" as `amount`. Modifier items starting with "+" have price=0.
+   TABLE ROWS: leading number = quantity. Read EVERY row top-to-bottom.
+
+3. BOLETA LINE ITEMS:
+   a) "NxUNIT" (e.g. "2x4.990 POLLO $9.980") → price=4990, quantity=2
+   b) "Nx description TOTAL" (e.g. "2x Hamburguesa $10.000") → price=5000, quantity=2
+   c) "N description TOTAL" (e.g. "3 vienesa 13200" or "3 completos por 13200") → price=4400, quantity=3
+      CRITICAL: "N items por TOTAL" — "por" = "for the total", NOT "at unit price". ALWAYS divide.
+   d) All other lines: quantity=1, price=printed number
+   Set amount = TOTAL CON IVA (final charged). NEVER use Total Neto as amount.
+
+4. IVA: Product lines are NETO. Add IVA row: {"name":"IVA (19%)","price":<iva>,"quantity":1}.
+   TOTAL = TOTAL_NETO + IVA. set total_neto and iva_amount from the printed summary rows.
+
+5. CATEGORIES: Líder/Jumbo/Tottus/Unimarc→Supermercado; Uber/Cabify/Metro→Transporte;
+   McDonald/KFC/restaurants→Alimentación; bars/pubs→Bares y Salidas.
+
+6. IGNORE: status bar, battery, WiFi, nav tabs, barcodes (12-13 digit numbers are NOT prices).
+
+Return strict JSON — no markdown, no commentary.
+"""
+
 
 def _detect_mime(image_bytes: bytes) -> str:
     if image_bytes[:3] == b"\xff\xd8\xff":
@@ -1037,10 +1091,34 @@ def vision_parse(
         gt_neto = ocr_totals.get("total_neto") or tess_neto
         gt_iva  = ocr_totals.get("iva_amount") or tess_iva
 
-        # Build grounding text for the LLM prompt
         is_pos_per_seat = ocr_totals.get("is_pos_per_seat", False)
         pos_consumo = ocr_totals.get("total") if is_pos_per_seat else None
 
+        # ═══════════════════════════════════════════════════════════════════
+        # FAST PATH — skip LLM when Tesseract is exact and totals are verified
+        # ═══════════════════════════════════════════════════════════════════
+        if (not is_pos_per_seat and tess_conf >= 0.97 and tess_items
+                and gt_neto and gt_iva):
+            print(f"[ocr] Fast path: high-confidence Tesseract (conf={tess_conf:.2f}), skipping LLM")
+            items_fp: list[ParsedItem] = list(tess_items)
+            items_fp.append(ParsedItem(name="IVA (19%)", price=round(gt_iva), quantity=1))
+            auth_amount = float(round(gt_neto + gt_iva))
+            d_m = _DATE_RE.search(raw_ocr_text)
+            sd_m = _SPANISH_DATE_RE.search(raw_ocr_text)
+            fp_date = _parse_spanish_date(sd_m) if sd_m else (_parse_date(d_m.group(1)) if d_m else date.today())
+            fp_merchant = ""
+            for _line in raw_ocr_text.splitlines():
+                _line = _line.strip()
+                if _line and not _is_junk_merchant(_line) and not _MONEY_TOKEN.fullmatch(_line) and len(_line) > 2:
+                    fp_merchant = _line[:80]
+                    break
+            return ParseResult(transactions=[ParsedReceipt(
+                amount=auth_amount, is_income=False, date=fp_date,
+                merchant=fp_merchant, description="", category="Supermercado",
+                currency="CLP", items=items_fp,
+            )])
+
+        # Build grounding text for the LLM prompt
         grounding_text = ""
         if is_pos_per_seat and pos_consumo:
             grounding_text = (
@@ -1070,7 +1148,14 @@ def vision_parse(
                     f"Use these items exactly in your JSON `items` array."
                 )
 
+        # Use shorter receipt prompt when grounding confirms it's a boleta/POS receipt
+        is_receipt = bool((gt_neto and gt_iva) or (is_pos_per_seat and pos_consumo))
+        active_prompt = _RECEIPT_PROMPT if is_receipt else _SYSTEM_PROMPT
+
         user_text = (
+            "Parse this receipt. Return strict JSON."
+            + grounding_text
+        ) if is_receipt else (
             "Parse this receipt/screenshot. Return strict JSON.\n"
             "If this is a supermarket receipt (boleta): read EVERY product line "
             "and set amount = the final total charged.\n"
@@ -1080,7 +1165,7 @@ def vision_parse(
         )
 
         resp = ai_provider.vision_json(
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=active_prompt,
             user_text=user_text,
             image_data_url=data_url,
             temperature=0.0,
