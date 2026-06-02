@@ -5,7 +5,7 @@
  *  2. Assign — tap person avatars per item; adjust split rules
  *  3. Settle — who paid? → show debts → optionally save to Lucas
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Account,
@@ -119,8 +119,6 @@ function StepBar({ step }: { step: Step }) {
 }
 
 // ── Review Step — side-by-side layout ──────────────────────
-// Left panel: receipt image (scrollable, tappable to fullscreen)
-// Right panel: items with checkboxes to mark as verified
 function ReviewStep({
   items,
   imageUrl,
@@ -147,6 +145,93 @@ function ReviewStep({
   const [addName, setAddName] = useState("");
   const [addPrice, setAddPrice] = useState(0);
 
+  // ── Resizable panel ─────────────────────────────────────────
+  const [panelWidth, setPanelWidth] = useState(43);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    function onMove(e: MouseEvent | TouchEvent) {
+      if (!draggingRef.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const x = (e as TouchEvent).touches
+        ? (e as TouchEvent).touches[0].clientX
+        : (e as MouseEvent).clientX;
+      const pct = Math.min(72, Math.max(20, ((x - rect.left) / rect.width) * 100));
+      setPanelWidth(pct);
+    }
+    function onUp() { draggingRef.current = false; }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("touchmove", onMove, { passive: false });
+    document.addEventListener("mouseup", onUp);
+    document.addEventListener("touchend", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("touchmove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("touchend", onUp);
+    };
+  }, []);
+
+  // ── Drawing canvas ───────────────────────────────────────────
+  const [drawMode, setDrawMode] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const drawingRef = useRef(false);
+  const lastPosRef = useRef({ x: 0, y: 0 });
+
+  function initCanvas() {
+    if (!canvasRef.current || !imgRef.current) return;
+    canvasRef.current.width = imgRef.current.naturalWidth;
+    canvasRef.current.height = imgRef.current.naturalHeight;
+  }
+
+  function canvasPos(e: React.MouseEvent | React.TouchEvent) {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = (e as React.TouchEvent).touches
+      ? (e as React.TouchEvent).touches[0].clientX
+      : (e as React.MouseEvent).clientX;
+    const clientY = (e as React.TouchEvent).touches
+      ? (e as React.TouchEvent).touches[0].clientY
+      : (e as React.MouseEvent).clientY;
+    return {
+      x: ((clientX - rect.left) / rect.width) * canvas.width,
+      y: ((clientY - rect.top) / rect.height) * canvas.height,
+    };
+  }
+
+  function onDrawStart(e: React.MouseEvent | React.TouchEvent) {
+    if (!drawMode) return;
+    e.preventDefault();
+    drawingRef.current = true;
+    lastPosRef.current = canvasPos(e);
+  }
+
+  function onDrawMove(e: React.MouseEvent | React.TouchEvent) {
+    if (!drawMode || !drawingRef.current || !canvasRef.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current.getContext("2d");
+    if (!ctx) return;
+    const pos = canvasPos(e);
+    ctx.beginPath();
+    ctx.strokeStyle = "#ef4444";
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.moveTo(lastPosRef.current.x, lastPosRef.current.y);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    lastPosRef.current = pos;
+  }
+
+  function onDrawEnd() { drawingRef.current = false; }
+
+  function clearDraw() {
+    if (!canvasRef.current) return;
+    canvasRef.current.getContext("2d")?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+  }
+
   function toggleCheck(id: number) {
     setCheckedIds((prev) => {
       const next = new Set(prev);
@@ -162,6 +247,7 @@ function ReviewStep({
     <div className="space-y-3">
       {/* ── Split panel ──────────────────────────────────────── */}
       <div
+        ref={containerRef}
         className="flex rounded-2xl border border-slate-200 overflow-hidden bg-white"
         style={{ height: "60vh" }}
       >
@@ -169,46 +255,94 @@ function ReviewStep({
         {imageUrl ? (
           <div
             className="relative flex-shrink-0 bg-slate-100 overflow-auto border-r border-slate-200"
-            style={{ width: "43%", touchAction: "pinch-zoom" }}
+            style={{ width: `${panelWidth}%`, touchAction: drawMode ? "none" : "pinch-zoom" }}
           >
-            <img src={imageUrl} alt="Boleta" className="w-full" />
-            <button
-              type="button"
-              onClick={onOpenFullscreen}
-              className="absolute top-2 right-2 bg-black/50 backdrop-blur-sm text-white rounded-full p-1.5"
-              title="Ver completa"
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-            </button>
+            <div className="relative">
+              <img
+                ref={imgRef}
+                src={imageUrl}
+                alt="Boleta"
+                className="w-full block"
+                onLoad={initCanvas}
+              />
+              <canvas
+                ref={canvasRef}
+                className="absolute inset-0 w-full h-full"
+                style={{
+                  cursor: drawMode ? "crosshair" : "default",
+                  pointerEvents: drawMode ? "auto" : "none",
+                }}
+                onMouseDown={onDrawStart}
+                onMouseMove={onDrawMove}
+                onMouseUp={onDrawEnd}
+                onTouchStart={onDrawStart}
+                onTouchMove={onDrawMove}
+                onTouchEnd={onDrawEnd}
+              />
+            </div>
+            {/* Controls */}
+            <div className="absolute top-2 right-2 flex gap-1 z-10">
+              <button
+                type="button"
+                onClick={() => setDrawMode((v) => !v)}
+                className={`p-1.5 rounded-full backdrop-blur-sm transition ${
+                  drawMode ? "bg-rose-500 text-white ring-2 ring-rose-300" : "bg-black/50 text-white hover:bg-black/70"
+                }`}
+                title={drawMode ? "Desactivar lápiz" : "Dibujar en la foto"}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+              {drawMode && (
+                <button
+                  type="button"
+                  onClick={clearDraw}
+                  className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
+                  title="Borrar dibujo"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onOpenFullscreen}
+                className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
+                title="Ver completa"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         ) : (
-          <div className="flex-shrink-0 bg-slate-50 border-r border-slate-200 flex items-center justify-center text-slate-400 text-xs text-center px-2"
-            style={{ width: "43%" }}>
+          <div
+            className="flex-shrink-0 bg-slate-50 border-r border-slate-200 flex items-center justify-center text-slate-400 text-xs text-center px-2"
+            style={{ width: `${panelWidth}%` }}
+          >
             Sin imagen
           </div>
         )}
 
+        {/* Drag handle */}
+        <div
+          className="w-2 flex-shrink-0 bg-slate-200 hover:bg-indigo-400 active:bg-indigo-500 cursor-col-resize flex items-center justify-center select-none transition-colors"
+          onMouseDown={(e) => { draggingRef.current = true; e.preventDefault(); }}
+          onTouchStart={() => { draggingRef.current = true; }}
+          title="Arrastra para cambiar tamaño"
+        >
+          <div className="w-0.5 h-8 bg-slate-400 rounded-full" />
+        </div>
+
         {/* Right: items list */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* Progress header */}
           <div className="px-2.5 py-2 border-b border-slate-100 flex-shrink-0">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                Ítems
-              </span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                {checkedIds.size}/{items.length}
-              </span>
+              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Ítems</span>
+              <span className="text-[10px] text-slate-400 font-mono">{checkedIds.size}/{items.length}</span>
             </div>
             <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
-              <div
-                className="h-1 bg-emerald-500 rounded-full transition-all duration-300"
-                style={{ width: `${pct}%` }}
-              />
+              <div className="h-1 bg-emerald-500 rounded-full transition-all duration-300" style={{ width: `${pct}%` }} />
             </div>
           </div>
 
-          {/* Scrollable items */}
           <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
             {items.map((item) => (
               <ReviewItemRow
@@ -220,8 +354,6 @@ function ReviewStep({
                 onDelete={() => onDeleteItem(item.id)}
               />
             ))}
-
-            {/* Add item (inline at bottom of list) */}
             {showAdd ? (
               <li className="p-2 space-y-1.5 bg-indigo-50/50">
                 <input
@@ -274,9 +406,7 @@ function ReviewStep({
       <button
         type="button"
         className={`w-full py-3 text-base font-semibold rounded-xl transition ${
-          allChecked
-            ? "btn-primary shadow-lg"
-            : "bg-indigo-600 text-white opacity-80 rounded-xl"
+          allChecked ? "btn-primary shadow-lg" : "bg-indigo-600 text-white opacity-80 rounded-xl"
         }`}
         onClick={onConfirm}
       >
@@ -287,10 +417,7 @@ function ReviewStep({
 
       {/* ── Fullscreen image modal ───────────────────────────── */}
       {imageFullscreen && imageUrl && (
-        <div
-          className="fixed inset-0 z-50 bg-black/95 overflow-auto"
-          onClick={onCloseFullscreen}
-        >
+        <div className="fixed inset-0 z-50 bg-black/95 overflow-auto" onClick={onCloseFullscreen}>
           <button
             type="button"
             className="fixed top-4 right-4 z-10 bg-black/60 rounded-full p-2.5 text-white"
