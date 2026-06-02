@@ -346,6 +346,8 @@ function ReviewStep({
 
   // ── Item group colors ────────────────────────────────────────
   const [dividedNameColors, setDividedNameColors] = useState<Record<string, string>>({});
+  // Saves the original sort position of a divided item so the group stays in place
+  const [dividedNamePositions, setDividedNamePositions] = useState<Record<string, number>>({});
 
   const groupColorByName = useMemo(() => {
     // Count how many times each name appears
@@ -377,6 +379,12 @@ function ReviewStep({
       const c = getItemColor(it);
       if (c && !(c in firstColorIdx)) firstColorIdx[c] = i;
     });
+    // Override with saved positions: use savedPos-0.5 so the group slots back
+    // between the items that surrounded the original before deletion.
+    Object.entries(dividedNamePositions).forEach(([name, savedPos]) => {
+      const c = dividedNameColors[name];
+      if (c !== undefined) firstColorIdx[c] = savedPos - 0.5;
+    });
     return [...items].sort((a, b) => {
       const ca = getItemColor(a), cb = getItemColor(b);
       const ka = ca !== undefined ? firstColorIdx[ca] : (idxMap.get(a.id) ?? 0);
@@ -384,7 +392,7 @@ function ReviewStep({
       if (ka !== kb) return ka - kb;
       return (idxMap.get(a.id) ?? 0) - (idxMap.get(b.id) ?? 0);
     });
-  }, [items, groupColorByName, dividedNameColors]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, groupColorByName, dividedNameColors, dividedNamePositions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const billTotal = useMemo(() => items.reduce((s, it) => s + it.line_total, 0), [items]);
 
@@ -394,7 +402,12 @@ function ReviewStep({
   function handleDivide(item: ReceiptItemV2, count: number) {
     const unitPrice = Math.round(item.line_total / Math.max(count, 1));
     const color = getItemColor(item);
-    if (color) setDividedNameColors(prev => ({ ...prev, [item.name.trim().toLowerCase()]: color }));
+    const key = item.name.trim().toLowerCase();
+    const originalPos = items.findIndex(it => it.id === item.id);
+    if (color) {
+      setDividedNameColors(prev => ({ ...prev, [key]: color }));
+      setDividedNamePositions(prev => ({ ...prev, [key]: originalPos }));
+    }
     onDeleteItem(item.id);
     for (let i = 0; i < count; i++) onAddItem(item.name, unitPrice);
     setDivideItemId(null);
