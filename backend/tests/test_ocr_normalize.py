@@ -15,7 +15,7 @@ _mock.patch.dict("sys.modules", {
     "PIL.Image": _mock.MagicMock(),
 }).start()
 
-from app.ocr import _normalize_boleta_items, _fix_line_total_items, _scale_to_total, _to_float
+from app.ocr import _normalize_boleta_items, _fix_line_total_items, _scale_to_total, _to_float, _parse_pipe_table
 from app.schemas import ParsedItem
 
 
@@ -297,3 +297,60 @@ def test_scale_never_inflates_prices():
     # prices must NOT be inflated
     assert scaled[0].price == 9000
     assert scaled[1].price == 5800
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _parse_pipe_table — Fast Path C for | Cant | Producto | Total | format
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_pipe_table_piscol_case():
+    """Core regression: 35° in product name must NOT become qty=35."""
+    text = (
+        "| Cant | Producto | Total |\n"
+        "| 1 | Piscolón Mistral de 35° | 9.000 |\n"
+        "| 1 | Fernet Branca | 5.800 |\n"
+    )
+    items = _parse_pipe_table(text)
+    assert len(items) == 2
+    piscol = items[0]
+    assert piscol.quantity == 1, f"qty should be 1, got {piscol.quantity}"
+    assert piscol.price == 9000, f"price should be 9000, got {piscol.price}"
+    fernet = items[1]
+    assert fernet.quantity == 1
+    assert fernet.price == 5800
+
+
+def test_pipe_table_multi_qty():
+    """qty > 1 in Cant column: unit price = total / qty."""
+    text = "| 2 | Cerveza Austral | 9.000 |\n"
+    items = _parse_pipe_table(text)
+    assert len(items) == 1
+    assert items[0].quantity == 2
+    assert items[0].price == 4500  # 9000 / 2
+
+
+def test_pipe_table_skips_header():
+    """Header row with 'Cant'/'Producto' should be ignored."""
+    text = (
+        "| Cant | Producto | Total |\n"
+        "| 1 | Agua con gas | 2.500 |\n"
+    )
+    items = _parse_pipe_table(text)
+    assert len(items) == 1
+    assert items[0].name == "Agua con gas"
+
+
+def test_pipe_table_empty_text():
+    assert _parse_pipe_table("No pipe table here\n1234 item 5000") == []
+
+
+def test_pipe_table_sum_matches_total():
+    """Full receipt: sum of parsed items matches the printed total."""
+    text = (
+        "| Cant | Producto | Total |\n"
+        "| 1 | Piscolón Mistral de 35° | 9.000 |\n"
+        "| 1 | Fernet Branca | 5.800 |\n"
+        "Total: 14.800\n"
+    )
+    items = _parse_pipe_table(text)
+    assert sum(it.price * it.quantity for it in items) == 14800

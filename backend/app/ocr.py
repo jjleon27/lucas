@@ -706,6 +706,12 @@ _QTY_NUM_DESC_RE = re.compile(r"^([1-9]|1\d|20)\s+([A-Za-záéíóúñÁÉÍÓÚ
 # Pure barcode line (12-14 digits, nothing else)
 _BARCODE_ONLY_RE = re.compile(r"^\d{12,14}$")
 
+# Pipe-table rows: "| 1 | Piscolón Mistral de 35° | 9.000 |"
+_PIPE_TABLE_ROW_RE = re.compile(r"\|\s*(\d{1,2})\s*\|(.+?)\|\s*([0-9.,]{3,12})\s*\|?")
+_PIPE_TABLE_HEADER_RE = re.compile(
+    r"\b(?:cant|cantidad|producto|descripci[oó]n|precio|total)\b", re.IGNORECASE
+)
+
 
 def _parse_clp(s: str) -> float:
     """
@@ -901,6 +907,32 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
         confidence = max(0.0, 1.0 - abs(1.0 - best_ratio))
 
     return items, total_neto, iva_amount, confidence
+
+
+def _parse_pipe_table(text: str) -> list[ParsedItem]:
+    """
+    Parse pipe-table format: | Cant | Producto | Total |
+
+    The Cant column is the ONLY source of quantity. Numbers inside product
+    names (e.g. '35°' in 'Piscolón Mistral de 35°') are NOT quantities.
+    """
+    items: list[ParsedItem] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or _PIPE_TABLE_HEADER_RE.search(line):
+            continue
+        m = _PIPE_TABLE_ROW_RE.search(line)
+        if not m:
+            continue
+        qty = int(m.group(1))
+        name = _clean_item_name(m.group(2).strip())
+        line_total = _parse_clp(m.group(3).strip())
+        if not name or line_total < 100:
+            continue
+        unit_price = round(line_total / qty) if qty > 1 else int(line_total)
+        if unit_price >= 100:
+            items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
+    return items
 
 
 def _extract_boleta_totals(image_bytes: bytes, text: Optional[str] = None) -> dict:
@@ -1143,6 +1175,75 @@ def _scale_to_total(items: list[ParsedItem], ref_total: float) -> tuple[list[Par
     return result, ref_total
 
 
+def _retry_items_with_correction(
+    items: list[ParsedItem],
+    ref_total: float,
+    ocr_text: str,
+    *,
+    user_id=None,
+    db=None,
+) -> list[ParsedItem]:
+    """
+    OutputFixingParser pattern (LangChain-style): one text-only LLM retry with
+    exact error context. Fires when items sum is >5% off after algebraic fixes.
+    No image — cheap, ~200 tokens input.
+    """
+    items_sum = int(sum(it.price * it.quantity for it in items))
+    wrong_list = "\n".join(
+        f"  {it.quantity}x {it.name} @ {it.price} = {it.price * it.quantity}"
+        for it in items
+    )
+    prompt = (
+        "Fix receipt item extraction. Return ONLY a JSON array — no markdown.\n\n"
+        f"OCR text:\n{ocr_text[:1500]}\n\n"
+        f"Wrong items (sum={items_sum}, target={int(ref_total)}):\n{wrong_list}\n\n"
+        "Rules:\n"
+        f"- sum(price × quantity) MUST equal {int(ref_total)}\n"
+        "- Quantity comes from the Cant column ONLY (e.g. '35°' in a name = degrees, NOT qty)\n"
+        "- CLP prices never have decimals: '9.000' = 9000\n"
+        "- If qty>1, price is the UNIT price (line_total ÷ qty)\n\n"
+        'Return: [{"name": str, "price": int, "quantity": int}, ...]'
+    )
+    resp = ai_provider.chat_completion(
+        [{"role": "user", "content": prompt}],
+        temperature=0.0,
+        max_tokens=512,
+        purpose="parse_retry",
+        user_id=user_id,
+        db=db,
+    )
+    if not resp:
+        return items
+    try:
+        raw = resp.text.strip()
+        # Strip markdown fences if LLM adds them
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[^\n]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw.rstrip())
+        fixed = json.loads(raw)
+        if not isinstance(fixed, list):
+            return items
+        corrected = [
+            ParsedItem(
+                name=str(it["name"]),
+                price=int(it["price"]),
+                quantity=int(it.get("quantity", 1)),
+            )
+            for it in fixed if it.get("name") and it.get("price")
+        ]
+        if not corrected:
+            return items
+        corrected_sum = sum(it.price * it.quantity for it in corrected)
+        orig_err = abs(items_sum / ref_total - 1.0)
+        new_err = abs(corrected_sum / ref_total - 1.0)
+        if new_err < orig_err * 0.8:
+            print(f"[ocr] retry_correction: sum {items_sum} → {int(corrected_sum)} (target={int(ref_total)})")
+            return corrected
+        return items
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return items
+
+
 def vision_parse(
     image_bytes: bytes, *, db=None, user_id=None,
 ) -> Optional[ParseResult]:
@@ -1232,6 +1333,25 @@ def vision_parse(
                     merchant=fp_merchant, description="", category="Alimentación",
                     currency="CLP", items=list(tess_items),
                 )])
+
+        # ═══════════════════════════════════════════════════════════════════
+        # FAST PATH C — Pipe-table format: | Cant | Producto | Total |
+        # Handles restaurant POS receipts like Toteat where OCR produces
+        # pipe-separated tables (e.g. | 1 | Piscolón Mistral de 35° | 9.000 |).
+        # Reads quantity ONLY from the Cant column — ignores numbers in names.
+        # ═══════════════════════════════════════════════════════════════════
+        if (not is_pos_per_seat and not (gt_neto and gt_iva) and ocr_simple_total > 0):
+            pipe_items = _parse_pipe_table(raw_ocr_text)
+            if pipe_items:
+                pipe_sum = sum(it.price * it.quantity for it in pipe_items)
+                if pipe_sum > 0 and abs(pipe_sum / ocr_simple_total - 1.0) < 0.05:
+                    print(f"[ocr] Fast path C (pipe-table, ratio={pipe_sum/ocr_simple_total:.3f}): skipping LLM")
+                    fp_date, fp_merchant = _fp_metadata()
+                    return ParseResult(transactions=[ParsedReceipt(
+                        amount=ocr_simple_total, is_income=False, date=fp_date,
+                        merchant=fp_merchant, description="", category="Bares y Salidas",
+                        currency="CLP", items=pipe_items,
+                    )])
 
         # Build grounding text for the LLM prompt
         grounding_text = ""
@@ -1408,8 +1528,14 @@ def vision_parse(
                     else:
                         raw_amount = float(round(total_neto_val + iva_amount_val))
                 elif items and ref_total > 0:
-                    # No-IVA receipt: proportional scale as final guarantee
-                    # Ensures sum(items) == verified_total even if LLM was wrong
+                    # No-IVA: retry once if items are significantly off (>5%)
+                    # OutputFixingParser pattern: text-only, cheap, no image
+                    items_sum_chk = sum(it.price * it.quantity for it in items)
+                    if abs(items_sum_chk / ref_total - 1.0) > 0.05:
+                        items = _retry_items_with_correction(
+                            items, ref_total, raw_ocr_text, user_id=user_id, db=db
+                        )
+                    # Final scale guarantee (DOWN only — never inflate)
                     items, raw_amount = _scale_to_total(items, ref_total)
 
             out.append(ParsedReceipt(
