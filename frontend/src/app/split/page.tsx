@@ -5,7 +5,7 @@
  *  2. Assign — tap person avatars per item; adjust split rules
  *  3. Settle — who paid? → show debts → optionally save to Lucas
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Account,
@@ -36,7 +36,7 @@ import UploadZone from "@/components/UploadZone";
 import BillSplitter from "@/components/BillSplitter";
 import NumericInput from "@/components/NumericInput";
 import { useT, formatMoney } from "@/lib/i18n";
-import { X, ZoomIn, Pencil, Trash2, Plus, Check } from "lucide-react";
+import { X, ZoomIn, Pencil, Trash2, Plus, Check, Scissors } from "lucide-react";
 
 const PALETTE = [
   "#ef4444", "#f97316", "#eab308", "#10b981",
@@ -227,6 +227,53 @@ function ReviewStep({
 
   function onDrawEnd() { drawingRef.current = false; }
 
+  // ── Image zoom ───────────────────────────────────────────────
+  const [imgZoom, setImgZoom] = useState(1.0);
+  const imgPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = imgPanelRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      setImgZoom(z => Math.min(4, Math.max(1, z - e.deltaY * 0.003)));
+    }
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  // ── Item group colors ────────────────────────────────────────
+  const [dividedNameColors, setDividedNameColors] = useState<Record<string, string>>({});
+
+  const groupColorByName = useMemo(() => {
+    const map: Record<string, string> = {};
+    let idx = 0;
+    for (const item of items) {
+      if (item.quantity > 1) {
+        const key = item.name.trim().toLowerCase();
+        if (!map[key]) { map[key] = PALETTE[idx % PALETTE.length]; idx++; }
+      }
+    }
+    return map;
+  }, [items]);
+
+  function getItemColor(item: ReceiptItemV2): string | undefined {
+    const key = item.name.trim().toLowerCase();
+    return groupColorByName[key] || dividedNameColors[key];
+  }
+
+  // ── Divide action ─────────────────────────────────────────────
+  const [divideItemId, setDivideItemId] = useState<number | null>(null);
+
+  function handleDivide(item: ReceiptItemV2, count: number) {
+    const unitPrice = Math.round(item.line_total / Math.max(count, 1));
+    const color = getItemColor(item);
+    if (color) setDividedNameColors(prev => ({ ...prev, [item.name.trim().toLowerCase()]: color }));
+    onDeleteItem(item.id);
+    for (let i = 0; i < count; i++) onAddItem(item.name, unitPrice);
+    setDivideItemId(null);
+  }
+
   function clearDraw() {
     if (!canvasRef.current) return;
     canvasRef.current.getContext("2d")?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
@@ -254,10 +301,11 @@ function ReviewStep({
         {/* Left: receipt image */}
         {imageUrl ? (
           <div
+            ref={imgPanelRef}
             className="relative flex-shrink-0 bg-slate-100 overflow-auto border-r border-slate-200"
-            style={{ width: `${panelWidth}%`, touchAction: drawMode ? "none" : "pinch-zoom" }}
+            style={{ width: `${panelWidth}%`, touchAction: drawMode ? "none" : "auto" }}
           >
-            <div className="relative">
+            <div className="relative" style={{ width: `${100 * imgZoom}%` }}>
               <img
                 ref={imgRef}
                 src={imageUrl}
@@ -281,35 +329,45 @@ function ReviewStep({
               />
             </div>
             {/* Controls */}
-            <div className="absolute top-2 right-2 flex gap-1 z-10">
-              <button
-                type="button"
-                onClick={() => setDrawMode((v) => !v)}
-                className={`p-1.5 rounded-full backdrop-blur-sm transition ${
-                  drawMode ? "bg-rose-500 text-white ring-2 ring-rose-300" : "bg-black/50 text-white hover:bg-black/70"
-                }`}
-                title={drawMode ? "Desactivar lápiz" : "Dibujar en la foto"}
-              >
-                <Pencil className="w-3.5 h-3.5" />
-              </button>
-              {drawMode && (
+            <div className="absolute top-2 right-2 flex flex-col gap-1 z-10 items-end">
+              <div className="flex gap-1">
                 <button
                   type="button"
-                  onClick={clearDraw}
-                  className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
-                  title="Borrar dibujo"
+                  onClick={() => setDrawMode((v) => !v)}
+                  className={`p-1.5 rounded-full backdrop-blur-sm transition ${
+                    drawMode ? "bg-rose-500 text-white ring-2 ring-rose-300" : "bg-black/50 text-white hover:bg-black/70"
+                  }`}
+                  title={drawMode ? "Desactivar lápiz" : "Dibujar en la foto"}
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <Pencil className="w-3.5 h-3.5" />
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={onOpenFullscreen}
-                className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
-                title="Ver completa"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
+                {drawMode && (
+                  <button
+                    type="button"
+                    onClick={clearDraw}
+                    className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
+                    title="Borrar dibujo"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onOpenFullscreen}
+                  className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
+                  title="Ver completa"
+                >
+                  <ZoomIn className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {/* Zoom controls */}
+              <div className="flex items-center bg-black/50 backdrop-blur-sm rounded-full px-1.5 py-0.5 gap-1">
+                <button type="button" onClick={() => setImgZoom(z => Math.max(1, z - 0.5))}
+                  className="text-white text-sm font-bold w-4 text-center leading-none">−</button>
+                <span className="text-white text-[9px] font-mono w-7 text-center">{Math.round(imgZoom * 100)}%</span>
+                <button type="button" onClick={() => setImgZoom(z => Math.min(4, z + 0.5))}
+                  className="text-white text-sm font-bold w-4 text-center leading-none">+</button>
+              </div>
             </div>
           </div>
         ) : (
@@ -344,16 +402,46 @@ function ReviewStep({
           </div>
 
           <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
-            {items.map((item) => (
-              <ReviewItemRow
-                key={item.id}
-                item={item}
-                checked={checkedIds.has(item.id)}
-                onToggleCheck={() => toggleCheck(item.id)}
-                onUpdate={(patch) => onUpdateItem(item.id, patch)}
-                onDelete={() => onDeleteItem(item.id)}
-              />
-            ))}
+            {items.map((item, idx) => {
+              const color = getItemColor(item);
+              const nextColor = getItemColor(items[idx + 1] as ReceiptItemV2);
+              const isLastInGroup = color && nextColor !== color;
+              const groupTotal = color
+                ? items.filter(it => getItemColor(it) === color).reduce((s, it) => s + it.line_total, 0)
+                : 0;
+              const groupCount = color ? items.filter(it => getItemColor(it) === color).length : 0;
+              return (
+                <Fragment key={item.id}>
+                  {divideItemId === item.id ? (
+                    <DivideRow
+                      item={item}
+                      color={color}
+                      onConfirm={(count) => handleDivide(item, count)}
+                      onCancel={() => setDivideItemId(null)}
+                    />
+                  ) : (
+                    <ReviewItemRow
+                      item={item}
+                      checked={checkedIds.has(item.id)}
+                      onToggleCheck={() => toggleCheck(item.id)}
+                      onUpdate={(patch) => onUpdateItem(item.id, patch)}
+                      onDelete={() => onDeleteItem(item.id)}
+                      groupColor={color}
+                      onDivide={item.quantity > 1 ? () => setDivideItemId(item.id) : undefined}
+                    />
+                  )}
+                  {isLastInGroup && groupCount > 1 && (
+                    <li
+                      className="flex justify-between px-3 py-1 text-[10px] font-medium"
+                      style={{ borderLeft: `3px solid ${color}`, backgroundColor: `${color}18` }}
+                    >
+                      <span className="text-slate-500 truncate">Subtotal</span>
+                      <span className="font-mono text-slate-700 ml-2">${groupTotal.toLocaleString("es-CL")}</span>
+                    </li>
+                  )}
+                </Fragment>
+              );
+            })}
             {showAdd ? (
               <li className="p-2 space-y-1.5 bg-indigo-50/50">
                 <input
@@ -438,6 +526,42 @@ function ReviewStep({
   );
 }
 
+// ── Divide item row ──────────────────────────────────────────
+function DivideRow({ item, color, onConfirm, onCancel }: {
+  item: ReceiptItemV2;
+  color?: string;
+  onConfirm: (count: number) => void;
+  onCancel: () => void;
+}) {
+  const [count, setCount] = useState(item.quantity > 1 ? item.quantity : 2);
+  const unitPrice = count > 0 ? Math.round(item.line_total / count) : item.line_total;
+  const borderColor = color || "#6366f1";
+  return (
+    <li className="p-2 space-y-1.5" style={{ borderLeft: `3px solid ${borderColor}`, backgroundColor: `${borderColor}14` }}>
+      <div className="text-[11px] font-semibold text-slate-700 truncate">
+        ÷ Dividir "{item.name}" · ${item.line_total.toLocaleString("es-CL")}
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] text-slate-500">Partes:</span>
+        <NumericInput
+          className="input w-12 text-xs py-0.5 px-1.5 font-mono text-center"
+          value={count}
+          onChange={v => setCount(Math.max(1, Math.round(v)))}
+          allowDecimals={false}
+        />
+        <span className="text-[10px] text-slate-500">→ ${unitPrice.toLocaleString("es-CL")} c/u</span>
+      </div>
+      <div className="flex gap-3">
+        <button type="button" className="flex items-center gap-1 text-emerald-600 text-[11px] font-medium"
+          onClick={() => onConfirm(count)}>
+          <Check className="w-3.5 h-3.5" />Dividir
+        </button>
+        <button type="button" className="text-slate-400 text-[11px]" onClick={onCancel}>Cancelar</button>
+      </div>
+    </li>
+  );
+}
+
 // ── Compact item row for review step (narrow right panel) ───
 function ReviewItemRow({
   item,
@@ -445,12 +569,16 @@ function ReviewItemRow({
   onToggleCheck,
   onUpdate,
   onDelete,
+  groupColor,
+  onDivide,
 }: {
   item: ReceiptItemV2;
   checked: boolean;
   onToggleCheck: () => void;
   onUpdate: (patch: { name?: string; price?: number }) => void;
   onDelete: () => void;
+  groupColor?: string;
+  onDivide?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(item.name);
@@ -492,8 +620,12 @@ function ReviewItemRow({
     );
   }
 
+  const unitPrice = item.quantity > 1 ? Math.round(item.line_total / item.quantity) : item.line_total;
   return (
-    <li className={`flex items-center gap-1.5 px-2 py-2 transition ${checked ? "bg-emerald-50/60" : ""}`}>
+    <li
+      className={`flex items-center gap-1.5 px-2 py-2 transition ${checked ? "bg-emerald-50/60" : ""}`}
+      style={groupColor ? { borderLeft: `3px solid ${groupColor}`, backgroundColor: checked ? undefined : `${groupColor}10` } : {}}
+    >
       {/* Checkbox */}
       <button
         type="button"
@@ -509,14 +641,21 @@ function ReviewItemRow({
       <div className="flex-1 min-w-0">
         <p className={`text-[11px] font-medium leading-tight truncate ${checked ? "line-through text-slate-400" : "text-slate-800"}`}>
           {item.name}
-          {item.quantity > 1 && <span className="text-slate-400"> ×{item.quantity}</span>}
         </p>
         <p className="text-[10px] font-mono text-slate-500">
-          ${item.line_total.toLocaleString("es-CL")}
+          {item.quantity > 1
+            ? <>${unitPrice.toLocaleString("es-CL")} <span className="text-slate-400">×{item.quantity}</span></>
+            : <>${item.line_total.toLocaleString("es-CL")}</>}
         </p>
       </div>
 
-      {/* Edit / delete */}
+      {/* Divide / Edit / Delete */}
+      {onDivide && (
+        <button type="button" onClick={onDivide}
+          className="text-slate-300 hover:text-indigo-500 transition flex-shrink-0" title="Dividir en partes">
+          <Scissors className="w-3.5 h-3.5" />
+        </button>
+      )}
       <button type="button" onClick={() => setEditing(true)}
         className="text-slate-300 hover:text-indigo-500 transition flex-shrink-0">
         <Pencil className="w-3.5 h-3.5" />
