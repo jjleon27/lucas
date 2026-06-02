@@ -586,6 +586,27 @@ export default function SplitPage() {
     }
   }
 
+  // ── Correct total ─────────────────────────────────────────
+  async function handleUpdateTotal(newTotal: number) {
+    if (!txId || !result) return;
+    const currentSum = result.items.reduce((s, it) => s + it.price * it.quantity, 0);
+    const gap = Math.round(newTotal - currentSum);
+    // Find existing adjustment item to update or delete
+    const adjItem = result.items.find((it) => /^(otros cargos|ajuste)/i.test(it.name));
+    try {
+      if (gap === 0) {
+        if (adjItem) await deleteSplitItem(adjItem.id);
+      } else if (adjItem) {
+        await updateSplitItem(adjItem.id, { price: adjItem.price + gap });
+      } else {
+        await addSplitItem(txId, { name: gap > 0 ? "Otros cargos" : "Descuento", price: gap, quantity: 1 });
+      }
+      await refreshResult(txId);
+    } catch (e: any) {
+      alert(e?.message || "Error al actualizar total");
+    }
+  }
+
   // ── Add IVA manually ──────────────────────────────────────
   async function handleAddIva() {
     if (!txId || !result) return;
@@ -722,6 +743,7 @@ export default function SplitPage() {
             onDeleteItem={handleDeleteItem}
             onAddItem={handleAddItem}
             onAssignAll={handleAssignAll}
+            onUpdateTotal={handleUpdateTotal}
           />
 
           {/* ── Propina ─────────────────────────────────────────── */}

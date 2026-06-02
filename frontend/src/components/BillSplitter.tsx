@@ -335,19 +335,19 @@ function ItemCard({
             <span className="font-mono text-sm">{formatMoney(item.line_total, currency)}</span>
             <button
               type="button"
-              className="text-slate-300 hover:text-indigo-500 transition"
+              className="text-slate-400 hover:text-indigo-500 transition"
               onClick={() => setEditing(true)}
-              title="Editar"
+              title="Editar nombre o precio"
             >
-              <Pencil className="w-3.5 h-3.5" />
+              <Pencil className="w-4 h-4" />
             </button>
             <button
               type="button"
-              className="text-slate-300 hover:text-rose-500 transition"
+              className="text-slate-400 hover:text-rose-500 transition"
               onClick={() => onDeleteItem(item.id)}
-              title="Eliminar"
+              title="Eliminar ítem"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <Trash2 className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -442,6 +442,7 @@ interface Props {
   onDeleteItem: (itemId: number) => void;
   onAddItem: (name: string, price: number) => void;
   onAssignAll: (itemId: number, personIds: number[]) => void;
+  onUpdateTotal: (newTotal: number) => void;
 }
 
 export default function BillSplitter({
@@ -457,12 +458,15 @@ export default function BillSplitter({
   onDeleteItem,
   onAddItem,
   onAssignAll,
+  onUpdateTotal,
 }: Props) {
   const { t } = useT();
   const [newName, setNewName] = useState("");
   const [addItemName, setAddItemName] = useState("");
   const [addItemPrice, setAddItemPrice] = useState(0);
   const [viewMode, setViewMode] = useState<"boleta" | "agrupado">("boleta");
+  const [editingTotal, setEditingTotal] = useState(false);
+  const [newTotalInput, setNewTotalInput] = useState(0);
 
   const completion = result.completion_pct;
   const isComplete = completion >= 100 && result.unassigned_total === 0;
@@ -676,10 +680,14 @@ export default function BillSplitter({
             </div>
             {/* Unassigned warning */}
             {result.unassigned_total > 0 && (
-              <p className="mt-2 text-xs text-amber-600 font-medium">
-                ⚠️ {formatMoney(result.unassigned_total, currency)} sin asignar —
-                el monto total <strong>no calza</strong> aún. Toca los avatares para asignar todos los ítems.
-              </p>
+              <div className="mt-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 space-y-1.5">
+                <p className="text-xs text-amber-700 font-medium">
+                  ⚠️ {formatMoney(result.unassigned_total, currency)} sin asignar
+                </p>
+                <p className="text-[11px] text-amber-600">
+                  Toca los avatares para asignar cada ítem. Si el total es incorrecto, corrígelo abajo en "Resumen".
+                </p>
+              </div>
             )}
           </div>
         )}
@@ -713,10 +721,55 @@ export default function BillSplitter({
               <span className="font-mono">{formatMoney(iva, currency)}</span>
             </div>
           )}
-          <div className="flex justify-between text-sm font-semibold pt-2 border-t border-slate-100">
+          <div className="flex justify-between items-center text-sm font-semibold pt-2 border-t border-slate-100">
             <span>Total</span>
-            <span className="font-mono">{formatMoney(result.total_amount, currency)}</span>
+            {editingTotal ? (
+              <div className="flex items-center gap-1.5">
+                <NumericInput
+                  className="input w-32 font-mono text-sm py-1 px-2 text-right"
+                  value={newTotalInput}
+                  onChange={setNewTotalInput}
+                  allowDecimals={false}
+                  placeholder="0"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  className="text-emerald-600 hover:text-emerald-700"
+                  onClick={() => {
+                    if (newTotalInput > 0) onUpdateTotal(newTotalInput);
+                    setEditingTotal(false);
+                  }}
+                >
+                  <Check className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  className="text-slate-400 hover:text-slate-600"
+                  onClick={() => setEditingTotal(false)}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono">{formatMoney(result.total_amount, currency)}</span>
+                <button
+                  type="button"
+                  className="text-slate-400 hover:text-indigo-500 transition"
+                  title="Corregir total"
+                  onClick={() => { setNewTotalInput(result.total_amount); setEditingTotal(true); }}
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
+          {!editingTotal && (
+            <p className="text-[10px] text-slate-400 pt-0.5">
+              ¿El total no cuadra con la boleta? Toca el lápiz para corregirlo.
+            </p>
+          )}
         </div>
       )}
 
