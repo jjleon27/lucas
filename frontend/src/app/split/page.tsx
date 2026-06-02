@@ -1011,7 +1011,7 @@ export default function SplitPage() {
           onUpdateItem={handleUpdateItem}
           onDeleteItem={handleDeleteItem}
           onAddItem={handleAddItem}
-          onConfirm={() => setStep("assign")}
+          onConfirm={() => { setImageFullscreen(false); setStep("assign"); }}
         />
       )}
 

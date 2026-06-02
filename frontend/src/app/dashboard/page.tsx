@@ -55,12 +55,15 @@ export default function DashboardPage() {
   }, [router, loadData]);
 
   async function saveCurrency(code: string) {
+    const prev = currency;
     setCurrency(code);
     if (typeof window !== "undefined") window.localStorage.setItem("lucas_currency", code);
     try {
       await updateMe({ settings: { currency: code } as any });
       setData(await getDashboard());
-    } catch { /* ignore */ }
+    } catch {
+      setCurrency(prev);
+    }
   }
 
   if (loading || !data) return <div className="p-8 text-slate-500">{t("tx.loading")}</div>;
