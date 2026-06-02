@@ -246,13 +246,17 @@ function ReviewStep({
   const [dividedNameColors, setDividedNameColors] = useState<Record<string, string>>({});
 
   const groupColorByName = useMemo(() => {
+    // Count how many times each name appears
+    const counts: Record<string, number> = {};
+    for (const item of items) {
+      const key = item.name.trim().toLowerCase();
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    // Only names that appear more than once get a color
     const map: Record<string, string> = {};
     let idx = 0;
-    for (const item of items) {
-      if (item.quantity > 1) {
-        const key = item.name.trim().toLowerCase();
-        if (!map[key]) { map[key] = PALETTE[idx % PALETTE.length]; idx++; }
-      }
+    for (const [key, count] of Object.entries(counts)) {
+      if (count > 1) { map[key] = PALETTE[idx % PALETTE.length]; idx++; }
     }
     return map;
   }, [items]);
@@ -429,7 +433,7 @@ function ReviewStep({
                       onUpdate={(patch) => onUpdateItem(item.id, patch)}
                       onDelete={() => onDeleteItem(item.id)}
                       groupColor={color}
-                      onDivide={item.quantity > 1 ? () => setDivideItemId(item.id) : undefined}
+                      onDivide={() => setDivideItemId(item.id)}
                     />
                   )}
                   {isLastInGroup && groupCount > 1 && (
@@ -535,7 +539,7 @@ function DivideRow({ item, color, onConfirm, onCancel }: {
   onConfirm: (count: number) => void;
   onCancel: () => void;
 }) {
-  const [count, setCount] = useState(item.quantity > 1 ? item.quantity : 2);
+  const [count, setCount] = useState(2);
   const unitPrice = count > 0 ? Math.round(item.line_total / count) : item.line_total;
   const borderColor = color || "#6366f1";
   return (
@@ -688,6 +692,7 @@ export default function SplitPage() {
 
   // Upload state
   const [uploading, setUploading] = useState(false);
+  const [uploadStage, setUploadStage] = useState("");
   const [uploadErr, setUploadErr] = useState("");
   // Propina state
   const [propinaAmount, setPropinaAmount] = useState(0);
@@ -744,8 +749,15 @@ export default function SplitPage() {
   async function handleFile(file: File) {
     setUploadErr("");
     setUploading(true);
+    // Show image immediately from local file — no waiting for backend
+    const localBlobUrl = URL.createObjectURL(file);
+    setReceiptImageUrl(localBlobUrl);
+    setUploadStage("Analizando imagen con IA...");
     try {
       const upload = await uploadImage(file);
+      // Swap to backend URL once available
+      setReceiptImageUrl(resolveBackendUrl(upload.image_url || "") || localBlobUrl);
+      setUploadStage("Preparando sesión...");
       if (!upload.transactions.length) throw new Error("No se pudo leer la boleta");
 
       // Duplicate detection via dupe_of flag from the OCR parser
@@ -914,7 +926,6 @@ export default function SplitPage() {
 
       setCurrency(txCurrency);
       setTxId(txIdToUse);
-      setReceiptImageUrl(resolveBackendUrl(upload.image_url || ""));
       await startSplit(txIdToUse, splitItems);
       await refreshResult(txIdToUse);
       setStep("review");
@@ -1221,6 +1232,20 @@ export default function SplitPage() {
           <div className="card">
             <h2 className="text-base font-semibold mb-3">{t("split.uploadReceipt")}</h2>
             <UploadZone onFile={handleFile} loading={uploading} />
+            {uploading && receiptImageUrl && (
+              <div className="mt-3 rounded-xl overflow-hidden border border-slate-200 relative">
+                <img src={receiptImageUrl} alt="Boleta" className="w-full max-h-48 object-cover object-top" />
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                  <div className="flex items-center gap-2 bg-white/90 rounded-full px-4 py-2 text-sm font-medium text-slate-700">
+                    <svg className="animate-spin w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                    </svg>
+                    {uploadStage || "Procesando..."}
+                  </div>
+                </div>
+              </div>
+            )}
             {uploadErr && <p className="text-sm text-rose-500 mt-2">{uploadErr}</p>}
           </div>
 
