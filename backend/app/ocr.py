@@ -479,6 +479,12 @@ CRITICAL RULES:
       CRITICAL: "N items por TOTAL" — "por" means "for (the total)", NOT "at (unit price)".
       CRITICAL: Never store LINE_TOTAL (13200, 28800, 8800) as the unit price when a leading quantity exists.
 
+   TABLE FORMAT (| Cant | Producto | Precio |):
+   The "Cant" column is the ONLY source of quantity. Numbers inside product names are specs, NOT quantities:
+   "Piscolón Mistral de 35°" → the "35" is alcohol degrees (quantity from Cant column, usually 1)
+   "Alto del Carmen 35" → the "35" is a product descriptor
+   NEVER treat a number embedded in the product name as the quantity.
+
    b) All other lines: quantity = 1, price = the printed number (= line total)
       → Store as: {"name": description, "price": <amount>, "quantity": 1}
 
@@ -581,6 +587,14 @@ RULES:
       CRITICAL: "N items por TOTAL" — "por" = "for the total", NOT "at unit price". ALWAYS divide.
    d) All other lines: quantity=1, price=printed number
    Set amount = TOTAL CON IVA (final charged). NEVER use Total Neto as amount.
+
+   TABLE FORMAT (| Cant | Producto | Precio |):
+   - Quantity = ONLY the value in the "Cant"/"Cantidad" column (always an integer, usually 1).
+   - Numbers inside the product name are NOT quantities:
+       "Piscolón Mistral de 35°" → quantity=1, the "35" is alcohol degrees
+       "Alto del Carmen 35" → quantity=1, the "35" is product spec
+       "Schop 500cc" → quantity=1, "500" is volume
+   - NEVER extract a quantity from the product name. Use only the Cant column.
 
 4. IVA: Product lines are NETO. Add IVA row: {"name":"IVA (19%)","price":<iva>,"quantity":1}.
    TOTAL = TOTAL_NETO + IVA. set total_neto and iva_amount from the printed summary rows.
@@ -1107,11 +1121,12 @@ def _fix_line_total_items(items: list[ParsedItem], ref_total: float) -> list[Par
 
 def _scale_to_total(items: list[ParsedItem], ref_total: float) -> tuple[list[ParsedItem], float]:
     """
-    Proportionally scale item prices so sum(price×qty) == ref_total exactly.
-    Last item absorbs rounding remainder.  Used as final-guarantee fallback.
+    Proportionally scale item prices DOWN when sum(price×qty) > ref_total.
+    Only used to correct over-counting — never inflates prices when under-counted
+    (under-count gap is handled by the frontend "Otros cargos" fallback).
     """
     cur = sum(it.price * it.quantity for it in items)
-    if cur <= 0 or abs(cur - ref_total) / ref_total < 0.02:
+    if cur <= 0 or cur <= ref_total:  # never scale up — only fix over-count
         return items, ref_total
     scale = ref_total / cur
     result: list[ParsedItem] = []

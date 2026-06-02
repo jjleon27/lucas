@@ -264,13 +264,13 @@ def test_fix_already_correct():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_scale_guarantees_sum_equals_total():
-    """After scale_to_total, sum(price*qty) must equal ref_total exactly."""
-    # cur = 5100*3 + 1200*2 = 17700; ref = 20000 → >2% difference, scaling applies
+    """After scale_to_total, sum(price*qty) must equal ref_total when sum > ref (over-count)."""
+    # cur = 5100*3 + 1200*2 = 17700; ref = 15000 → over by 18%, scale DOWN
     items = [
         make_item("Cerveza", 5100, qty=3),
         make_item("Agua", 1200, qty=2),
     ]
-    ref_total = 20000.0
+    ref_total = 15000.0
     scaled, amount = _scale_to_total(items, ref_total)
     assert amount == ref_total
     # ±1 CLP tolerance: unavoidable when remainder is not divisible by qty
@@ -283,3 +283,17 @@ def test_scale_no_op_when_already_correct():
     ref_total = 10000.0
     scaled, amount = _scale_to_total(items, ref_total)
     assert scaled[0].price == 5000  # unchanged
+
+
+def test_scale_never_inflates_prices():
+    """_scale_to_total must NOT inflate when sum < ref_total (under-count case).
+    The frontend 'Otros cargos' handles the gap instead."""
+    items = [
+        make_item("Piscolón Mistral de 35°", 9000, qty=1),
+        make_item("Fernet Branca", 5800, qty=1),
+    ]
+    # sum = 14800, ref_total = 50000 — LLM missed many items
+    scaled, amount = _scale_to_total(items, 50000.0)
+    # prices must NOT be inflated
+    assert scaled[0].price == 9000
+    assert scaled[1].price == 5800
