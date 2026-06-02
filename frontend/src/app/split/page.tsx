@@ -35,6 +35,7 @@ import UploadZone from "@/components/UploadZone";
 import BillSplitter from "@/components/BillSplitter";
 import NumericInput from "@/components/NumericInput";
 import { useT, formatMoney } from "@/lib/i18n";
+import { X, ZoomIn, Pencil, Trash2, Plus, Check } from "lucide-react";
 
 const PALETTE = [
   "#ef4444", "#f97316", "#eab308", "#10b981",
@@ -72,12 +73,12 @@ function computeMultiPayer(
   return out;
 }
 
-type Step = "setup" | "assign" | "settle";
+type Step = "setup" | "review" | "assign" | "settle";
 
 // ── Step indicator ──────────────────────────────────────────
 function StepBar({ step }: { step: Step }) {
-  const steps: Step[] = ["setup", "assign", "settle"];
-  const labels = ["Participantes", "Asignar", "Liquidar"];
+  const steps: Step[] = ["setup", "review", "assign", "settle"];
+  const labels = ["Subir", "Revisar", "Asignar", "Liquidar"];
   const current = steps.indexOf(step);
   return (
     <div className="flex items-center gap-0 mb-6">
@@ -116,6 +117,243 @@ function StepBar({ step }: { step: Step }) {
   );
 }
 
+// ── Review Step ─────────────────────────────────────────────
+function ReviewStep({
+  items,
+  imageUrl,
+  imageFullscreen,
+  onOpenFullscreen,
+  onCloseFullscreen,
+  onUpdateItem,
+  onDeleteItem,
+  onAddItem,
+  onConfirm,
+}: {
+  items: ReceiptItemV2[];
+  imageUrl: string;
+  imageFullscreen: boolean;
+  onOpenFullscreen: () => void;
+  onCloseFullscreen: () => void;
+  onUpdateItem: (id: number, patch: { name?: string; price?: number }) => void;
+  onDeleteItem: (id: number) => void;
+  onAddItem: (name: string, price: number) => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useT();
+  const [addName, setAddName] = useState("");
+  const [addPrice, setAddPrice] = useState(0);
+  const [showAdd, setShowAdd] = useState(false);
+
+  return (
+    <div className="space-y-4">
+      {/* Receipt image card */}
+      {imageUrl && (
+        <div className="card p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-semibold text-slate-700">Boleta original</span>
+            <button
+              type="button"
+              onClick={onOpenFullscreen}
+              className="flex items-center gap-1 text-xs text-indigo-600 font-medium"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+              Ver completa
+            </button>
+          </div>
+          <button type="button" onClick={onOpenFullscreen} className="w-full block">
+            <img
+              src={imageUrl}
+              alt="Boleta"
+              className="w-full max-h-56 object-contain rounded-lg bg-slate-50"
+            />
+          </button>
+        </div>
+      )}
+
+      {/* Items list */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-base font-semibold">Ítems reconocidos</h2>
+          <span className="text-xs text-slate-400">{items.length} ítems</span>
+        </div>
+        <ul className="divide-y divide-slate-100">
+          {items.map((item) => (
+            <ReviewItemRow
+              key={item.id}
+              item={item}
+              onUpdate={(patch) => onUpdateItem(item.id, patch)}
+              onDelete={() => onDeleteItem(item.id)}
+            />
+          ))}
+        </ul>
+
+        {/* Add item row */}
+        {showAdd ? (
+          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
+            <input
+              className="input flex-1 text-sm py-1.5"
+              placeholder="Nombre del ítem"
+              value={addName}
+              onChange={(e) => setAddName(e.target.value)}
+              autoFocus
+            />
+            <NumericInput
+              className="input w-24 text-sm py-1.5 font-mono"
+              placeholder="Precio"
+              value={addPrice}
+              onChange={setAddPrice}
+              allowDecimals
+            />
+            <button
+              type="button"
+              className="text-emerald-600 hover:text-emerald-700"
+              onClick={() => {
+                if (addName.trim() && addPrice > 0) {
+                  onAddItem(addName.trim(), addPrice);
+                  setAddName("");
+                  setAddPrice(0);
+                  setShowAdd(false);
+                }
+              }}
+            >
+              <Check className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              className="text-slate-400"
+              onClick={() => { setAddName(""); setAddPrice(0); setShowAdd(false); }}
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowAdd(true)}
+            className="mt-3 w-full flex items-center justify-center gap-1.5 text-sm text-slate-500 hover:text-indigo-600 py-2 border border-dashed border-slate-300 rounded-xl hover:border-indigo-300 transition"
+          >
+            <Plus className="w-4 h-4" />
+            Agregar ítem
+          </button>
+        )}
+      </div>
+
+      <button
+        type="button"
+        className="btn-primary w-full py-3 text-base font-semibold"
+        onClick={onConfirm}
+      >
+        Todo correcto — Asignar →
+      </button>
+
+      {/* Fullscreen image modal */}
+      {imageFullscreen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/95 flex items-start justify-center overflow-auto"
+          onClick={onCloseFullscreen}
+        >
+          <button
+            type="button"
+            className="fixed top-4 right-4 z-10 bg-black/60 rounded-full p-2 text-white"
+            onClick={onCloseFullscreen}
+          >
+            <X className="w-6 h-6" />
+          </button>
+          <img
+            src={imageUrl}
+            alt="Boleta completa"
+            className="min-w-full"
+            style={{ touchAction: "pinch-zoom" }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Inline editable row for review step ─────────────────────
+function ReviewItemRow({
+  item,
+  onUpdate,
+  onDelete,
+}: {
+  item: ReceiptItemV2;
+  onUpdate: (patch: { name?: string; price?: number }) => void;
+  onDelete: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(item.name);
+  const [editPrice, setEditPrice] = useState(item.line_total / Math.max(item.quantity, 1));
+
+  useEffect(() => {
+    if (!editing) {
+      setEditName(item.name);
+      setEditPrice(item.line_total / Math.max(item.quantity, 1));
+    }
+  }, [item.name, item.line_total, item.quantity, editing]);
+
+  if (editing) {
+    return (
+      <li className="flex items-center gap-2 py-2.5">
+        <input
+          className="input flex-1 text-sm py-1 px-2"
+          value={editName}
+          onChange={(e) => setEditName(e.target.value)}
+          autoFocus
+        />
+        <NumericInput
+          className="input w-24 font-mono text-sm py-1 px-2"
+          value={editPrice}
+          onChange={setEditPrice}
+          allowDecimals
+          placeholder="0"
+        />
+        <button
+          type="button"
+          className="text-emerald-600 hover:text-emerald-700"
+          onClick={() => { onUpdate({ name: editName, price: editPrice }); setEditing(false); }}
+        >
+          <Check className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          className="text-slate-400"
+          onClick={() => setEditing(false)}
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </li>
+    );
+  }
+
+  return (
+    <li className="flex items-center gap-2 py-2.5">
+      <span className="flex-1 text-sm text-slate-800 truncate">{item.name}</span>
+      {item.quantity > 1 && (
+        <span className="text-xs text-slate-400 shrink-0">×{item.quantity}</span>
+      )}
+      <span className="font-mono text-sm text-slate-700 shrink-0">
+        ${item.line_total.toLocaleString("es-CL")}
+      </span>
+      <button
+        type="button"
+        className="text-slate-400 hover:text-indigo-500 transition shrink-0"
+        onClick={() => setEditing(true)}
+      >
+        <Pencil className="w-4 h-4" />
+      </button>
+      <button
+        type="button"
+        className="text-slate-400 hover:text-rose-500 transition shrink-0"
+        onClick={onDelete}
+      >
+        <Trash2 className="w-4 h-4" />
+      </button>
+    </li>
+  );
+}
+
 export default function SplitPage() {
   const router = useRouter();
   const { t, locale } = useT();
@@ -150,6 +388,9 @@ export default function SplitPage() {
   const [ivaIncluded, setIvaIncluded] = useState(false);
   // Duplicate detection
   const [dupeDetected, setDupeDetected] = useState(false);
+  // Receipt image for review step
+  const [receiptImageUrl, setReceiptImageUrl] = useState("");
+  const [imageFullscreen, setImageFullscreen] = useState(false);
 
   // Settlement — single payer
   const [settlement, setSettlement] = useState<SettleOut | null>(null);
@@ -357,9 +598,10 @@ export default function SplitPage() {
 
       setCurrency(txCurrency);
       setTxId(txIdToUse);
+      setReceiptImageUrl(upload.image_url || "");
       await startSplit(txIdToUse, splitItems);
       await refreshResult(txIdToUse);
-      setStep("assign");
+      setStep("review");
     } catch (e: any) {
       setUploadErr(e.message || "Error al subir");
     } finally {
@@ -646,6 +888,8 @@ export default function SplitPage() {
     setDiscountMode("pct");
     setIvaIncluded(false);
     setDupeDetected(false);
+    setReceiptImageUrl("");
+    setImageFullscreen(false);
   }
 
   // ── Render ─────────────────────────────────────────────────
@@ -708,7 +952,22 @@ export default function SplitPage() {
         </div>
       )}
 
-      {/* ══ STEP 2: Assign ══════════════════════════════════════ */}
+      {/* ══ STEP 2: Review ═════════════════════════════════════ */}
+      {step === "review" && result && (
+        <ReviewStep
+          items={result.items}
+          imageUrl={receiptImageUrl}
+          imageFullscreen={imageFullscreen}
+          onOpenFullscreen={() => setImageFullscreen(true)}
+          onCloseFullscreen={() => setImageFullscreen(false)}
+          onUpdateItem={handleUpdateItem}
+          onDeleteItem={handleDeleteItem}
+          onAddItem={handleAddItem}
+          onConfirm={() => setStep("assign")}
+        />
+      )}
+
+      {/* ══ STEP 3: Assign ══════════════════════════════════════ */}
       {step === "assign" && result && (
         <div className="space-y-4">
           {/* Duplicate warning banner */}

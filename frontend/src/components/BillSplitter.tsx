@@ -484,10 +484,42 @@ export default function BillSplitter({
   const iva = result.items
     .filter((it) => /^iva/i.test(it.name.trim()))
     .reduce((s, it) => s + it.line_total, 0);
-  // Ordered items: boleta = DB order, agrupado = sorted by name (same items together)
-  const displayItems = useMemo(() => {
-    if (viewMode === "boleta") return result.items;
-    return [...result.items].sort((a, b) => a.name.localeCompare(b.name, "es", { sensitivity: "base" }));
+  // Boleta = DB order; agrupado = combine identical items into one row
+  const { displayItems, groupMap } = useMemo((): {
+    displayItems: ReceiptItemV2[];
+    groupMap: Map<number, number[]>;
+  } => {
+    if (viewMode === "boleta") return { displayItems: result.items, groupMap: new Map() };
+
+    const groups = new Map<string, ReceiptItemV2[]>();
+    for (const item of result.items) {
+      const key = item.name.toLowerCase();
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(item);
+    }
+
+    const gMap = new Map<number, number[]>();
+    const vItems: ReceiptItemV2[] = [];
+
+    const sorted = Array.from(groups.values()).sort((a, b) =>
+      a[0].name.localeCompare(b[0].name, "es", { sensitivity: "base" }),
+    );
+
+    for (const items of sorted) {
+      const first = items[0];
+      const totalQty = items.reduce((s, it) => s + it.quantity, 0);
+      const totalLine = items.reduce((s, it) => s + it.line_total, 0);
+      const assigneeMap = new Map<number, AssigneeOut>();
+      for (const it of items) {
+        for (const a of it.assignees) {
+          if (!assigneeMap.has(a.person_id)) assigneeMap.set(a.person_id, a);
+        }
+      }
+      gMap.set(first.id, items.map((it) => it.id));
+      vItems.push({ ...first, quantity: totalQty, line_total: totalLine, assignees: Array.from(assigneeMap.values()) });
+    }
+
+    return { displayItems: vItems, groupMap: gMap };
   }, [viewMode, result.items]);
 
   return (
@@ -599,25 +631,56 @@ export default function BillSplitter({
         </div>
 
         <ul className="space-y-2">
-          {displayItems.map((item, idx) => {
-            // In agrupado mode, add a visual separator between different item groups
-            const prevItem = idx > 0 ? displayItems[idx - 1] : null;
-            const isNewGroup =
-              viewMode === "agrupado" &&
-              prevItem &&
-              prevItem.name.toLowerCase() !== item.name.toLowerCase();
+          {displayItems.map((item) => {
+            const groupIds = groupMap.get(item.id);
+            const isGroup = groupIds && groupIds.length > 1;
+
+            const handleToggle = isGroup
+              ? (itemId: number, personId: number) => {
+                  const isAssigned = item.assignees.some((a) => a.person_id === personId);
+                  for (const id of groupIds!) {
+                    const real = result.items.find((i) => i.id === id);
+                    const realHas = real?.assignees.some((a) => a.person_id === personId) ?? false;
+                    if (isAssigned === realHas) onTogglePerson(id, personId);
+                  }
+                }
+              : onTogglePerson;
+
+            const handleAssignAll = isGroup
+              ? (_id: number, personIds: number[]) => {
+                  for (const id of groupIds!) onAssignAll(id, personIds);
+                }
+              : onAssignAll;
+
+            const handleSaveAdjust = isGroup
+              ? (_id: number, assignees: AssigneeIn[]) => {
+                  for (const id of groupIds!) onSaveAdjust(id, assignees);
+                }
+              : onSaveAdjust;
+
+            const handleUpdateItem = isGroup
+              ? (itemId: number, patch: { name?: string; price?: number }) => {
+                  for (const id of groupIds!) onUpdateItem(id, patch);
+                }
+              : onUpdateItem;
+
+            const handleDeleteItem = isGroup
+              ? (_id: number) => {
+                  for (const id of groupIds!) onDeleteItem(id);
+                }
+              : onDeleteItem;
+
             return (
               <div key={item.id}>
-                {isNewGroup && <div className="h-px bg-slate-100 my-1" />}
                 <ItemCard
                   item={item}
                   people={people}
                   currency={currency}
-                  onTogglePerson={onTogglePerson}
-                  onSaveAdjust={onSaveAdjust}
-                  onUpdateItem={onUpdateItem}
-                  onDeleteItem={onDeleteItem}
-                  onAssignAll={onAssignAll}
+                  onTogglePerson={handleToggle}
+                  onSaveAdjust={handleSaveAdjust}
+                  onUpdateItem={handleUpdateItem}
+                  onDeleteItem={handleDeleteItem}
+                  onAssignAll={handleAssignAll}
                 />
               </div>
             );
