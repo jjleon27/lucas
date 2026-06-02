@@ -301,7 +301,11 @@ def heuristic_parse(text: str) -> list[ParsedReceipt]:
     if m:
         amount = abs(_to_float(m.group(2)))
     else:
-        vals = [abs(_to_float(x)) for x in _MONEY_TOKEN.findall(text)]
+        vals = []
+        for raw in _MONEY_TOKEN.findall(text):
+            if len(re.sub(r"\D", "", raw)) >= 10:  # barcode / RUT / account number
+                continue
+            vals.append(abs(_to_float(raw)))
         amount = max(vals) if vals else 0.0
 
     d = _DATE_RE.search(text)
@@ -702,8 +706,8 @@ _CLP_PRICE_RE = re.compile(r"\$?\s*([\d]{1,3}(?:[.,]\d{3})*)\s*$")
 _QTY_X_UNIT_RE = re.compile(r"^(\d+)\s*[xX]\s*([\d.,]+)")
 # Multi-quantity with description only: "2x Descripción" (no unit price after x, only text)
 _QTY_X_DESC_RE = re.compile(r"^(\d+)\s*[xX]\s+([^\d].*)")
-# Restaurant-style: leading qty (1-20) + space + word (no x): "3 vienesa italiana"
-_QTY_NUM_DESC_RE = re.compile(r"^([1-9]|1\d|20)\s+([A-Za-záéíóúñÁÉÍÓÚÑ].*)")
+# Restaurant-style: leading qty (1-99) + space + word (no x): "3 vienesa italiana"
+_QTY_NUM_DESC_RE = re.compile(r"^([1-9][0-9]?)\s+([A-Za-záéíóúñÁÉÍÓÚÑ].*)")
 
 # Pure barcode line (12-14 digits, nothing else)
 _BARCODE_ONLY_RE = re.compile(r"^\d{12,14}$")
@@ -775,6 +779,10 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
       - Restaurants and bars (no barcode prefix, plain description + price)
       - Multi-quantity lines: "2x4.990 PECHU POLLO $ 9.980"
     """
+    # Normalize non-standard whitespace from some POS/scanner outputs
+    text = re.sub(r"\t+", "  ", text)
+    text = re.sub(r"[   ]+", " ", text)
+
     lines = [ln.strip() for ln in text.replace("\r", "").split("\n") if ln.strip()]
 
     # ── Pass 1: extract ground-truth totals ──────────────────────────────────
@@ -842,10 +850,10 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
                     if unit_price >= 100 and name:
                         items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
                 else:
-                    # Restaurant style: "3 vienesa italiana" (no x, leading qty)
+                    # Restaurant style: "3 vienesa italiana" (no x, leading qty 1-99)
                     m_qty_num = _QTY_NUM_DESC_RE.match(desc_clean)
                     if m_qty_num and price >= 100:
-                        qty = int(m_qty_num.group(1))
+                        qty = min(int(m_qty_num.group(1)), 50)
                         name = _clean_item_name(m_qty_num.group(2))
                         unit_price = round(price / qty) if qty >= 2 else price
                         if unit_price >= 100 and name:
@@ -881,10 +889,10 @@ def _parse_boleta_from_text(text: str) -> tuple[list, float, float, float]:
                 items.append(ParsedItem(name=name, price=unit_price, quantity=qty))
                 continue
 
-        # Restaurant style: "3 vienesa italiana" (no x, leading qty 1-20)
+        # Restaurant style: "3 vienesa italiana" (no x, leading qty 1-99)
         m_qty_num = _QTY_NUM_DESC_RE.match(desc_no_barcode)
         if m_qty_num and price >= 100:
-            qty = int(m_qty_num.group(1))
+            qty = min(int(m_qty_num.group(1)), 50)  # clamp: >50 likely OCR mis-parse
             name = _clean_item_name(m_qty_num.group(2))
             unit_price = round(price / qty) if qty >= 2 else price
             if unit_price >= 100 and name:
@@ -1001,7 +1009,8 @@ def _extract_boleta_totals(image_bytes: bytes, text: Optional[str] = None) -> di
                 total_general_mesa = v
 
         elif "total" not in result and re.search(
-            r"TARJETA\s+DE\s+CR|TARJETA\s+D[EI]\s+D[EÉ]|EFECTIVO|^TOTAL\b",
+            r"TARJETA\s+DE\s+CR|TARJETA\s+D[EI]\s+D[EÉ]|EFECTIVO|^TOTAL\b"
+            r"|A\s+PAGAR|^PAGAR\b|MONTO\s+TOTAL|TOTAL\s+A\s+PAGAR",
             stripped, re.IGNORECASE | re.MULTILINE
         ):
             v = last_number_on_line(stripped)
@@ -1321,6 +1330,21 @@ def vision_parse(
             )])
 
         # ═══════════════════════════════════════════════════════════════════
+        # FAST PATH A2 — IVA boleta borderline (conf 0.90-0.97): scale to total
+        # Small OCR discrepancy fixed proportionally; avoids expensive LLM call
+        # ═══════════════════════════════════════════════════════════════════
+        if (not is_pos_per_seat and tess_conf >= 0.90 and tess_items and gt_neto and gt_iva):
+            print(f"[ocr] Fast path A2 (IVA borderline, conf={tess_conf:.2f}): scaling to neto")
+            items_fp2, _ = _scale_to_total(list(tess_items), gt_neto)
+            items_fp2.append(ParsedItem(name="IVA (19%)", price=round(gt_iva), quantity=1))
+            fp_date, fp_merchant = _fp_metadata()
+            return ParseResult(transactions=[ParsedReceipt(
+                amount=float(round(gt_neto + gt_iva)), is_income=False, date=fp_date,
+                merchant=fp_merchant, description="", category="Supermercado",
+                currency="CLP", items=items_fp2,
+            )])
+
+        # ═══════════════════════════════════════════════════════════════════
         # FAST PATH B — No-IVA receipt: Tesseract items sum ≈ OCR total
         # (restaurant, bar, etc. — no tax anchor, but total is reliable)
         # ═══════════════════════════════════════════════════════════════════
@@ -1341,16 +1365,18 @@ def vision_parse(
         # Handles restaurant POS receipts like Toteat where OCR produces
         # pipe-separated tables (e.g. | 1 | Piscolón Mistral de 35° | 9.000 |).
         # Reads quantity ONLY from the Cant column — ignores numbers in names.
+        # Works even when no "TOTAL" line was found — uses pipe_sum as anchor.
         # ═══════════════════════════════════════════════════════════════════
-        if (not is_pos_per_seat and not (gt_neto and gt_iva) and ocr_simple_total > 0):
+        if not is_pos_per_seat and not (gt_neto and gt_iva):
             pipe_items = _parse_pipe_table(raw_ocr_text)
             if pipe_items:
                 pipe_sum = sum(it.price * it.quantity for it in pipe_items)
-                if pipe_sum > 0 and abs(pipe_sum / ocr_simple_total - 1.0) < 0.05:
-                    print(f"[ocr] Fast path C (pipe-table, ratio={pipe_sum/ocr_simple_total:.3f}): skipping LLM")
+                ref = ocr_simple_total if ocr_simple_total > 0 else pipe_sum
+                if pipe_sum > 1000 and abs(pipe_sum / ref - 1.0) < 0.05:
+                    print(f"[ocr] Fast path C (pipe-table, pipe_sum={pipe_sum}, ref={ref}): skipping LLM")
                     fp_date, fp_merchant = _fp_metadata()
                     return ParseResult(transactions=[ParsedReceipt(
-                        amount=ocr_simple_total, is_income=False, date=fp_date,
+                        amount=float(ref), is_income=False, date=fp_date,
                         merchant=fp_merchant, description="", category="Bares y Salidas",
                         currency="CLP", items=pipe_items,
                     )])
