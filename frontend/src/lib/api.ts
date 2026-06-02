@@ -6,6 +6,13 @@
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "lucas_token";
 
+/** Resolve a relative backend URL (e.g. /files/xxx.jpg) to an absolute URL. */
+export function resolveBackendUrl(url: string): string {
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `${API}${url}`;
+}
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(TOKEN_KEY);

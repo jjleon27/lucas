@@ -289,7 +289,7 @@ class ReconcileOut(BaseModel):
 
 # ---------- People ----------
 class PersonCreate(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1)
     color: str = "#6366f1"
 
 
@@ -395,7 +395,7 @@ class SettleOut(BaseModel):
 class ManualSplitIn(BaseModel):
     """Start a split from a manually entered total (no receipt photo needed)."""
     merchant: str = ""
-    total_amount: float
+    total_amount: float = Field(..., gt=0)
     currency: str = "CLP"
     date: date
     account_id: Optional[int] = None
