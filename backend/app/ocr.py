@@ -1021,6 +1021,8 @@ def _extract_boleta_totals(image_bytes: bytes, text: Optional[str] = None) -> di
     if consumo_cliente > 0:
         result["total"] = consumo_cliente
         result["is_pos_per_seat"] = True  # flag for downstream logic
+    if total_general_mesa > 0:
+        result["total_general_mesa"] = total_general_mesa
 
     # ── Sanity checks ────────────────────────────────────────────────────────
     # IVA = exactly 19% of TOTAL NETO is a Chilean SII legal requirement.
@@ -1299,8 +1301,16 @@ def vision_parse(
 
         is_pos_per_seat = ocr_totals.get("is_pos_per_seat", False)
         pos_consumo = ocr_totals.get("total") if is_pos_per_seat else None
+        total_general_mesa = float(ocr_totals.get("total_general_mesa") or 0)
 
-        ocr_simple_total = float(ocr_totals.get("total") or 0)
+        # When this is a full-table comanda (Total General Mesa >> Consumo Cliente),
+        # treat it as a regular receipt — show ALL items at real prices so users can
+        # assign individual drinks. Scaling items to pos_consumo produces wrong prices.
+        if is_pos_per_seat and pos_consumo and total_general_mesa > pos_consumo * 1.5:
+            is_pos_per_seat = False
+            ocr_simple_total = total_general_mesa
+        else:
+            ocr_simple_total = float(ocr_totals.get("total") or 0)
 
         def _fp_metadata() -> tuple:
             """Extract date + merchant from raw OCR text (fast path helper)."""
