@@ -1316,6 +1316,25 @@ def vision_parse(
             return fp_date, fp_merchant
 
         # ═══════════════════════════════════════════════════════════════════
+        # FAST PATH D — POS per-seat comanda (Toteat / Restō / etc.)
+        # Each comanda slip only shows items for THIS customer.
+        # Tesseract items sum ≈ Consumo Cliente → skip LLM entirely.
+        # ═══════════════════════════════════════════════════════════════════
+        if is_pos_per_seat and tess_items and pos_consumo and pos_consumo > 0:
+            tess_sum_pos = sum(it.price * it.quantity for it in tess_items)
+            if tess_sum_pos > 0:
+                ratio_pos = tess_sum_pos / pos_consumo
+                if 0.80 <= ratio_pos <= 1.50:
+                    print(f"[ocr] Fast path D (POS comanda, tess_sum={tess_sum_pos}, consumo={pos_consumo}, ratio={ratio_pos:.2f}): skipping LLM")
+                    items_pos, _ = _scale_to_total(list(tess_items), pos_consumo)
+                    fp_date, fp_merchant = _fp_metadata()
+                    return ParseResult(transactions=[ParsedReceipt(
+                        amount=pos_consumo, is_income=False, date=fp_date,
+                        merchant=fp_merchant, description="", category="Bares y Salidas",
+                        currency="CLP", items=items_pos,
+                    )])
+
+        # ═══════════════════════════════════════════════════════════════════
         # FAST PATH A — IVA boleta: Tesseract exact + ground-truth neto+IVA
         # ═══════════════════════════════════════════════════════════════════
         if (not is_pos_per_seat and tess_conf >= 0.97 and tess_items and gt_neto and gt_iva):
@@ -1384,12 +1403,19 @@ def vision_parse(
         # Build grounding text for the LLM prompt
         grounding_text = ""
         if is_pos_per_seat and pos_consumo:
+            tess_hint = ""
+            if tess_items:
+                tess_hint = "\n\nItems Tesseract read from this comanda (use these, DO NOT invent new ones):\n" + "\n".join(
+                    f"  {it.quantity}x {it.name} @ {it.price}"
+                    for it in tess_items[:25]
+                )
             grounding_text = (
-                f"\n\nGROUNDING (POS per-seat receipt — use EXACTLY):\n"
-                f"  This is a restaurant POS comanda (per-comensal receipt).\n"
-                f"  amount = {int(pos_consumo)} (Consumo Cliente — this customer's portion ONLY)\n"
+                f"\n\nGROUNDING (POS comanda — Toteat/Restō format):\n"
+                f"  amount = {int(pos_consumo)} (Consumo Cliente — this customer's total)\n"
+                f"  List EVERY individual item line as a SEPARATE entry — do NOT group or average.\n"
                 f"  DO NOT use 'Total General Mesa' as amount.\n"
-                f"  Modifier items starting with '+' (e.g. +Coca Zero) have price=0."
+                f"  Items starting with '+' (e.g. +Coca Zero) have price=0."
+                + tess_hint
             )
         elif ocr_simple_total > 0 and not (gt_neto and gt_iva):
             # No-IVA restaurant receipt — ground with the Tesseract-verified total
