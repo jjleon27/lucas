@@ -86,10 +86,14 @@ class OpenAIProvider(LLMProvider):
 
     def vision_json(self, system_prompt: str, user_text: str, image_data_url: str,
                     *, model=None, temperature=0.0, purpose: str = "parse"):
-        """Image input → strict JSON object out. OpenAI-only for now."""
+        """Image input → JSON out.
+
+        Does NOT use response_format=json_object — that mode constrains the model
+        and causes it to skip items on long receipts. Instead we ask for JSON in the
+        user message and extract it from the free-form response.
+        """
+        import re as _re
         from openai import OpenAI
-        # Use the dedicated vision model (gpt-4o full) for receipt parsing —
-        # gpt-4o-mini has ~6× worse accuracy on dark/dense POS layouts.
         vision_model = model or settings.openai_vision_model
         client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
         resp = client.chat.completions.create(
@@ -101,11 +105,21 @@ class OpenAIProvider(LLMProvider):
                     {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
                 ]},
             ],
-            response_format={"type": "json_object"},
             temperature=temperature,
         )
         usage = getattr(resp, "usage", None)
-        content = resp.choices[0].message.content or ""
+        raw = resp.choices[0].message.content or ""
+        # Extract the JSON block from the response (may be wrapped in ```json ... ```)
+        json_match = _re.search(r'```json\s*([\s\S]+?)\s*```', raw)
+        if json_match:
+            content = json_match.group(1)
+        elif raw.strip().startswith("{"):
+            content = raw.strip()
+        else:
+            # Find first { ... } span
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            content = raw[start:end] if start != -1 and end > start else raw
         return LLMResponse(
             text=content,
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,

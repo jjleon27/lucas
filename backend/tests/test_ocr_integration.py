@@ -196,10 +196,13 @@ def test_reconcile_big_gap_finds_total_from_ocr(monkeypatch):
     assert result is not None
     tx = result.transactions[0]
     assert tx.amount == 127900, f"Expected fixed total=127900, got {tx.amount}"
-    # Should also have a Servicio line for the 36000 gap
+    # gap=36000 = 4×9000 (Piscolón price) → gap recovery adds 4 more Piscolón
+    piscolon = next((it for it in tx.items if "Piscol" in it.name), None)
+    assert piscolon is not None, "Piscolón item should be present"
+    assert piscolon.quantity == 10, f"Gap recovery should restore to 10×, got {piscolon.quantity}"
+    # No 'Otros cargos' because gap was fully recovered
     names = [it.name for it in tx.items]
-    assert any("servicio" in n.lower() or "otros" in n.lower() for n in names), \
-        f"Expected Servicio line after total fix, got: {names}"
+    assert not any("otros" in n.lower() for n in names), f"No Otros cargos expected, got: {names}"
 
 
 def test_reconcile_big_gap_no_ocr_total_uses_items_sum(monkeypatch):
