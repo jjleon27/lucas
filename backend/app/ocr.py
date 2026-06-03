@@ -626,19 +626,23 @@ RULES:
    Modifier items starting with "+" (e.g. +Coca Zero) always have price=0.
    TABLE ROWS: leading number = quantity. Read EVERY row top-to-bottom.
 
-3. BOLETA LINE ITEMS:
-   a) "NxUNIT" (e.g. "2x4.990 POLLO $9.980") → price=4990, quantity=2
+3. BOLETA LINE ITEMS — unit price is ALWAYS the price per single item:
+   a) "NxUNIT" or "N x UNIT" (e.g. "2x4.990 POLLO $9.980" or "2 x 4.990 PECHU POLLO $9.980"):
+      price=4990 (the number after "x"), quantity=2.
+      The trailing dollar value ($9.980) is the LINE TOTAL — do NOT use it as price.
    b) "Nx description TOTAL" (e.g. "2x Hamburguesa $10.000") → price=5000, quantity=2
    c) "N description TOTAL" (e.g. "3 vienesa 13200" or "3 completos por 13200") → price=4400, quantity=3
-      CRITICAL: "N items por TOTAL" — "por" = "for the total", NOT "at unit price". ALWAYS divide.
+      "por" = "for the total", NOT "at unit price" — ALWAYS divide.
    d) All other lines: quantity=1, price=printed number
    Set amount = TOTAL CON IVA (final charged). NEVER use Total Neto as amount.
 
-   TABLE FORMAT (| Cant | Producto | Precio |):
-   - Quantity = ONLY the value in the "Cant"/"Cantidad" column (always an integer, usually 1).
+   TABLE FORMAT (columns: Cant | Precio Unitario | Descripcion | Total Neto):
+   - price = the "Precio Unitario" column value (unit price per item).
+   - quantity = ONLY the value in the "Cant"/"Cantidad" column.
+   - NEVER use the "Total Neto" column as the price — that is qty × unit_price.
    - Numbers inside the product name are NOT quantities:
-       "Piscolón Mistral de 35°" → quantity=1, the "35" is alcohol degrees
-       "Alto del Carmen 35" → quantity=1, the "35" is product spec
+       "Piscolón Mistral de 35°" → quantity=1, "35" is alcohol degrees
+       "Alto del Carmen 35" → quantity=1, "35" is product spec
        "Schop 500cc" → quantity=1, "500" is volume
    - NEVER extract a quantity from the product name. Use only the Cant column.
 
@@ -1397,13 +1401,18 @@ def vision_parse(
         bank_hint = data.get("bank_hint") or ""
         account_type_hint = data.get("account_type_hint") or ""
 
+        # total_neto and iva_amount live at the top level of the schema, not per-transaction
+        top_neto = float(data.get("total_neto") or 0)
+        top_iva = float(data.get("iva_amount") or 0)
+
         out: list[ParsedReceipt] = []
         for t in txs:
             raw_amount = abs(float(t.get("amount") or 0))
             items = [ParsedItem(**it) for it in t.get("items", []) if it.get("name")]
 
-            llm_neto = float(t.get("total_neto") or 0)
-            llm_iva = float(t.get("iva_amount") or 0)
+            # Accept neto/iva from per-transaction field (some models put it there) or top level
+            llm_neto = float(t.get("total_neto") or 0) or top_neto
+            llm_iva = float(t.get("iva_amount") or 0) or top_iva
             if llm_neto > 0 and llm_iva > 0:
                 # IVA boleta: normalize items to neto+iva totals
                 if items:
@@ -1426,10 +1435,10 @@ def vision_parse(
                                 name="Otros cargos" if delta > 0 else "Descuento",
                                 price=abs(delta), quantity=1,
                             ))
-                    elif _items_look_plausible(items, items_sum):
-                        # LLM got the total wrong but items look real (e.g. picked the
-                        # wrong subtotal line on a multi-customer Toteat comanda).
-                        # Search OCR text for a number just above items_sum (service+items).
+                    elif ratio < 1.0 and _items_look_plausible(items, items_sum):
+                        # LLM total is too large — it likely picked the wrong subtotal
+                        # (e.g. multi-customer Toteat comanda). Items look real.
+                        # Search OCR text for a labeled total just above items_sum.
                         better = _find_plausible_total(raw_ocr_text, items_sum)
                         if better:
                             old_amount = int(raw_amount)
@@ -1445,6 +1454,9 @@ def vision_parse(
                             raw_amount = float(items_sum)
                             print(f"[ocr] reconcile: using items_sum={items_sum} (LLM total off, ratio={ratio:.2f})")
                     else:
+                        # ratio > 1 → items sum exceeds total (LLM likely priced
+                        # multi-quantity lines as total instead of unit price).
+                        # Trust the LLM total; drop items to avoid confusion.
                         print(f"[ocr] reconcile fail ratio={ratio:.2f} — dropping items")
                         items = []
 
