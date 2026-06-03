@@ -1306,8 +1306,10 @@ def vision_parse(
         # When this is a full-table comanda (Total General Mesa >> Consumo Cliente),
         # treat it as a regular receipt — show ALL items at real prices so users can
         # assign individual drinks. Scaling items to pos_consumo produces wrong prices.
+        is_full_table_comanda = False
         if is_pos_per_seat and pos_consumo and total_general_mesa > pos_consumo * 1.5:
             is_pos_per_seat = False
+            is_full_table_comanda = True
             ocr_simple_total = total_general_mesa
         else:
             ocr_simple_total = float(ocr_totals.get("total") or 0)
@@ -1412,7 +1414,19 @@ def vision_parse(
 
         # Build grounding text for the LLM prompt
         grounding_text = ""
-        if is_pos_per_seat and pos_consumo:
+        if is_full_table_comanda:
+            grounding_text = (
+                f"\n\nGROUNDING (full-table comanda — ALL items at PRINTED prices):\n"
+                f"  amount = {int(total_general_mesa)} (Total General Mesa — toda la mesa)\n"
+                f"  DO NOT use 'Consumo Cliente' as amount — that is a per-person subtotal.\n"
+                f"  List every item at its PRINTED unit price. Do NOT scale or divide prices.\n"
+                f"  sum(price × quantity for ALL items) MUST equal {int(total_general_mesa)}."
+            )
+            if tess_items:
+                grounding_text += "\n\nItems Tesseract read from this receipt (use these, DO NOT invent):\n" + "\n".join(
+                    f"  {it.quantity}x {it.name} @ {it.price}" for it in tess_items[:25]
+                )
+        elif is_pos_per_seat and pos_consumo:
             tess_hint = ""
             if tess_items:
                 tess_hint = "\n\nItems Tesseract read from this comanda (use these, DO NOT invent new ones):\n" + "\n".join(
@@ -1456,7 +1470,7 @@ def vision_parse(
                 )
 
         # Use shorter receipt prompt when grounding confirms it's a boleta/POS receipt
-        is_receipt = bool((gt_neto and gt_iva) or (is_pos_per_seat and pos_consumo))
+        is_receipt = bool((gt_neto and gt_iva) or (is_pos_per_seat and pos_consumo) or is_full_table_comanda)
         active_prompt = _RECEIPT_PROMPT if is_receipt else _SYSTEM_PROMPT
 
         user_text = (
@@ -1592,15 +1606,35 @@ def vision_parse(
                     else:
                         raw_amount = float(round(total_neto_val + iva_amount_val))
                 elif items and ref_total > 0:
-                    # No-IVA: retry once if items are significantly off (>5%)
-                    # OutputFixingParser pattern: text-only, cheap, no image
+                    # No-IVA reconcile — NEVER scale items to fit a different total.
+                    # Scaled prices (e.g. Piscolón $9.000 → $4.843) are worse than no items.
                     items_sum_chk = sum(it.price * it.quantity for it in items)
-                    if abs(items_sum_chk / ref_total - 1.0) > 0.05:
+                    ratio = items_sum_chk / ref_total
+                    if abs(ratio - 1.0) > 0.05:
+                        # Try text-only correction once (cheap — no image)
                         items = _retry_items_with_correction(
                             items, ref_total, raw_ocr_text, user_id=user_id, db=db
                         )
-                    # Final scale guarantee (DOWN only — never inflate)
-                    items, raw_amount = _scale_to_total(items, ref_total)
+                        items_sum_chk = sum(it.price * it.quantity for it in items)
+                        ratio = items_sum_chk / ref_total if ref_total > 0 else 0
+
+                    if abs(ratio - 1.0) <= 0.02:
+                        # Near-exact — trust printed prices as-is
+                        raw_amount = float(items_sum_chk)
+                    elif abs(ratio - 1.0) <= 0.15:
+                        # Small gap — add synthetic Otros line, never distort prices
+                        delta = round(ref_total - items_sum_chk)
+                        if abs(delta) >= 100:
+                            items.append(ParsedItem(
+                                name="Servicio / Otros" if delta > 0 else "Descuento",
+                                price=abs(delta), quantity=1,
+                            ))
+                        raw_amount = float(ref_total)
+                    else:
+                        # Too far off — drop items, let user add manually
+                        print(f"[ocr] reconcile FAIL: items={int(items_sum_chk)}, ref={int(ref_total)}, ratio={ratio:.2f} — dropping items")
+                        items = []
+                        raw_amount = float(ref_total)
 
             out.append(ParsedReceipt(
                 amount=raw_amount,
