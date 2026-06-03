@@ -2,7 +2,7 @@
 Tests for OCR parsing functions in ocr.py.
 
 Covers: _to_float, _parse_clp, _parse_boleta_from_text, _parse_pipe_table,
-        _normalize_boleta_items, _fix_line_total_items, _scale_to_total
+        _normalize_boleta_items, _fix_line_total_items
 
 Tests use realistic Tesseract OCR output from actual Chilean receipts:
   - Supermarkets (Lider, Unimarc, Tottus) with barcodes + IVA
@@ -24,7 +24,6 @@ _mock.patch.dict("sys.modules", {
 from app.ocr import (
     _normalize_boleta_items,
     _fix_line_total_items,
-    _scale_to_total,
     _to_float,
     _parse_clp,
     _parse_pipe_table,
@@ -271,46 +270,6 @@ def test_fix_already_correct():
     fixed = _fix_line_total_items(items, ref_total)
     assert fixed[0].price == 4800
     assert fixed[1].price == 4400
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# _scale_to_total — final proportional normalization guarantee
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_scale_guarantees_sum_equals_total():
-    """After scale_to_total, sum(price*qty) must equal ref_total when sum > ref (over-count)."""
-    # cur = 5100*3 + 1200*2 = 17700; ref = 15000 → over by 18%, scale DOWN
-    items = [
-        make_item("Cerveza", 5100, qty=3),
-        make_item("Agua", 1200, qty=2),
-    ]
-    ref_total = 15000.0
-    scaled, amount = _scale_to_total(items, ref_total)
-    assert amount == ref_total
-    # ±1 CLP tolerance: unavoidable when remainder is not divisible by qty
-    assert abs(sum(it.price * it.quantity for it in scaled) - ref_total) <= 1
-
-
-def test_scale_no_op_when_already_correct():
-    """_scale_to_total is a no-op when sum is already within 2% of ref."""
-    items = [make_item("Item", 5000, qty=2)]
-    ref_total = 10000.0
-    scaled, amount = _scale_to_total(items, ref_total)
-    assert scaled[0].price == 5000  # unchanged
-
-
-def test_scale_never_inflates_prices():
-    """_scale_to_total must NOT inflate when sum < ref_total (under-count case).
-    The frontend 'Otros cargos' handles the gap instead."""
-    items = [
-        make_item("Piscolón Mistral de 35°", 9000, qty=1),
-        make_item("Fernet Branca", 5800, qty=1),
-    ]
-    # sum = 14800, ref_total = 50000 — LLM missed many items
-    scaled, amount = _scale_to_total(items, 50000.0)
-    # prices must NOT be inflated
-    assert scaled[0].price == 9000
-    assert scaled[1].price == 5800
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -728,37 +687,6 @@ def test_normalize_with_discount_item():
     assert discount is not None, "Discount item should be preserved"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# _scale_to_total — edge cases
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_scale_empty_list():
-    scaled, amount = _scale_to_total([], 10000.0)
-    assert scaled == []
-
-def test_scale_single_item_exact():
-    """Single item exactly at ref_total → no change."""
-    items = [make_item("Item", 10000, qty=1)]
-    scaled, amount = _scale_to_total(items, 10000.0)
-    assert scaled[0].price == 10000
-
-def test_scale_single_item_over():
-    """Single item over ref → scale down."""
-    items = [make_item("Item", 11000, qty=1)]
-    scaled, amount = _scale_to_total(items, 10000.0)
-    assert scaled[0].price == 10000
-    assert amount == 10000.0
-
-def test_scale_preserves_item_names():
-    items = [
-        make_item("Piscolón Mistral de 35°", 9000),
-        make_item("Fernet Branca", 5800),
-    ]
-    scaled, _ = _scale_to_total(items, 14800.0)  # already correct, no-op
-    assert scaled[0].name == "Piscolón Mistral de 35°"
-    assert scaled[1].name == "Fernet Branca"
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # BARES Y RESTAURANTES — Tests por INVARIANTES, no por casos específicos
 #
@@ -902,42 +830,7 @@ def test_fix_when_detectable_sum_equals_ref(wrong_items, ref_total, desc):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# INVARIANTE 5: _scale_to_total — garantías matemáticas absolutas
-# ─────────────────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("prices_qtys,ref_total", [
-    # Over-count: scale DOWN garantiza suma dentro de ±1
-    ([(5100, 3), (1200, 2)],  15000.0),
-    ([(9000, 3), (5800, 1)],  25000.0),
-    ([(4800, 6), (4400, 2)],  35000.0),
-    ([(3000, 10),],           25000.0),
-])
-def test_scale_down_sum_within_tolerance(prices_qtys, ref_total):
-    """INVARIANTE: scale DOWN → abs(sum - ref_total) ≤ 1."""
-    items = [make_item(f"Item{i}", p, q) for i, (p, q) in enumerate(prices_qtys)]
-    cur = sum(p * q for p, q in prices_qtys)
-    if cur <= ref_total:
-        pytest.skip("not an over-count case")
-    scaled, amount = _scale_to_total(items, ref_total)
-    assert abs(sum(it.price * it.quantity for it in scaled) - ref_total) <= 1
-
-
-@pytest.mark.parametrize("prices_qtys,ref_total", [
-    # Under-count: NUNCA infla, devuelve items sin cambio
-    ([(9000, 1), (5800, 1)],  50000.0),
-    ([(4800, 2), (1500, 1)],  20000.0),
-    ([(3000, 5),],            30000.0),
-])
-def test_scale_never_inflates(prices_qtys, ref_total):
-    """INVARIANTE: si sum < ref_total → items sin cambio (nunca infla)."""
-    items = [make_item(f"Item{i}", p, q) for i, (p, q) in enumerate(prices_qtys)]
-    orig_prices = [it.price for it in items]
-    scaled, _ = _scale_to_total(items, ref_total)
-    assert [it.price for it in scaled] == orig_prices, \
-        "Scale-up forbidden: prices must not change when sum < ref_total"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# INVARIANTE 6: _normalize_boleta_items — suma siempre == total_neto
+# INVARIANTE 5: _normalize_boleta_items — suma siempre == total_neto
 #
 # Propiedad: para CUALQUIER lista de items y cualquier total_neto > 0,
 #   sum(product_items.price × qty) == total_neto   (dentro de ±1)

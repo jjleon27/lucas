@@ -475,10 +475,10 @@ CRITICAL RULES:
    They ALWAYS have price = 0. Include them as {"name": "+Coca Zero", "price": 0, "quantity": 1}.
    NEVER assign a non-zero price to a modifier item. NEVER steal the price from the next row.
 
-   TABLE FORMAT rows (e.g. "| 1 | Piscolón Mistral | 9.000 |"):
+   TABLE FORMAT rows (e.g. "| 1 | Producto X | 9.000 |"):
    - Each row is ONE separate item (do NOT merge identical rows)
    - The leading "1" (Cant column) is the quantity
-   - Repeated identical rows = repeated individual items (e.g. 9 rows of "Piscolón Mistral" = 9 items)
+   - Repeated identical rows = repeated individual items (e.g. 9 rows of "Cerveza" = 9 items)
    - Read EVERY row top to bottom without skipping
 
    "Propina Sugerida" / "Total c/propina" lines: DO NOT include in items.
@@ -521,8 +521,8 @@ CRITICAL RULES:
 
    TABLE FORMAT (| Cant | Producto | Precio |):
    The "Cant" column is the ONLY source of quantity. Numbers inside product names are specs, NOT quantities:
-   "Piscolón Mistral de 35°" → the "35" is alcohol degrees (quantity from Cant column, usually 1)
-   "Alto del Carmen 35" → the "35" is a product descriptor
+   "Cerveza 35°" → the "35" is alcohol degrees (quantity from Cant column, usually 1)
+   "Whisky 12 años" → the "12" is a product descriptor
    NEVER treat a number embedded in the product name as the quantity.
 
    b) All other lines: quantity = 1, price = the printed number (= line total)
@@ -587,7 +587,8 @@ Return strict JSON — no markdown, no commentary.
 
 # Shorter prompt for when grounding confirms a receipt/boleta (not a bank statement).
 # ~40% fewer tokens → faster LLM response for the common split-expense case.
-_RECEIPT_PROMPT = """You are a receipt parser for Chilean receipts. Read the image carefully and return ONLY a JSON object — no markdown, no explanation.
+_RECEIPT_PROMPT = """You are a receipt parser for Chilean receipts (boletas, comandas, facturas).
+Read the image carefully. Return ONLY a JSON object — no markdown, no explanation.
 
 JSON shape:
 {
@@ -598,7 +599,7 @@ JSON shape:
     "amount": number,
     "date": "YYYY-MM-DD",
     "merchant": string,
-    "description": string,
+    "description": "",
     "category": "Alimentación"|"Supermercado"|"Transporte"|"Compras"|"Entretenimiento"|"Bares y Salidas"|"Cuentas y Servicios"|"Salud"|"Otros",
     "is_income": false,
     "is_cc_payment": false,
@@ -608,28 +609,31 @@ JSON shape:
   }]
 }
 
-CRITICAL RULES — follow exactly:
+RULES:
 
-1. CLP NUMBER FORMAT: dots are thousand separators, never decimals.
+1. CLP NUMBER FORMAT: dots = thousand separators, never decimals.
    9.000 = 9000 · 127.900 = 127900 · 1.489.991 = 1489991
 
-2. ITEMS — read EVERY row in the items section top-to-bottom. Do not stop early.
-   - Any number printed mid-receipt (e.g. a running subtotal) is NOT the end of items.
-     Keep reading until you reach the labeled totals section at the bottom.
-   - Each printed row with a product name = one item entry.
-   - price = unit price (price of ONE unit). quantity = how many of that item.
-   - "NxPRICE Product TOTAL": price=PRICE (after the x), quantity=N. The last number is the line total — ignore it for price.
-   - Modifier lines starting with "+" (e.g. +Coca Zero): price=0.
-   - Numbers in product names are NOT quantities: "35°" = alcohol, "500cc" = volume.
+2. ITEMS — faithfully transcribe every product row, top to bottom, in the SAME ORDER they appear:
+   - ONE item entry per printed receipt row. Do NOT merge or consolidate rows.
+     If "Cerveza" appears on 10 separate rows, output 10 separate item entries.
+   - price = unit price printed on that row. quantity = the quantity on that row (usually 1).
+   - "NxPRICE Product LINETOTAL": price = PRICE (the number after x), quantity = N.
+     The last number is the line total — do NOT use it as price.
+   - Modifier rows starting with "+" (e.g. "+Coca Zero"): price = 0.
+   - Numbers inside product names are NOT quantities: "35°" = degrees, "500cc" = volume.
+   - Any large number appearing between item rows without a product name is a running subtotal — skip it, keep listing items below it.
 
-3. TOTAL — use the labeled final total, not any mid-receipt running subtotal:
-   - Restaurant/bar: prefer "Total General Mesa" > "Consumo Cliente" > any other labeled total.
-   - Boleta/factura: use "TOTAL" or "Total c/IVA" (= total_neto + iva_amount).
-   - Ignore any unlabeled number that appears between item rows.
+3. AMOUNT — use the labeled final total at the bottom of the receipt:
+   - Restaurant/bar POS: use "Total General Mesa" (whole table total). If absent, use "Consumo Cliente".
+   - Boleta/factura: use the final "TOTAL" line (= total_neto + IVA).
+   - Never use a mid-receipt running subtotal as the amount.
 
-4. IVA BOLETA: if the receipt has "Total Neto" and "IVA" summary lines, set total_neto and iva_amount from those printed values. amount = total_neto + iva_amount.
+4. IVA BOLETA: set total_neto and iva_amount from the printed "Total Neto" and "IVA" summary rows.
+   amount = total_neto + iva_amount.
 
-5. CATEGORIES: Lider/Jumbo/Tottus/Unimarc→Supermercado; Uber/Cabify→Transporte; restaurants→Alimentación; bars/pubs/beer→Bares y Salidas.
+5. CATEGORIES: Lider/Jumbo/Tottus/Unimarc→Supermercado; Uber/Cabify/Metro→Transporte;
+   restaurants/cafes→Alimentación; bars/pubs/beer halls→Bares y Salidas.
 """
 
 
@@ -733,7 +737,7 @@ _QTY_NUM_DESC_RE = re.compile(r"^([1-9][0-9]?)\s+([A-Za-záéíóúñÁÉÍÓÚ�
 # Pure barcode line (12-14 digits, nothing else)
 _BARCODE_ONLY_RE = re.compile(r"^\d{12,14}$")
 
-# Pipe-table rows: "| 1 | Piscolón Mistral de 35° | 9.000 |"
+# Pipe-table rows: "| 1 | Producto X | 9.000 |"
 _PIPE_TABLE_ROW_RE = re.compile(r"\|\s*(\d{1,2})\s*\|(.+?)\|\s*([0-9.,]{3,12})\s*\|?")
 _PIPE_TABLE_HEADER_RE = re.compile(
     r"\b(?:cant|cantidad|producto|descripci[oó]n|precio|total)\b", re.IGNORECASE
@@ -945,7 +949,7 @@ def _parse_pipe_table(text: str) -> list[ParsedItem]:
     Parse pipe-table format: | Cant | Producto | Total |
 
     The Cant column is the ONLY source of quantity. Numbers inside product
-    names (e.g. '35°' in 'Piscolón Mistral de 35°') are NOT quantities.
+    names (e.g. '35°' in 'Cerveza 35°') are NOT quantities.
     """
     items: list[ParsedItem] = []
     for line in text.splitlines():
@@ -1185,98 +1189,6 @@ def _fix_line_total_items(items: list[ParsedItem], ref_total: float) -> list[Par
     return items  # couldn't determine a clean fix
 
 
-def _scale_to_total(items: list[ParsedItem], ref_total: float) -> tuple[list[ParsedItem], float]:
-    """
-    Proportionally scale item prices DOWN when sum(price×qty) > ref_total.
-    Only used to correct over-counting — never inflates prices when under-counted
-    (under-count gap is handled by the frontend "Otros cargos" fallback).
-    """
-    cur = sum(it.price * it.quantity for it in items)
-    if cur <= 0 or cur <= ref_total:  # never scale up — only fix over-count
-        return items, ref_total
-    scale = ref_total / cur
-    result: list[ParsedItem] = []
-    running = 0.0
-    for it in items[:-1]:
-        p = round(it.price * scale)
-        result.append(ParsedItem(name=it.name, price=p, quantity=it.quantity))
-        running += p * it.quantity
-    last = items[-1]
-    remainder = round(ref_total - running)
-    last_p = round(remainder / last.quantity) if last.quantity > 1 else remainder
-    result.append(ParsedItem(name=last.name, price=last_p, quantity=last.quantity))
-    print(f"[ocr] scale_to_total: {cur} → {ref_total} (scale={scale:.3f})")
-    return result, ref_total
-
-
-def _retry_items_with_correction(
-    items: list[ParsedItem],
-    ref_total: float,
-    ocr_text: str,
-    *,
-    user_id=None,
-    db=None,
-) -> list[ParsedItem]:
-    """
-    OutputFixingParser pattern (LangChain-style): one text-only LLM retry with
-    exact error context. Fires when items sum is >5% off after algebraic fixes.
-    No image — cheap, ~200 tokens input.
-    """
-    items_sum = int(sum(it.price * it.quantity for it in items))
-    wrong_list = "\n".join(
-        f"  {it.quantity}x {it.name} @ {it.price} = {it.price * it.quantity}"
-        for it in items
-    )
-    prompt = (
-        "Fix receipt item extraction. Return ONLY a JSON array — no markdown.\n\n"
-        f"OCR text:\n{ocr_text[:1500]}\n\n"
-        f"Wrong items (sum={items_sum}, target={int(ref_total)}):\n{wrong_list}\n\n"
-        "Rules:\n"
-        f"- sum(price × quantity) MUST equal {int(ref_total)}\n"
-        "- Quantity comes from the Cant column ONLY (e.g. '35°' in a name = degrees, NOT qty)\n"
-        "- CLP prices never have decimals: '9.000' = 9000\n"
-        "- If qty>1, price is the UNIT price (line_total ÷ qty)\n\n"
-        'Return: [{"name": str, "price": int, "quantity": int}, ...]'
-    )
-    resp = ai_provider.chat_completion(
-        [{"role": "user", "content": prompt}],
-        temperature=0.0,
-        max_tokens=512,
-        purpose="parse_retry",
-        user_id=user_id,
-        db=db,
-    )
-    if not resp:
-        return items
-    try:
-        raw = resp.text.strip()
-        # Strip markdown fences if LLM adds them
-        if raw.startswith("```"):
-            raw = re.sub(r"^```[^\n]*\n?", "", raw)
-            raw = re.sub(r"\n?```$", "", raw.rstrip())
-        fixed = json.loads(raw)
-        if not isinstance(fixed, list):
-            return items
-        corrected = [
-            ParsedItem(
-                name=str(it["name"]),
-                price=int(it["price"]),
-                quantity=int(it.get("quantity", 1)),
-            )
-            for it in fixed if it.get("name") and it.get("price")
-        ]
-        if not corrected:
-            return items
-        corrected_sum = sum(it.price * it.quantity for it in corrected)
-        orig_err = abs(items_sum / ref_total - 1.0)
-        new_err = abs(corrected_sum / ref_total - 1.0)
-        if new_err < orig_err * 0.8:
-            print(f"[ocr] retry_correction: sum {items_sum} → {int(corrected_sum)} (target={int(ref_total)})")
-            return corrected
-        return items
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        return items
-
 
 def _items_look_plausible(items: list, items_sum: float) -> bool:
     """True when items appear to have real CLP restaurant prices (not scaled garbage).
@@ -1315,38 +1227,6 @@ def _find_plausible_total(ocr_text: str, items_sum: float) -> Optional[int]:
         return None
     return min(candidates, key=lambda n: abs(n - items_sum))
 
-
-def _recover_missing_copies(items: list, gap: int) -> Optional[list]:
-    """When items_sum + gap = real_total and gap is an exact multiple of an existing
-    item's unit price, recover the missing copies instead of showing 'Otros cargos'.
-
-    Example: 6× Piscolón extracted, real total needs 10× — gap = 4 × 9000 → add 4.
-    Only applies when 1–10 copies are missing. Returns updated list or None.
-    """
-    if gap <= 0 or gap > 500_000:
-        return None
-    # Prefer items already appearing more than once (more likely to be repeated)
-    candidates = sorted(items, key=lambda it: (-(it.quantity > 1), -it.price))
-    for it in candidates:
-        unit = round(it.price)
-        if unit >= 100 and gap % unit == 0:
-            missing = gap // unit
-            if 1 <= missing <= 10:
-                result = []
-                patched = False
-                for item in items:
-                    if not patched and item.name == it.name and round(item.price) == unit:
-                        result.append(ParsedItem(
-                            name=item.name, price=item.price,
-                            quantity=item.quantity + missing,
-                        ))
-                        patched = True
-                        print(f"[ocr] gap recovery: +{missing}× '{item.name}' (gap={gap}, unit={unit})")
-                    else:
-                        result.append(item)
-                if patched:
-                    return result
-    return None
 
 
 def vision_parse(
@@ -1394,10 +1274,9 @@ def vision_parse(
         resp = ai_provider.vision_json(
             system_prompt=_RECEIPT_PROMPT,
             user_text=(
-                "Step 1: List every product row you see on this receipt, one per line, "
-                "reading top to bottom. Include rows that appear after any mid-receipt subtotal. "
-                "Format: '- [product name]: [price]'\n"
-                "Step 2: Output the JSON as described in the system prompt."
+                "Transcribe every product row from this receipt exactly as printed, "
+                "top to bottom, in order. Each row = one item. Do not merge identical rows. "
+                "Then return the JSON."
             ),
             image_data_url=data_url,
             temperature=0.0,
@@ -1433,53 +1312,38 @@ def vision_parse(
                 else:
                     raw_amount = float(round(llm_neto + llm_iva))
             elif items and raw_amount > 0:
-                # No-IVA reconcile: trust LLM prices, only patch small gaps
                 items_sum = sum(it.price * it.quantity for it in items)
                 if items_sum == 0:
-                    print(f"[ocr] warning: all item prices=0 but amount={raw_amount} — LLM may have zeroed prices")
+                    print(f"[ocr] warning: all item prices=0 but amount={raw_amount}")
                 if items_sum > 0:
                     ratio = items_sum / raw_amount
-                    if abs(ratio - 1.0) <= 0.02:
-                        pass  # near-exact — accept as-is
-                    elif abs(ratio - 1.0) <= 0.25:
-                        delta = round(raw_amount - items_sum)
-                        if abs(delta) >= 100:
-                            recovered = _recover_missing_copies(items, delta)
-                            if recovered is not None:
-                                items = recovered
-                            else:
-                                items.append(ParsedItem(
-                                    name="Otros cargos" if delta > 0 else "Descuento",
-                                    price=abs(delta), quantity=1,
-                                ))
-                    elif ratio < 1.0 and _items_look_plausible(items, items_sum):
-                        # LLM total is too large — it likely picked the wrong subtotal
-                        # (e.g. multi-customer Toteat comanda). Items look real.
-                        # Search OCR text for a labeled total just above items_sum.
+                    if ratio < 1.0 and _items_look_plausible(items, items_sum):
+                        # LLM picked a wrong subtotal (e.g. multi-customer comanda showing
+                        # table running total). Find the real labeled total in OCR text.
                         better = _find_plausible_total(raw_ocr_text, items_sum)
                         if better:
-                            old_amount = int(raw_amount)
+                            print(f"[ocr] reconcile: fixed total {better} (was {int(raw_amount)}, ratio={ratio:.2f})")
                             raw_amount = float(better)
-                            delta = round(better - items_sum)
-                            if abs(delta) >= 100:
-                                recovered = _recover_missing_copies(items, delta)
-                                if recovered is not None:
-                                    items = recovered
-                                else:
-                                    items.append(ParsedItem(
-                                        name="Otros cargos" if delta > 0 else "Descuento",
-                                        price=abs(delta), quantity=1,
-                                    ))
-                            print(f"[ocr] reconcile: fixed total {better} (was {old_amount}, ratio={ratio:.2f})")
-                        else:
+                        elif ratio < 0.5:
+                            # LLM total is wildly off and OCR can't find better → use items_sum
+                            print(f"[ocr] reconcile: using items_sum={items_sum} (ratio={ratio:.2f})")
                             raw_amount = float(items_sum)
-                            print(f"[ocr] reconcile: using items_sum={items_sum} (LLM total off, ratio={ratio:.2f})")
-                    else:
-                        # ratio > 1 → items sum exceeds total (LLM likely priced
-                        # multi-quantity lines as total instead of unit price).
-                        # Trust the LLM total; drop items to avoid confusion.
-                        print(f"[ocr] reconcile fail ratio={ratio:.2f} — dropping items")
+                        # else: small gap (ratio 0.5–1.0), keep LLM total as-is
+                    elif ratio < 0.5:
+                        # Big gap AND items not plausible (garbage prices/too few) → drop items
+                        print(f"[ocr] reconcile: implausible items dropped (ratio={ratio:.2f}, sum={items_sum})")
                         items = []
+                    elif ratio > 1.25:
+                        # Items sum exceeds total — LLM likely stored line_total as unit price.
+                        # Try algebraic fix before giving up.
+                        fixed = _fix_line_total_items(items, raw_amount)
+                        fixed_sum = sum(it.price * it.quantity for it in fixed)
+                        if fixed_sum > 0 and abs(fixed_sum / raw_amount - 1.0) < 0.15:
+                            print(f"[ocr] reconcile: fixed line-total prices (ratio={ratio:.2f})")
+                            items = fixed
+                        else:
+                            print(f"[ocr] reconcile: items_sum > total (ratio={ratio:.2f}), dropping items")
+                            items = []
 
             ca = t.get("cuota_actual")
             ct = t.get("cuotas_total")

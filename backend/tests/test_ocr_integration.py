@@ -120,42 +120,39 @@ def test_reconcile_near_exact_no_servicio(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# c) reconcile: small gap (≤25%) → Servicio/Otros line added
+# c) reconcile: small gap (≤25%) → items kept as-is, LLM amount trusted
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_reconcile_small_gap_adds_servicio(monkeypatch):
-    """items_sum / amount = 0.83 (gap ~17%) → Servicio / Otros line added."""
+    """items_sum / amount = 0.83 (gap ~17%) — items are kept as extracted, no synthetic rows added."""
     items = [make_item("Piscola", 5000), make_item("Cerveza", 4000)]
-    # items_sum = 9000, amount = 10900 → ratio = 0.826 → gap = 0.174 ≤ 0.25
-    # delta = 10900 - 9000 = 1900 ≥ 100 → add Servicio
+    # items_sum = 9000, amount = 10900 → ratio = 0.826
+    # New behavior: small gap → keep items as-is, trust LLM amount
     llm = _make_llm_resp(amount=10900, items=items)
     _patch_vision(monkeypatch, llm)
 
     result = vision_parse(b"\xff\xd8\xff")
     assert result is not None
     tx = result.transactions[0]
-    names = [it.name for it in tx.items]
-    assert any("servicio" in n.lower() or "otros" in n.lower() for n in names), \
-        f"Expected 'Servicio / Otros' line, got items: {names}"
-    # Total items sum should now match amount
-    total = sum(it.price * it.quantity for it in tx.items)
-    assert total == 10900, f"After adding Servicio, sum should equal amount. Got {total}"
+    assert tx.amount == 10900
+    assert len(tx.items) == 2  # no synthetic item added
+    assert tx.items[0].name == "Piscola"
+    assert tx.items[1].name == "Cerveza"
 
 
 def test_reconcile_small_gap_discount_when_items_over(monkeypatch):
-    """items_sum > amount by ≤25% → Descuento line (negative delta)."""
+    """items_sum > amount by ≤25% — items are kept as-is, LLM amount trusted."""
     items = [make_item("Hamburguesa", 8000), make_item("Papas", 3500)]
-    # items_sum = 11500, amount = 10000 → ratio = 1.15 → gap = 0.15 ≤ 0.25
-    # delta = 10000 - 11500 = -1500 → add Descuento
+    # items_sum = 11500, amount = 10000 → ratio = 1.15
+    # New behavior: keep items, trust LLM amount (only drop items if ratio > 1.25)
     llm = _make_llm_resp(amount=10000, items=items)
     _patch_vision(monkeypatch, llm)
 
     result = vision_parse(b"\xff\xd8\xff")
     assert result is not None
     tx = result.transactions[0]
-    names = [it.name for it in tx.items]
-    assert any("descuento" in n.lower() for n in names), \
-        f"Expected 'Descuento' line for items > amount, got: {names}"
+    assert tx.amount == 10000
+    assert len(tx.items) == 2  # items kept
 
 
 def test_reconcile_gap_delta_below_100_not_added(monkeypatch):
@@ -196,13 +193,10 @@ def test_reconcile_big_gap_finds_total_from_ocr(monkeypatch):
     assert result is not None
     tx = result.transactions[0]
     assert tx.amount == 127900, f"Expected fixed total=127900, got {tx.amount}"
-    # gap=36000 = 4×9000 (Piscolón price) → gap recovery adds 4 more Piscolón
+    # Items kept exactly as LLM extracted — no quantity inflation
     piscolon = next((it for it in tx.items if "Piscol" in it.name), None)
     assert piscolon is not None, "Piscolón item should be present"
-    assert piscolon.quantity == 10, f"Gap recovery should restore to 10×, got {piscolon.quantity}"
-    # No 'Otros cargos' because gap was fully recovered
-    names = [it.name for it in tx.items]
-    assert not any("otros" in n.lower() for n in names), f"No Otros cargos expected, got: {names}"
+    assert piscolon.quantity == 6, f"Items kept as extracted (no gap recovery), got {piscolon.quantity}"
 
 
 def test_reconcile_big_gap_no_ocr_total_uses_items_sum(monkeypatch):
