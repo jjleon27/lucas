@@ -616,12 +616,15 @@ RULES:
 1. NUMBER FORMAT: CLP never uses decimals. "$17.517" = 17517. "$1.489.991" = 1489991.
 
 2. RESTAURANT / BAR POS RECEIPT (Toteat, Restō, Revo):
-   RULE: if "Total General Mesa" is printed → use it as `amount`. List EVERY item shown at
-   its PRINTED unit price. "Consumo Cliente" is a per-person sub-total — IGNORE IT for amount.
-   If "Total General Mesa" is NOT present → use "Consumo Cliente" or the only total shown.
+   TOTALS PRIORITY (highest → lowest):
+     1st: the line explicitly labeled "Total General Mesa" or "Total Mesa" → use that number as `amount`.
+     2nd: the line labeled "Consumo Cliente" / "Subtotal Comensal" → use only when "Total General Mesa" is absent.
+     IGNORE any unlabeled subtotals or running totals that appear above these lines.
+   SANITY CHECK: your `amount` must be close to the sum of all listed items (within ~60%).
+     If amount > sum(items) × 2, you chose the WRONG total — find the labeled one instead.
+   List ALL items shown at their PRINTED unit price. Never scale or adjust prices.
    Modifier items starting with "+" (e.g. +Coca Zero) always have price=0.
    TABLE ROWS: leading number = quantity. Read EVERY row top-to-bottom.
-   CRITICAL: Do NOT scale or adjust item prices. Use the printed price exactly.
 
 3. BOLETA LINE ITEMS:
    a) "NxUNIT" (e.g. "2x4.990 POLLO $9.980") → price=4990, quantity=2
@@ -1296,325 +1299,155 @@ def _retry_items_with_correction(
         return items
 
 
+def _items_look_plausible(items: list, items_sum: float) -> bool:
+    """True when items appear to have real CLP restaurant prices (not scaled garbage).
+
+    Requires ≥ 2 items: a single item with a large total gap more likely has a wrong
+    unit price than a wrong total, so we let the drop-items path handle that.
+    """
+    if len(items) < 2 or items_sum < 500:
+        return False
+    real = [it for it in items if it.price > 0]
+    if not real:
+        return False
+    if any(it.price > 500_000 for it in real):
+        return False
+    return (items_sum / len(real)) >= 200
+
+
+def _find_plausible_total(ocr_text: str, items_sum: float) -> Optional[int]:
+    """Scan OCR text for a number that could be the real receipt total (items_sum + service).
+
+    Looks for values in [items_sum*1.01, items_sum*2.0] — covers service charges and
+    cover charges at upscale venues. Returns the candidate closest to items_sum.
+    """
+    if not ocr_text or items_sum < 500:
+        return None
+    candidates: list[int] = []
+    for m in re.finditer(r'\b(\d{1,3}(?:[.,]\d{3})+)\b', ocr_text):
+        raw = m.group(1).replace('.', '').replace(',', '')
+        try:
+            n = int(raw)
+        except ValueError:
+            continue
+        if items_sum * 1.01 <= n <= items_sum * 2.0:
+            candidates.append(n)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda n: abs(n - items_sum))
+
+
 def vision_parse(
     image_bytes: bytes, *, db=None, user_id=None,
 ) -> Optional[ParseResult]:
-    """Send the image straight to a vision LLM and parse the JSON reply.
+    """Send the image straight to GPT-4o. No Tesseract grounding.
 
-    Architecture — three layers of protection against wrong totals:
-
-    Layer 1 (pre-LLM): Run Tesseract on the bottom of the image and regex-extract
-        TOTAL NETO / IVA / TOTAL. These are deterministic — no ML involved.
-        Inject them into the LLM prompt as explicit constraints.
-
-    Layer 2 (LLM response): The LLM also reads total_neto and iva_amount from
-        the JSON schema. We prefer Tesseract values when both are available.
-
-    Layer 3 (post-LLM): Always override raw_amount with total_neto + iva_amount
-        when those ground-truth values exist — even if the LLM returned a
-        completely wrong amount (e.g. misread a barcode or QR code as a price).
+    Fast path only: clean IVA boleta where Tesseract conf ≥ 0.97 (free + instant).
+    Everything else goes directly to GPT-4o — the model reads the image as-is,
+    just like ChatGPT does, with no pre-processing interference.
     """
     if not ai_provider.is_available():
         return None
     try:
-        compact = _shrink_for_vision(image_bytes)
-        mime = _detect_mime(compact)
-        b64 = base64.b64encode(compact).decode("ascii")
-        data_url = f"data:{mime};base64,{b64}"
-
-        # ═══════════════════════════════════════════════════════════════════
-        # LAYER 1 — Single Tesseract pass (reused for items + totals)
-        # ═══════════════════════════════════════════════════════════════════
+        # ── FAST PATH: clean IVA boleta (Tesseract free, works on crisp printouts) ──
         raw_ocr_text = run_ocr(image_bytes)
         tess_items, tess_neto, tess_iva, tess_conf = _parse_boleta_from_text(raw_ocr_text)
 
-        print(f"[ocr] Tesseract boleta parse: {len(tess_items)} items, "
-              f"neto={tess_neto}, iva={tess_iva}, confidence={tess_conf:.2f}")
-
-        # Reuse the same OCR text for totals extraction — no second Tesseract pass.
-        ocr_totals = _extract_boleta_totals(image_bytes, text=raw_ocr_text)
-
-        # Prefer _extract_boleta_totals values for totals (it uses better preprocessing)
-        gt_neto = ocr_totals.get("total_neto") or tess_neto
-        gt_iva  = ocr_totals.get("iva_amount") or tess_iva
-
-        is_pos_per_seat = ocr_totals.get("is_pos_per_seat", False)
-        pos_consumo = ocr_totals.get("total") if is_pos_per_seat else None
-        total_general_mesa = float(ocr_totals.get("total_general_mesa") or 0)
-
-        # When this is a full-table comanda (Total General Mesa >> Consumo Cliente),
-        # treat it as a regular receipt — show ALL items at real prices so users can
-        # assign individual drinks. Scaling items to pos_consumo produces wrong prices.
-        is_full_table_comanda = False
-        if is_pos_per_seat and pos_consumo and total_general_mesa > pos_consumo * 1.5:
-            is_pos_per_seat = False
-            is_full_table_comanda = True
-            ocr_simple_total = total_general_mesa
-        else:
-            ocr_simple_total = float(ocr_totals.get("total") or 0)
-
-        def _fp_metadata() -> tuple:
-            """Extract date + merchant from raw OCR text (fast path helper)."""
+        if tess_conf >= 0.97 and tess_items and tess_neto and tess_iva:
+            print(f"[ocr] Fast path: IVA boleta (conf={tess_conf:.2f}), skipping LLM")
+            items_fp = list(tess_items)
+            items_fp.append(ParsedItem(name="IVA (19%)", price=round(tess_iva), quantity=1))
             d_m = _DATE_RE.search(raw_ocr_text)
             sd_m = _SPANISH_DATE_RE.search(raw_ocr_text)
-            fp_date = _parse_spanish_date(sd_m) if sd_m else (_parse_date(d_m.group(1)) if d_m else date.today())
-            fp_merchant = ""
-            for _ln in raw_ocr_text.splitlines():
-                _ln = _ln.strip()
-                if _ln and not _is_junk_merchant(_ln) and not _MONEY_TOKEN.fullmatch(_ln) and len(_ln) > 2:
-                    fp_merchant = _ln[:80]
-                    break
-            return fp_date, fp_merchant
-
-        # ═══════════════════════════════════════════════════════════════════
-        # FAST PATH D — POS per-seat comanda (Toteat / Restō / etc.)
-        # Each comanda slip only shows items for THIS customer.
-        # Tesseract items sum ≈ Consumo Cliente → skip LLM entirely.
-        # ═══════════════════════════════════════════════════════════════════
-        if is_pos_per_seat and tess_items and pos_consumo and pos_consumo > 0:
-            tess_sum_pos = sum(it.price * it.quantity for it in tess_items)
-            if tess_sum_pos > 0:
-                ratio_pos = tess_sum_pos / pos_consumo
-                if 0.80 <= ratio_pos <= 1.50:
-                    print(f"[ocr] Fast path D (POS comanda, tess_sum={tess_sum_pos}, consumo={pos_consumo}, ratio={ratio_pos:.2f}): skipping LLM")
-                    items_pos, _ = _scale_to_total(list(tess_items), pos_consumo)
-                    fp_date, fp_merchant = _fp_metadata()
-                    return ParseResult(transactions=[ParsedReceipt(
-                        amount=pos_consumo, is_income=False, date=fp_date,
-                        merchant=fp_merchant, description="", category="Bares y Salidas",
-                        currency="CLP", items=items_pos,
-                    )])
-
-        # ═══════════════════════════════════════════════════════════════════
-        # FAST PATH A — IVA boleta: Tesseract exact + ground-truth neto+IVA
-        # ═══════════════════════════════════════════════════════════════════
-        if (not is_pos_per_seat and tess_conf >= 0.97 and tess_items and gt_neto and gt_iva):
-            print(f"[ocr] Fast path A (IVA boleta, conf={tess_conf:.2f}): skipping LLM")
-            items_fp: list[ParsedItem] = list(tess_items)
-            items_fp.append(ParsedItem(name="IVA (19%)", price=round(gt_iva), quantity=1))
-            fp_date, fp_merchant = _fp_metadata()
+            fp_date = (_parse_spanish_date(sd_m) if sd_m
+                       else (_parse_date(d_m.group(1)) if d_m else date.today()))
+            fp_merchant = next(
+                (ln.strip() for ln in raw_ocr_text.splitlines()
+                 if ln.strip() and not _is_junk_merchant(ln.strip())
+                 and not _MONEY_TOKEN.fullmatch(ln.strip()) and len(ln.strip()) > 2),
+                "",
+            )
             return ParseResult(transactions=[ParsedReceipt(
-                amount=float(round(gt_neto + gt_iva)), is_income=False, date=fp_date,
+                amount=float(round(tess_neto + tess_iva)), is_income=False, date=fp_date,
                 merchant=fp_merchant, description="", category="Supermercado",
                 currency="CLP", items=items_fp,
             )])
 
-        # ═══════════════════════════════════════════════════════════════════
-        # FAST PATH A2 — IVA boleta borderline (conf 0.90-0.97): scale to total
-        # Small OCR discrepancy fixed proportionally; avoids expensive LLM call
-        # ═══════════════════════════════════════════════════════════════════
-        if (not is_pos_per_seat and tess_conf >= 0.90 and tess_items and gt_neto and gt_iva):
-            print(f"[ocr] Fast path A2 (IVA borderline, conf={tess_conf:.2f}): scaling to neto")
-            items_fp2, _ = _scale_to_total(list(tess_items), gt_neto)
-            items_fp2.append(ParsedItem(name="IVA (19%)", price=round(gt_iva), quantity=1))
-            fp_date, fp_merchant = _fp_metadata()
-            return ParseResult(transactions=[ParsedReceipt(
-                amount=float(round(gt_neto + gt_iva)), is_income=False, date=fp_date,
-                merchant=fp_merchant, description="", category="Supermercado",
-                currency="CLP", items=items_fp2,
-            )])
-
-        # ═══════════════════════════════════════════════════════════════════
-        # FAST PATH B — No-IVA receipt: Tesseract items sum ≈ OCR total
-        # (restaurant, bar, etc. — no tax anchor, but total is reliable)
-        # ═══════════════════════════════════════════════════════════════════
-        if (not is_pos_per_seat and not (gt_neto and gt_iva)
-                and ocr_simple_total > 0 and tess_items):
-            tess_sum = sum(it.price * it.quantity for it in tess_items)
-            if tess_sum > 0 and abs(tess_sum / ocr_simple_total - 1.0) < 0.03:
-                print(f"[ocr] Fast path B (no-IVA, ratio={tess_sum/ocr_simple_total:.3f}): skipping LLM")
-                fp_date, fp_merchant = _fp_metadata()
-                return ParseResult(transactions=[ParsedReceipt(
-                    amount=ocr_simple_total, is_income=False, date=fp_date,
-                    merchant=fp_merchant, description="", category="Alimentación",
-                    currency="CLP", items=list(tess_items),
-                )])
-
-        # ═══════════════════════════════════════════════════════════════════
-        # FAST PATH C — Pipe-table format: | Cant | Producto | Total |
-        # Handles restaurant POS receipts like Toteat where OCR produces
-        # pipe-separated tables (e.g. | 1 | Piscolón Mistral de 35° | 9.000 |).
-        # Reads quantity ONLY from the Cant column — ignores numbers in names.
-        # Works even when no "TOTAL" line was found — uses pipe_sum as anchor.
-        # ═══════════════════════════════════════════════════════════════════
-        if not is_pos_per_seat and not (gt_neto and gt_iva):
-            pipe_items = _parse_pipe_table(raw_ocr_text)
-            if pipe_items:
-                pipe_sum = sum(it.price * it.quantity for it in pipe_items)
-                ref = ocr_simple_total if ocr_simple_total > 0 else pipe_sum
-                if pipe_sum > 1000 and abs(pipe_sum / ref - 1.0) < 0.05:
-                    print(f"[ocr] Fast path C (pipe-table, pipe_sum={pipe_sum}, ref={ref}): skipping LLM")
-                    fp_date, fp_merchant = _fp_metadata()
-                    return ParseResult(transactions=[ParsedReceipt(
-                        amount=float(ref), is_income=False, date=fp_date,
-                        merchant=fp_merchant, description="", category="Bares y Salidas",
-                        currency="CLP", items=pipe_items,
-                    )])
-
-        # Only trust Tesseract grounding when OCR quality is high enough.
-        # Below this floor, injecting Tesseract numbers poisons the LLM prompt
-        # (e.g. "amount=15790" from garbled "Total General Mesa 127.900").
-        _TESS_CONF_FLOOR = 0.60
-        trustable_tess = tess_conf >= _TESS_CONF_FLOOR
-
-        # Build grounding text for the LLM prompt
-        grounding_text = ""
-        if is_full_table_comanda:
-            grounding_text = (
-                f"\n\nGROUNDING (full-table comanda — ALL items at PRINTED prices):\n"
-                f"  amount = {int(total_general_mesa)} (Total General Mesa — toda la mesa)\n"
-                f"  DO NOT use 'Consumo Cliente' as amount — that is a per-person subtotal.\n"
-                f"  List every item at its PRINTED unit price. Do NOT scale or divide prices.\n"
-                f"  sum(price × quantity for ALL items) MUST equal {int(total_general_mesa)}."
-            )
-            if trustable_tess and tess_items:
-                grounding_text += "\n\nItems Tesseract read (use as reference):\n" + "\n".join(
-                    f"  {it.quantity}x {it.name} @ {it.price}" for it in tess_items[:25]
-                )
-        elif is_pos_per_seat and pos_consumo:
-            tess_hint = ""
-            if trustable_tess and tess_items:
-                tess_hint = "\n\nItems Tesseract read from this comanda (use these, DO NOT invent new ones):\n" + "\n".join(
-                    f"  {it.quantity}x {it.name} @ {it.price}"
-                    for it in tess_items[:25]
-                )
-            grounding_text = (
-                f"\n\nGROUNDING (POS comanda — Toteat/Restō format):\n"
-                f"  amount = {int(pos_consumo)} (Consumo Cliente — this customer's total)\n"
-                f"  List EVERY individual item line as a SEPARATE entry — do NOT group or average.\n"
-                f"  DO NOT use 'Total General Mesa' as amount.\n"
-                f"  Items starting with '+' (e.g. +Coca Zero) have price=0."
-                + tess_hint
-            )
-        elif ocr_simple_total > 0 and not (gt_neto and gt_iva):
-            # No-IVA restaurant receipt — ground with the Tesseract-verified total
-            grounding_text = (
-                f"\n\nGROUNDING (verified from receipt — use EXACTLY):\n"
-                f"  amount = {int(ocr_simple_total)}\n"
-                f"  sum(price × quantity for ALL items) MUST equal {int(ocr_simple_total)}.\n"
-                f"  Dots ('....') between item name and price are spacing only — ignore them."
-            )
-        elif gt_neto and gt_iva:
-            tn = int(gt_neto)
-            iva = int(gt_iva)
-            tot = int(gt_neto + gt_iva)
-            grounding_text = (
-                f"\n\nGROUNDING (verified from receipt text — use EXACTLY):\n"
-                f"  total_neto={tn}, iva_amount={iva}, amount={tot}"
-            )
-            if tess_conf >= 0.97 and tess_items:
-                # Tesseract items are exact — tell the LLM not to re-parse items
-                item_lines = "\n".join(
-                    f"  {it.quantity}x {it.name} = {int(it.price * it.quantity)}"
-                    for it in tess_items
-                )
-                grounding_text += (
-                    f"\n\nITEMS (already parsed from receipt text, DO NOT re-read):\n"
-                    f"{item_lines}\n"
-                    f"Use these items exactly in your JSON `items` array."
-                )
-
-        # Detect Toteat/POS comanda even when Tesseract is too garbled to extract totals.
-        # Markers like "toteat", "consumo cliente", "general mesa" appear even in garbled OCR.
-        # Tolerate common Tesseract garbling: "totoat"≈"toteat", "Hesa"≈"Mesa",
-        # "sumo Cliente" = "Consumo Cliente" with prefix cut off.
-        _TOTEAT_RE = re.compile(
-            r"tot[oe]at"                   # toteat / totoat
-            r"|tot\.eat"                   # tot.eat
-            r"|sumo\s+cliente"             # consumo cliente (garbled prefix)
-            r"|general\s+[hm]esa"          # general mesa / general hesa (OCR H↔M)
-            r"|consumo\s*cliente"          # exact
-            r"|total\s+general\s+mesa",    # exact
-            re.I,
-        )
-        is_toteat_in_ocr = bool(_TOTEAT_RE.search(raw_ocr_text))
-
-        # When Toteat is detected but Tesseract couldn't extract totals (dark/garbled photo),
-        # inject an explicit directive so gpt-4o uses the full-table total.
-        if is_toteat_in_ocr and not grounding_text:
-            grounding_text = (
-                "\n\nIMPORTANT — Toteat full-table comanda (mesa completa):\n"
-                "  List EVERY SINGLE item row you can read, top to bottom, for ALL customers.\n"
-                "  Do NOT filter by 'Comensal' number. Include ALL drinks and dishes.\n"
-                "  Use 'Total General Mesa' as `amount`.\n"
-                "  'Consumo Cliente' is a per-person subtotal — do NOT use it as amount.\n"
-                "  Each item at its PRINTED unit price. No scaling."
-            )
-
-        # Use shorter receipt prompt when grounding confirms it's a boleta/POS receipt
-        is_receipt = bool((gt_neto and gt_iva) or (is_pos_per_seat and pos_consumo)
-                          or is_full_table_comanda or is_toteat_in_ocr)
-        active_prompt = _RECEIPT_PROMPT if is_receipt else _SYSTEM_PROMPT
-
-        user_text = (
-            "Parse this receipt. Return strict JSON."
-            + grounding_text
-        ) if is_receipt else (
-            "Parse this receipt/screenshot. Return strict JSON.\n"
-            "If this is a supermarket receipt (boleta): read EVERY product line "
-            "and set amount = the final total charged.\n"
-            "If this is a restaurant POS receipt (Toteat/comanda): set amount = "
-            "the total that matches the items listed. "
-            "If ALL table items are shown use 'Total General Mesa'; "
-            "if only this customer's items are shown use 'Consumo Cliente'. "
-            "Modifier items starting with '+' (e.g. +Coca Zero) have price=0."
-            + grounding_text
-        )
-
+        # ── GPT-4o VISION: send image directly, no Tesseract grounding ───────────
+        # This is exactly what ChatGPT does. The model reads the image itself.
+        compact = _shrink_for_vision(image_bytes)
+        mime = _detect_mime(compact)
+        b64 = base64.b64encode(compact).decode("ascii")
+        data_url = f"data:{mime};base64,{b64}"
         resp = ai_provider.vision_json(
-            system_prompt=active_prompt,
-            user_text=user_text,
+            system_prompt=_RECEIPT_PROMPT,
+            user_text="Parse this receipt. Return strict JSON.",
             image_data_url=data_url,
             temperature=0.0,
             purpose="parse",
             user_id=user_id,
             db=db,
         )
-        if resp is None:
+        if resp is None or not resp.text:
             return None
+
         data = json.loads(resp.text)
         txs = data.get("transactions", [])
         currency = data.get("currency") or "CLP"
         bank_hint = data.get("bank_hint") or ""
         account_type_hint = data.get("account_type_hint") or ""
 
-        # ═══════════════════════════════════════════════════════════════════
-        # LAYER 2 — Determine ground-truth totals
-        # ═══════════════════════════════════════════════════════════════════
-        try:
-            llm_total_neto = float(data.get("total_neto") or 0)
-        except (TypeError, ValueError):
-            llm_total_neto = 0.0
-        try:
-            llm_iva_amount = float(data.get("iva_amount") or 0)
-        except (TypeError, ValueError):
-            llm_iva_amount = 0.0
-
-        # LLM boleta values must pass 19% ratio check (otherwise it read a
-        # barcode / SII code / QR number as total_neto, producing wrong totals)
-        llm_values_valid = (
-            llm_total_neto > 0
-            and llm_iva_amount > 0
-            and abs(llm_iva_amount / llm_total_neto - 0.19) < 0.05
-        )
-
-        # Priority: _extract_boleta_totals (best preprocessing) > Tesseract text
-        # parse > validated LLM values > nothing
-        ocr_neto = ocr_totals.get("total_neto", 0.0) or gt_neto
-        ocr_iva  = ocr_totals.get("iva_amount", 0.0) or gt_iva
-
-        if ocr_neto > 0 and ocr_iva > 0:
-            total_neto_val = ocr_neto
-            iva_amount_val = ocr_iva
-        elif llm_values_valid:
-            total_neto_val = llm_total_neto
-            iva_amount_val = llm_iva_amount
-        else:
-            total_neto_val = 0.0
-            iva_amount_val = 0.0
-
         out: list[ParsedReceipt] = []
         for t in txs:
+            raw_amount = abs(float(t.get("amount") or 0))
+            items = [ParsedItem(**it) for it in t.get("items", []) if it.get("name")]
+
+            llm_neto = float(t.get("total_neto") or 0)
+            llm_iva = float(t.get("iva_amount") or 0)
+            if llm_neto > 0 and llm_iva > 0:
+                # IVA boleta: normalize items to neto+iva totals
+                if items:
+                    items, raw_amount = _normalize_boleta_items(items, llm_neto, llm_iva)
+                else:
+                    raw_amount = float(round(llm_neto + llm_iva))
+            elif items and raw_amount > 0:
+                # No-IVA reconcile: trust LLM prices, only patch small gaps
+                items_sum = sum(it.price * it.quantity for it in items)
+                if items_sum == 0:
+                    print(f"[ocr] warning: all item prices=0 but amount={raw_amount} — LLM may have zeroed prices")
+                if items_sum > 0:
+                    ratio = items_sum / raw_amount
+                    if abs(ratio - 1.0) <= 0.02:
+                        pass  # near-exact — accept as-is
+                    elif abs(ratio - 1.0) <= 0.25:
+                        delta = round(raw_amount - items_sum)
+                        if abs(delta) >= 100:
+                            items.append(ParsedItem(
+                                name="Otros cargos" if delta > 0 else "Descuento",
+                                price=abs(delta), quantity=1,
+                            ))
+                    elif _items_look_plausible(items, items_sum):
+                        # LLM got the total wrong but items look real (e.g. picked the
+                        # wrong subtotal line on a multi-customer Toteat comanda).
+                        # Search OCR text for a number just above items_sum (service+items).
+                        better = _find_plausible_total(raw_ocr_text, items_sum)
+                        if better:
+                            old_amount = int(raw_amount)
+                            raw_amount = float(better)
+                            delta = round(better - items_sum)
+                            if abs(delta) >= 100:
+                                items.append(ParsedItem(
+                                    name="Otros cargos" if delta > 0 else "Descuento",
+                                    price=abs(delta), quantity=1,
+                                ))
+                            print(f"[ocr] reconcile: fixed total {better} (was {old_amount}, ratio={ratio:.2f})")
+                        else:
+                            raw_amount = float(items_sum)
+                            print(f"[ocr] reconcile: using items_sum={items_sum} (LLM total off, ratio={ratio:.2f})")
+                    else:
+                        print(f"[ocr] reconcile fail ratio={ratio:.2f} — dropping items")
+                        items = []
+
             ca = t.get("cuota_actual")
             ct = t.get("cuotas_total")
             try:
@@ -1622,114 +1455,6 @@ def vision_parse(
                 ct = int(ct) if ct is not None else None
             except (TypeError, ValueError):
                 ca, ct = None, None
-
-            raw_amount = abs(float(t.get("amount") or 0))
-
-            # For POS per-seat receipts: always override with Consumo Cliente
-            if is_pos_per_seat and pos_consumo:
-                raw_amount = float(pos_consumo)
-
-            # ═══════════════════════════════════════════════════════════════
-            # LAYER 3 — Choose the best item source
-            #
-            # Priority order (best → worst):
-            #   A) Tesseract items with confidence ≥ 0.97 → exact prices
-            #   B) Tesseract items with confidence ≥ 0.80 → good prices,
-            #      small normalization to close the gap
-            #   C) LLM items + proportional normalization (fallback)
-            #   D) No items (bank statements, non-boleta receipts)
-            # ═══════════════════════════════════════════════════════════════
-            if tess_conf >= 0.97 and tess_items and not is_pos_per_seat:
-                # ── A: Tesseract exact ────────────────────────────────────
-                # Prices are directly from text — no scaling needed.
-                # Append IVA row so the split screen shows the tax correctly.
-                # NOT used for POS per-seat receipts — LLM handles those better.
-                items = list(tess_items)
-                if total_neto_val > 0 and iva_amount_val > 0:
-                    items.append(ParsedItem(
-                        name="IVA (19%)",
-                        price=round(iva_amount_val),
-                        quantity=1,
-                    ))
-                    raw_amount = float(round(total_neto_val + iva_amount_val))
-                else:
-                    raw_amount = float(sum(it.price * it.quantity for it in items))
-
-            elif tess_conf >= 0.80 and tess_items and total_neto_val > 0 and iva_amount_val > 0 and not is_pos_per_seat:
-                # ── B: Tesseract good but small rounding gap — light normalize
-                items, raw_amount = _normalize_boleta_items(
-                    tess_items, total_neto_val, iva_amount_val
-                )
-
-            else:
-                # ── C / D: Fall back to LLM items ────────────────────────
-                items = [ParsedItem(**it) for it in t.get("items", []) if it.get("name")]
-
-                # Prefer Tesseract-verified total over LLM amount as reference.
-                ref_total = (
-                    (total_neto_val + iva_amount_val) if total_neto_val > 0
-                    else (ocr_simple_total or raw_amount)
-                )
-
-                if items and ref_total > 0:
-                    # Fix 1+2+3: algebraic single/pair/global line-total fix
-                    items = _fix_line_total_items(items, ref_total)
-
-                if total_neto_val > 0 and iva_amount_val > 0:
-                    # IVA boleta: strict proportional normalization (includes IVA row)
-                    if items:
-                        items, raw_amount = _normalize_boleta_items(items, total_neto_val, iva_amount_val)
-                    else:
-                        raw_amount = float(round(total_neto_val + iva_amount_val))
-                elif items and ref_total > 0:
-                    # No-IVA reconcile — NEVER scale items to fit a different total.
-                    # Scaled prices (e.g. Piscolón $9.000 → $4.843) are worse than no items.
-                    items_sum_chk = sum(it.price * it.quantity for it in items)
-                    ratio = items_sum_chk / ref_total if ref_total > 0 else 0
-
-                    # Toteat rescue: when the LLM chose a spurious amount (e.g. "414.270"
-                    # from the receipt header) but items look correct, find a better total
-                    # by picking the OCR number closest to items_sum within ±50%.
-                    if abs(ratio - 1.0) > 0.25 and is_toteat_in_ocr and len(items) >= 3:
-                        ocr_candidates = sorted(set(
-                            round(abs(_to_float(m)))
-                            for m in _MONEY_TOKEN.findall(raw_ocr_text)
-                            if 10000 <= abs(_to_float(m)) <= 5_000_000
-                        ))
-                        plausible = [n for n in ocr_candidates
-                                     if 0.70 * items_sum_chk <= n <= 1.50 * items_sum_chk]
-                        if plausible:
-                            better = min(plausible, key=lambda n: abs(n - items_sum_chk))
-                            print(f"[ocr] Toteat total rescue: {int(ref_total)} → {int(better)} "
-                                  f"(items_sum={int(items_sum_chk)})")
-                            ref_total = float(better)
-                            ratio = items_sum_chk / ref_total
-
-                    if abs(ratio - 1.0) > 0.05:
-                        # Try text-only correction once (cheap — no image)
-                        items = _retry_items_with_correction(
-                            items, ref_total, raw_ocr_text, user_id=user_id, db=db
-                        )
-                        items_sum_chk = sum(it.price * it.quantity for it in items)
-                        ratio = items_sum_chk / ref_total if ref_total > 0 else 0
-
-                    if abs(ratio - 1.0) <= 0.02:
-                        # Near-exact — trust printed prices as-is
-                        raw_amount = float(items_sum_chk)
-                    elif abs(ratio - 1.0) <= 0.25:
-                        # Acceptable gap — add synthetic Otros line, never distort prices
-                        delta = round(ref_total - items_sum_chk)
-                        if abs(delta) >= 100:
-                            items.append(ParsedItem(
-                                name="Servicio / Otros" if delta > 0 else "Descuento",
-                                price=abs(delta), quantity=1,
-                            ))
-                        raw_amount = float(ref_total)
-                    else:
-                        # Too far off — drop items, let user add manually
-                        print(f"[ocr] reconcile FAIL: items={int(items_sum_chk)}, ref={int(ref_total)}, ratio={ratio:.2f} — dropping items")
-                        items = []
-                        raw_amount = float(ref_total)
 
             out.append(ParsedReceipt(
                 amount=raw_amount,
@@ -1753,7 +1478,8 @@ def vision_parse(
             account_type_hint=str(account_type_hint)[:16],
         )
     except Exception as e:  # noqa: BLE001
-        print(f"[ocr] vision_parse failed, falling back to Tesseract: {e}")
+        print(f"[ocr] vision_parse failed: {e}")
+        import traceback; traceback.print_exc()
         return None
 
 

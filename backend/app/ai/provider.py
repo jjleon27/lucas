@@ -105,8 +105,9 @@ class OpenAIProvider(LLMProvider):
             temperature=temperature,
         )
         usage = getattr(resp, "usage", None)
+        content = resp.choices[0].message.content or ""
         return LLMResponse(
-            text=resp.choices[0].message.content,
+            text=content,
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             model=vision_model,

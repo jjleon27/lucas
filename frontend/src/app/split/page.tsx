@@ -429,8 +429,20 @@ function ReviewStep({
   const allChecked = items.length > 0 && checkedIds.size >= items.length;
   const pct = items.length > 0 ? Math.round((checkedIds.size / items.length) * 100) : 0;
 
+  const hasOtrosCargos = items.some((it) => /^otros cargos$/i.test(it.name.trim()));
+
   return (
     <div className="space-y-3">
+      {/* ── "Otros cargos" explanation banner ───────────────── */}
+      {hasOtrosCargos && (
+        <div className="flex items-start gap-2 rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5 text-xs text-blue-700">
+          <span className="shrink-0 text-sm">ℹ️</span>
+          <span>
+            <strong>Otros cargos</strong> cubre la diferencia entre la suma de ítems y el total de la boleta. Si el valor no parece correcto, edítalo con el lápiz o elimínalo.
+          </span>
+        </div>
+      )}
+
       {/* ── Split panel ──────────────────────────────────────── */}
       <div
         ref={containerRef}
@@ -555,6 +567,15 @@ function ReviewStep({
           </div>
 
           <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
+            {items.length === 0 && (
+              <li className="px-3 py-6 text-center">
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  No se reconocieron ítems en la boleta.
+                  <br />
+                  Usa el botón "Agregar ítem" para ingresar los productos manualmente.
+                </p>
+              </li>
+            )}
             {(() => {
               // Pre-compute group metadata (last index, total, count, within-group index)
               const lastIdxByColor: Record<string, number> = {};
@@ -1432,7 +1453,21 @@ export default function SplitPage() {
                 </div>
               </div>
             )}
-            {uploadErr && <p className="text-sm text-rose-500 mt-2">{uploadErr}</p>}
+            {uploadErr && (
+              <div className="mt-3 rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 space-y-2">
+                <p className="text-sm text-rose-700 font-medium">{uploadErr}</p>
+                <p className="text-xs text-rose-500">
+                  Intenta con otra foto más nítida o usa el ingreso manual de abajo.
+                </p>
+                <button
+                  type="button"
+                  className="text-xs font-semibold text-rose-600 hover:text-rose-800 underline underline-offset-2"
+                  onClick={() => setUploadErr("")}
+                >
+                  Reintentar →
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Divider */}
