@@ -112,7 +112,43 @@ def _preprocess(image_bytes: bytes) -> np.ndarray:
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         img = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"))[:, :, ::-1]
+
+    # Downscale to max 2000px — Tesseract accuracy peaks around 300 DPI,
+    # huge images just slow it down without helping.
+    h, w = img.shape[:2]
+    if max(h, w) > 2000:
+        scale = 2000 / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
+    # CLAHE on L channel of LAB — lifts dark/flash-lit bar receipt photos
+    # without blowing out already-bright areas.
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l_ch, a_ch, b_ch = cv2.split(lab)
+    l_ch = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l_ch)
+    img = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2BGR)
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Deskew: estimate rotation from dilated text contours and correct it.
+    # Skips correction when angle is tiny (<0.5°) or extreme (>15°).
+    try:
+        blur = cv2.GaussianBlur(gray, (9, 9), 0)
+        _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 5))
+        dilated = cv2.dilate(otsu, kernel, iterations=2)
+        coords = np.column_stack(np.where(dilated > 0))
+        if len(coords) > 100:
+            angle = cv2.minAreaRect(coords)[-1]
+            angle = -(90 + angle) if angle < -45 else -angle
+            if 0.5 < abs(angle) < 15:
+                gh, gw = gray.shape
+                M = cv2.getRotationMatrix2D((gw // 2, gh // 2), angle, 1.0)
+                gray = cv2.warpAffine(gray, M, (gw, gh),
+                                      flags=cv2.INTER_CUBIC,
+                                      borderMode=cv2.BORDER_REPLICATE)
+    except Exception:
+        pass  # deskew is best-effort; never crash on a bad image
+
     gray = cv2.bilateralFilter(gray, 9, 75, 75)
     thresh = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15
@@ -580,9 +616,12 @@ RULES:
 1. NUMBER FORMAT: CLP never uses decimals. "$17.517" = 17517. "$1.489.991" = 1489991.
 
 2. RESTAURANT / BAR POS RECEIPT (Toteat, Restō, Revo):
-   "Total General Mesa" = full table bill (ignore). "Consumo Cliente" = THIS customer's amount.
-   Use "Consumo Cliente" as `amount`. Modifier items starting with "+" have price=0.
+   RULE: if "Total General Mesa" is printed → use it as `amount`. List EVERY item shown at
+   its PRINTED unit price. "Consumo Cliente" is a per-person sub-total — IGNORE IT for amount.
+   If "Total General Mesa" is NOT present → use "Consumo Cliente" or the only total shown.
+   Modifier items starting with "+" (e.g. +Coca Zero) always have price=0.
    TABLE ROWS: leading number = quantity. Read EVERY row top-to-bottom.
+   CRITICAL: Do NOT scale or adjust item prices. Use the printed price exactly.
 
 3. BOLETA LINE ITEMS:
    a) "NxUNIT" (e.g. "2x4.990 POLLO $9.980") → price=4990, quantity=2
@@ -1412,6 +1451,12 @@ def vision_parse(
                         currency="CLP", items=pipe_items,
                     )])
 
+        # Only trust Tesseract grounding when OCR quality is high enough.
+        # Below this floor, injecting Tesseract numbers poisons the LLM prompt
+        # (e.g. "amount=15790" from garbled "Total General Mesa 127.900").
+        _TESS_CONF_FLOOR = 0.60
+        trustable_tess = tess_conf >= _TESS_CONF_FLOOR
+
         # Build grounding text for the LLM prompt
         grounding_text = ""
         if is_full_table_comanda:
@@ -1422,13 +1467,13 @@ def vision_parse(
                 f"  List every item at its PRINTED unit price. Do NOT scale or divide prices.\n"
                 f"  sum(price × quantity for ALL items) MUST equal {int(total_general_mesa)}."
             )
-            if tess_items:
-                grounding_text += "\n\nItems Tesseract read from this receipt (use these, DO NOT invent):\n" + "\n".join(
+            if trustable_tess and tess_items:
+                grounding_text += "\n\nItems Tesseract read (use as reference):\n" + "\n".join(
                     f"  {it.quantity}x {it.name} @ {it.price}" for it in tess_items[:25]
                 )
         elif is_pos_per_seat and pos_consumo:
             tess_hint = ""
-            if tess_items:
+            if trustable_tess and tess_items:
                 tess_hint = "\n\nItems Tesseract read from this comanda (use these, DO NOT invent new ones):\n" + "\n".join(
                     f"  {it.quantity}x {it.name} @ {it.price}"
                     for it in tess_items[:25]
@@ -1469,8 +1514,36 @@ def vision_parse(
                     f"Use these items exactly in your JSON `items` array."
                 )
 
+        # Detect Toteat/POS comanda even when Tesseract is too garbled to extract totals.
+        # Markers like "toteat", "consumo cliente", "general mesa" appear even in garbled OCR.
+        # Tolerate common Tesseract garbling: "totoat"≈"toteat", "Hesa"≈"Mesa",
+        # "sumo Cliente" = "Consumo Cliente" with prefix cut off.
+        _TOTEAT_RE = re.compile(
+            r"tot[oe]at"                   # toteat / totoat
+            r"|tot\.eat"                   # tot.eat
+            r"|sumo\s+cliente"             # consumo cliente (garbled prefix)
+            r"|general\s+[hm]esa"          # general mesa / general hesa (OCR H↔M)
+            r"|consumo\s*cliente"          # exact
+            r"|total\s+general\s+mesa",    # exact
+            re.I,
+        )
+        is_toteat_in_ocr = bool(_TOTEAT_RE.search(raw_ocr_text))
+
+        # When Toteat is detected but Tesseract couldn't extract totals (dark/garbled photo),
+        # inject an explicit directive so gpt-4o uses the full-table total.
+        if is_toteat_in_ocr and not grounding_text:
+            grounding_text = (
+                "\n\nIMPORTANT — Toteat full-table comanda (mesa completa):\n"
+                "  List EVERY SINGLE item row you can read, top to bottom, for ALL customers.\n"
+                "  Do NOT filter by 'Comensal' number. Include ALL drinks and dishes.\n"
+                "  Use 'Total General Mesa' as `amount`.\n"
+                "  'Consumo Cliente' is a per-person subtotal — do NOT use it as amount.\n"
+                "  Each item at its PRINTED unit price. No scaling."
+            )
+
         # Use shorter receipt prompt when grounding confirms it's a boleta/POS receipt
-        is_receipt = bool((gt_neto and gt_iva) or (is_pos_per_seat and pos_consumo) or is_full_table_comanda)
+        is_receipt = bool((gt_neto and gt_iva) or (is_pos_per_seat and pos_consumo)
+                          or is_full_table_comanda or is_toteat_in_ocr)
         active_prompt = _RECEIPT_PROMPT if is_receipt else _SYSTEM_PROMPT
 
         user_text = (
@@ -1480,8 +1553,11 @@ def vision_parse(
             "Parse this receipt/screenshot. Return strict JSON.\n"
             "If this is a supermarket receipt (boleta): read EVERY product line "
             "and set amount = the final total charged.\n"
-            "If this is a restaurant POS receipt (Toteat, etc.): use 'Consumo Cliente' "
-            "as amount (not 'Total General Mesa'). Modifier items (+Item) have price=0."
+            "If this is a restaurant POS receipt (Toteat/comanda): set amount = "
+            "the total that matches the items listed. "
+            "If ALL table items are shown use 'Total General Mesa'; "
+            "if only this customer's items are shown use 'Consumo Cliente'. "
+            "Modifier items starting with '+' (e.g. +Coca Zero) have price=0."
             + grounding_text
         )
 
@@ -1609,7 +1685,26 @@ def vision_parse(
                     # No-IVA reconcile — NEVER scale items to fit a different total.
                     # Scaled prices (e.g. Piscolón $9.000 → $4.843) are worse than no items.
                     items_sum_chk = sum(it.price * it.quantity for it in items)
-                    ratio = items_sum_chk / ref_total
+                    ratio = items_sum_chk / ref_total if ref_total > 0 else 0
+
+                    # Toteat rescue: when the LLM chose a spurious amount (e.g. "414.270"
+                    # from the receipt header) but items look correct, find a better total
+                    # by picking the OCR number closest to items_sum within ±50%.
+                    if abs(ratio - 1.0) > 0.25 and is_toteat_in_ocr and len(items) >= 3:
+                        ocr_candidates = sorted(set(
+                            round(abs(_to_float(m)))
+                            for m in _MONEY_TOKEN.findall(raw_ocr_text)
+                            if 10000 <= abs(_to_float(m)) <= 5_000_000
+                        ))
+                        plausible = [n for n in ocr_candidates
+                                     if 0.70 * items_sum_chk <= n <= 1.50 * items_sum_chk]
+                        if plausible:
+                            better = min(plausible, key=lambda n: abs(n - items_sum_chk))
+                            print(f"[ocr] Toteat total rescue: {int(ref_total)} → {int(better)} "
+                                  f"(items_sum={int(items_sum_chk)})")
+                            ref_total = float(better)
+                            ratio = items_sum_chk / ref_total
+
                     if abs(ratio - 1.0) > 0.05:
                         # Try text-only correction once (cheap — no image)
                         items = _retry_items_with_correction(
@@ -1621,8 +1716,8 @@ def vision_parse(
                     if abs(ratio - 1.0) <= 0.02:
                         # Near-exact — trust printed prices as-is
                         raw_amount = float(items_sum_chk)
-                    elif abs(ratio - 1.0) <= 0.15:
-                        # Small gap — add synthetic Otros line, never distort prices
+                    elif abs(ratio - 1.0) <= 0.25:
+                        # Acceptable gap — add synthetic Otros line, never distort prices
                         delta = round(ref_total - items_sum_chk)
                         if abs(delta) >= 100:
                             items.append(ParsedItem(

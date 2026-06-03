@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    openai_vision_model: str = "gpt-4o-2024-11-20"  # full model for receipt parsing
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5-20251001"

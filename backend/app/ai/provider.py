@@ -85,17 +85,20 @@ class OpenAIProvider(LLMProvider):
         )
 
     def vision_json(self, system_prompt: str, user_text: str, image_data_url: str,
-                    *, model=None, temperature=0.0):
+                    *, model=None, temperature=0.0, purpose: str = "parse"):
         """Image input → strict JSON object out. OpenAI-only for now."""
         from openai import OpenAI
+        # Use the dedicated vision model (gpt-4o full) for receipt parsing —
+        # gpt-4o-mini has ~6× worse accuracy on dark/dense POS layouts.
+        vision_model = model or settings.openai_vision_model
         client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
         resp = client.chat.completions.create(
-            model=model or settings.openai_model,
+            model=vision_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
                     {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "auto"}},
+                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
                 ]},
             ],
             response_format={"type": "json_object"},
@@ -106,7 +109,7 @@ class OpenAIProvider(LLMProvider):
             text=resp.choices[0].message.content,
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-            model=model or settings.openai_model,
+            model=vision_model,
             provider=self.name,
         )
 
