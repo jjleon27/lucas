@@ -110,15 +110,12 @@ export default function SplitPage() {
   const [editDraft, setEditDraft] = useState({ name: "", qty: 1, unit_price: 0 });
   const [newItem, setNewItem] = useState<{ name: string; qty: number; unit_price: number } | null>(null);
 
-  // Step 4 — assign: itemId → participantId → units
-  const assigns = useRef<Map<number, Map<number, number>>>(new Map());
-  const [, setAssignsV] = useState(0);
-  const bump = () => setAssignsV((v) => v + 1);
-  const [activeParticipantId, setActiveParticipantId] = useState<number | null>(null);
-  const [shakeItemId, setShakeItemId] = useState<number | null>(null);
+  // Step 4 — assign: itemId → Set of participantIds (equal split among selected)
+  // overrides: itemId → Map<participantId, units> for unequal qty distribution
+  const [selected, setSelected] = useState<Map<number, Set<number>>>(new Map());
+  const [overrides, setOverrides] = useState<Map<number, Map<number, number>>>(new Map());
   const [bottomSheetItemId, setBottomSheetItemId] = useState<number | null>(null);
   const [bottomSheetDraft, setBottomSheetDraft] = useState<Record<number, number>>({});
-  const [expandedItemId, setExpandedItemId] = useState<number | null>(null);
 
   // Step 5 — payers
   const [payerMode, setPayerMode] = useState<"me" | "other" | "split">("me");
@@ -192,93 +189,128 @@ export default function SplitPage() {
 
   // ── Step 4 ────────────────────────────────────────────────────
 
-  const getUnits = (itemId: number, pid: number) => assigns.current.get(itemId)?.get(pid) ?? 0;
+  // Who is selected for a given item
+  const getSelected = (itemId: number): Set<number> => selected.get(itemId) ?? new Set();
 
-  const unitsAssigned = (item: BillItem) => {
-    const inner = assigns.current.get(item.id);
-    if (!inner) return 0;
-    let t = 0; for (const v of inner.values()) t += v; return t;
+  // Running total per participant (from equal-split selected items + overrides)
+  const runningTotal = (pid: number) => {
+    if (!bill) return 0;
+    return bill.items.reduce((s, item) => {
+      const ov = overrides.get(item.id);
+      if (ov) return s + (ov.get(pid) ?? 0) * item.unit_price;
+      const sel = getSelected(item.id);
+      if (!sel.has(pid)) return s;
+      return s + item.line_total / sel.size;
+    }, 0);
   };
-  const unitsRemaining = (item: BillItem) => item.qty - unitsAssigned(item);
 
-  const runningTotal = (pid: number) =>
-    bill ? bill.items.reduce((s, item) => s + getUnits(item.id, pid) * item.unit_price, 0) : 0;
+  const itemAssigned = (item: BillItem) =>
+    (overrides.get(item.id)?.size ?? 0) > 0 || getSelected(item.id).size > 0;
 
-  function setUnits(itemId: number, pid: number, units: number) {
-    const map = assigns.current;
-    if (!map.has(itemId)) map.set(itemId, new Map());
-    const inner = map.get(itemId)!;
-    if (units <= 0) inner.delete(pid); else inner.set(pid, units);
-    bump();
+  function togglePerson(itemId: number, pid: number) {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      const cur = new Set(next.get(itemId) ?? []);
+      if (cur.has(pid)) { cur.delete(pid); } else { cur.add(pid); }
+      next.set(itemId, cur);
+      return next;
+    });
+    // clear any override for this item since user is switching to equal mode
+    setOverrides((prev) => { const n = new Map(prev); n.delete(itemId); return n; });
   }
 
-  function seedAssigns(b: Bill) {
-    const map = new Map<number, Map<number, number>>();
+  function selectAll(itemId: number) {
+    if (!bill) return;
+    setSelected((prev) => {
+      const next = new Map(prev);
+      next.set(itemId, new Set(bill.participants.map((p) => p.id)));
+      return next;
+    });
+    setOverrides((prev) => { const n = new Map(prev); n.delete(itemId); return n; });
+  }
+
+  function seedSelected(b: Bill) {
+    const sel = new Map<number, Set<number>>();
+    const ov = new Map<number, Map<number, number>>();
     for (const item of b.items) {
-      const inner = new Map<number, number>();
-      for (const s of item.shares) {
-        const u = s.units != null ? s.units : Math.round(s.weight * item.qty);
-        if (u > 0) inner.set(s.participant_id, u);
+      if (item.shares.length === 0) {
+        // default: all participants
+        sel.set(item.id, new Set(b.participants.map((p) => p.id)));
+      } else {
+        const hasUnequal = item.shares.some((s) => s.units != null);
+        if (hasUnequal) {
+          const inner = new Map<number, number>();
+          item.shares.forEach((s) => { if ((s.units ?? 0) > 0) inner.set(s.participant_id, s.units!); });
+          ov.set(item.id, inner);
+        } else {
+          sel.set(item.id, new Set(item.shares.map((s) => s.participant_id)));
+        }
       }
-      if (inner.size > 0) map.set(item.id, inner);
     }
-    assigns.current = map; bump();
+    setSelected(sel);
+    setOverrides(ov);
   }
 
   function goToAssign() {
-    if (bill) { seedAssigns(bill); const me = bill.participants.find((p) => p.is_me); if (me) setActiveParticipantId(me.id); }
+    if (bill) seedSelected(bill);
     setStep(4);
-  }
-
-  function tapItem(item: BillItem) {
-    if (!activeParticipantId) { showError("Selecciona un participante primero"); return; }
-    if (unitsRemaining(item) <= 0) {
-      setShakeItemId(item.id); setTimeout(() => setShakeItemId(null), 500); return;
-    }
-    setUnits(item.id, activeParticipantId, getUnits(item.id, activeParticipantId) + 1);
-  }
-
-  function tapTodos(item: BillItem) {
-    if (!bill) return;
-    const n = bill.participants.length;
-    if (n === 0) return;
-    const base = Math.floor(item.qty / n), rem = item.qty % n;
-    const inner = new Map<number, number>();
-    bill.participants.forEach((p, i) => { const u = base + (i < rem ? 1 : 0); if (u > 0) inner.set(p.id, u); });
-    assigns.current.set(item.id, inner); bump();
   }
 
   function openBottomSheet(item: BillItem) {
     if (!bill) return;
     const draft: Record<number, number> = {};
-    bill.participants.forEach((p) => { draft[p.id] = getUnits(item.id, p.id); });
-    setBottomSheetDraft(draft); setBottomSheetItemId(item.id);
+    const ov = overrides.get(item.id);
+    const sel = getSelected(item.id);
+    bill.participants.forEach((p) => {
+      if (ov) draft[p.id] = ov.get(p.id) ?? 0;
+      else draft[p.id] = sel.has(p.id) ? Math.round(item.qty / sel.size) : 0;
+    });
+    setBottomSheetDraft(draft);
+    setBottomSheetItemId(item.id);
   }
 
   function confirmBottomSheet() {
-    if (bottomSheetItemId === null) return;
+    if (bottomSheetItemId === null || !bill) return;
     const inner = new Map<number, number>();
     Object.entries(bottomSheetDraft).forEach(([pid, u]) => { if (u > 0) inner.set(Number(pid), u); });
-    assigns.current.set(bottomSheetItemId, inner); bump(); setBottomSheetItemId(null);
+    setOverrides((prev) => { const n = new Map(prev); n.set(bottomSheetItemId, inner); return n; });
+    // also update selected to match
+    setSelected((prev) => {
+      const n = new Map(prev);
+      n.set(bottomSheetItemId, new Set(inner.keys()));
+      return n;
+    });
+    setBottomSheetItemId(null);
   }
 
   async function handleAssignEqual() {
     if (!bill) return;
-    try { const b = await assignEqual(bill.id); setBill(b); seedAssigns(b); }
-    catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+    try {
+      const b = await assignEqual(bill.id);
+      setBill(b);
+      seedSelected(b);
+    } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
   }
 
   async function goToWhoPaid() {
     if (!bill) return;
     let b = bill;
     for (const item of bill.items) {
-      const inner = assigns.current.get(item.id);
-      if (!inner || inner.size === 0) continue;
-      const shares = Array.from(inner.entries()).map(([pid, units]) => ({ participant_id: pid, units, weight: units / item.qty }));
-      try { b = await postShares(b.id, item.id, shares); }
-      catch (e: unknown) { showError(e instanceof Error ? e.message : "Error al guardar"); return; }
+      const ov = overrides.get(item.id);
+      const sel = getSelected(item.id);
+      if (ov && ov.size > 0) {
+        const shares = Array.from(ov.entries()).map(([pid, units]) => ({ participant_id: pid, units, weight: units / item.qty }));
+        try { b = await postShares(b.id, item.id, shares); }
+        catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); return; }
+      } else if (sel.size > 0) {
+        const w = 1 / sel.size;
+        const shares = Array.from(sel).map((pid) => ({ participant_id: pid, weight: w }));
+        try { b = await postShares(b.id, item.id, shares); }
+        catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); return; }
+      }
     }
-    setBill(b); setStep(5);
+    setBill(b);
+    setStep(5);
   }
 
   // ── Step 5 ────────────────────────────────────────────────────
@@ -456,107 +488,83 @@ export default function SplitPage() {
 
         {/* ── STEP 4: Assign ── */}
         {step === 4 && bill && (
-          <div className="space-y-3">
-            {/* Participant chip bar */}
-            <div className="overflow-x-auto -mx-4 px-4">
-              <div className="flex gap-2 pb-1" style={{ minWidth: "max-content" }}>
-                {bill.participants.map((p) => {
-                  const isActive = activeParticipantId === p.id;
-                  const total = runningTotal(p.id);
-                  return (
-                    <button key={p.id} onClick={() => setActiveParticipantId(p.id)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border-2 transition-all ${isActive ? "border-indigo-600 bg-indigo-50 text-indigo-800" : "border-transparent bg-white text-slate-700 shadow-sm"}`}>
-                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] font-bold" style={{ background: p.color }}>{initials(p.name)}</div>
-                      <span>{p.name.split(" ")[0]}</span>
-                      {total > 0 && <span className="text-xs opacity-70">{clp(total)}</span>}
-                    </button>
-                  );
-                })}
-              </div>
+          <div className="space-y-2.5">
+            {/* Running totals per participant */}
+            <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+              {bill.participants.map((p) => {
+                const total = runningTotal(p.id);
+                return (
+                  <div key={p.id} className="flex-shrink-0 flex flex-col items-center gap-1 bg-white rounded-xl px-3 py-2 shadow-sm min-w-[64px]">
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background: p.color }}>{initials(p.name)}</div>
+                    <span className="text-[10px] text-slate-500 font-medium truncate max-w-[56px]">{p.name.split(" ")[0]}</span>
+                    <span className="text-xs font-semibold text-indigo-700">{clp(Math.round(total))}</span>
+                  </div>
+                );
+              })}
             </div>
 
-            {/* Progress bar */}
-            {(() => {
-              const totalUnits = bill.items.reduce((s, i) => s + i.qty, 0);
-              const assignedUnits = bill.items.reduce((s, i) => s + unitsAssigned(i), 0);
-              const assignedAmt = bill.items.reduce((s, i) => s + unitsAssigned(i) * i.unit_price, 0);
-              const pct = totalUnits > 0 ? Math.round((assignedUnits / totalUnits) * 100) : 0;
-              return (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-xs text-slate-500">
-                    <span>{assignedUnits} de {totalUnits} unidades asignadas</span>
-                    <span>{clp(assignedAmt)} / {clp(bill.items.reduce((s, i) => s + i.line_total, 0))}</span>
-                  </div>
-                  <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                    <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
-                  </div>
-                </div>
-              );
-            })()}
+            {/* "Dividir todo igual" shortcut */}
+            <button onClick={handleAssignEqual} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm font-medium py-2 rounded-xl flex items-center justify-center gap-2">
+              <Check size={14} /> Dividir todo por igual
+            </button>
 
-            {/* Item cards */}
+            {/* Item cards — per-item chip selection */}
             {bill.items.map((item) => {
-              const remaining = unitsRemaining(item);
-              const done = remaining <= 0;
-              const expanded = expandedItemId === item.id;
+              const sel = getSelected(item.id);
+              const ov = overrides.get(item.id);
+              const assigned = itemAssigned(item);
               return (
-                <div key={item.id} className={`bg-white rounded-xl shadow-sm overflow-hidden transition-all ${shakeItemId === item.id ? "ring-2 ring-red-400" : ""}`}>
-                  <div className="px-4 py-3">
-                    <div className="flex items-start gap-2">
-                      {/* Avatar dots with unit counts */}
-                      <div className="flex -space-x-1.5 mt-0.5 shrink-0">
-                        {bill.participants.map((p) => {
-                          const u = getUnits(item.id, p.id);
-                          if (u === 0) return null;
-                          return <div key={p.id} title={`${p.name.split(" ")[0]}: ${u}`} className="w-6 h-6 rounded-full flex items-center justify-center text-white text-[9px] font-bold ring-1 ring-white" style={{ background: p.color }}>{u}</div>;
-                        })}
-                        {remaining > 0 && <div className="w-6 h-6 rounded-full flex items-center justify-center bg-slate-200 text-slate-500 text-[9px] font-bold ring-1 ring-white" title={`${remaining} sin asignar`}>{remaining}</div>}
-                      </div>
-                      {/* Name — tap to add 1 unit to active participant */}
-                      <button className="flex-1 text-left min-w-0" onClick={() => tapItem(item)} onContextMenu={(e) => { e.preventDefault(); openBottomSheet(item); }}>
-                        <p className={`text-sm font-medium truncate ${done ? "text-emerald-700" : "text-slate-800"}`}>
-                          {item.qty > 1 ? `${item.qty}× ` : ""}{item.name}
-                          {done && <Check size={12} className="inline ml-1 text-emerald-500" />}
-                        </p>
-                        <p className="text-xs text-slate-400">{remaining > 0 ? `${remaining} sin asignar` : "Completado"} · {clp(item.line_total)}</p>
-                      </button>
-                      {/* Action buttons */}
-                      <div className="flex gap-1 shrink-0">
-                        <button onClick={() => tapTodos(item)} className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-2 py-1 rounded-lg">Todos</button>
-                        {item.qty > 1 && <button onClick={() => openBottomSheet(item)} className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium px-2 py-1 rounded-lg">Repartir</button>}
-                      </div>
+                <div key={item.id} className={`bg-white rounded-xl shadow-sm px-4 py-3 transition-all ${assigned ? "border border-emerald-200" : "border border-slate-100"}`}>
+                  {/* Item header */}
+                  <div className="flex items-center justify-between mb-2.5">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-slate-800 truncate">
+                        {item.qty > 1 ? <span className="text-indigo-500 mr-1">{item.qty}×</span> : null}{item.name}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {item.qty > 1 ? `${clp(item.unit_price)} c/u · ` : ""}{clp(item.line_total)}
+                        {ov && <span className="ml-1 text-amber-600">(personalizado)</span>}
+                      </p>
                     </div>
-                    {/* Expanded unit pills */}
-                    {expanded && item.qty > 1 && (
-                      <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-slate-100">
-                        {Array.from({ length: item.qty }, (_, unitIdx) => {
-                          let owner: BillParticipant | null = null, cum = 0;
-                          for (const p of bill.participants) { const u = getUnits(item.id, p.id); if (unitIdx < cum + u) { owner = p; break; } cum += u; }
-                          return (
-                            <button key={unitIdx} onClick={() => {
-                              if (owner) { setUnits(item.id, owner.id, getUnits(item.id, owner.id) - 1); }
-                              else if (activeParticipantId) { setUnits(item.id, activeParticipantId, getUnits(item.id, activeParticipantId) + 1); }
-                            }} className="w-8 h-8 rounded-full flex items-center justify-center text-white text-[10px] font-bold shadow-sm" style={{ background: owner ? owner.color : "#CBD5E1" }}>
-                              {unitIdx + 1}
-                            </button>
-                          );
-                        })}
-                      </div>
+                    {assigned && <Check size={16} className="text-emerald-500 shrink-0 ml-2" />}
+                  </div>
+                  {/* Participant chips — tap to toggle */}
+                  <div className="flex flex-wrap gap-2">
+                    {bill.participants.map((p) => {
+                      const isOn = ov ? (ov.get(p.id) ?? 0) > 0 : sel.has(p.id);
+                      const unitsLabel = ov ? (ov.get(p.id) ?? 0) : null;
+                      return (
+                        <button
+                          key={p.id}
+                          onClick={() => togglePerson(item.id, p.id)}
+                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all border-2 ${
+                            isOn
+                              ? "text-white border-transparent shadow-sm"
+                              : "bg-white text-slate-400 border-slate-200"
+                          }`}
+                          style={isOn ? { background: p.color, borderColor: p.color } : {}}
+                        >
+                          <span>{p.name.split(" ")[0]}</span>
+                          {unitsLabel != null && unitsLabel > 0 && <span className="bg-white/30 rounded-full px-1">{unitsLabel}</span>}
+                        </button>
+                      );
+                    })}
+                    {/* Todos shortcut */}
+                    <button
+                      onClick={() => selectAll(item.id)}
+                      className="px-2.5 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 hover:bg-slate-200 border-2 border-transparent"
+                    >Todos</button>
+                    {/* Repartir for qty>1 unequal distribution */}
+                    {item.qty > 1 && (
+                      <button
+                        onClick={() => openBottomSheet(item)}
+                        className="px-2.5 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 hover:bg-slate-200 border-2 border-transparent"
+                      >÷ Repartir</button>
                     )}
                   </div>
-                  {item.qty > 1 && (
-                    <button className="w-full text-[10px] text-slate-400 pb-1.5 text-center" onClick={() => setExpandedItemId(expanded ? null : item.id)}>
-                      {expanded ? "▲ menos" : "▼ ver unidades"}
-                    </button>
-                  )}
                 </div>
               );
             })}
-
-            {/* Global divide equal */}
-            <button onClick={handleAssignEqual} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium py-3 rounded-xl flex items-center justify-center gap-2">
-              <Check size={16} /> Dividir todo por igual
-            </button>
           </div>
         )}
 
