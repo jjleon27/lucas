@@ -135,7 +135,7 @@ function ReviewStep({
   imageFullscreen: boolean;
   onOpenFullscreen: () => void;
   onCloseFullscreen: () => void;
-  onUpdateItem: (id: number, patch: { name?: string; price?: number }) => void;
+  onUpdateItem: (id: number, patch: { name?: string; price?: number; quantity?: number }) => void;
   onDeleteItem: (id: number) => void;
   onAddItem: (name: string, price: number) => void;
   onConfirm: () => void;
@@ -774,7 +774,7 @@ function ReviewItemRow({
   item: ReceiptItemV2;
   checked: boolean;
   onToggleCheck: () => void;
-  onUpdate: (patch: { name?: string; price?: number }) => void;
+  onUpdate: (patch: { name?: string; price?: number; quantity?: number }) => void;
   onDelete: () => void;
   groupColor?: string;
   onDivide?: () => void;
@@ -784,33 +784,44 @@ function ReviewItemRow({
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(item.name);
   const [editPrice, setEditPrice] = useState(item.line_total / Math.max(item.quantity, 1));
+  const [editQty, setEditQty] = useState(item.quantity);
 
   useEffect(() => {
     if (!editing) {
       setEditName(item.name);
       setEditPrice(item.line_total / Math.max(item.quantity, 1));
+      setEditQty(item.quantity);
     }
   }, [item.name, item.line_total, item.quantity, editing]);
 
   if (editing) {
     return (
-      <li className="p-2 space-y-1 bg-indigo-50/40">
+      <li className="p-2 space-y-1.5 bg-indigo-50/40">
         <input
           className="input w-full text-xs py-1 px-2"
           value={editName}
           onChange={(e) => setEditName(e.target.value)}
           autoFocus
         />
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
+          <span className="text-[10px] text-slate-400 flex-shrink-0">$</span>
           <NumericInput
             className="input flex-1 text-xs py-1 px-2 font-mono"
             value={editPrice}
             onChange={setEditPrice}
             allowDecimals
-            placeholder="0"
+            placeholder="precio unit."
+          />
+          <span className="text-[10px] text-slate-400 flex-shrink-0">×</span>
+          <input
+            type="number"
+            min={1}
+            className="input w-14 text-xs py-1 px-2 font-mono text-center"
+            value={editQty}
+            onChange={(e) => setEditQty(Math.max(1, parseInt(e.target.value) || 1))}
           />
           <button type="button" className="text-emerald-600 px-1"
-            onClick={() => { onUpdate({ name: editName, price: editPrice }); setEditing(false); }}>
+            onClick={() => { onUpdate({ name: editName, price: editPrice, quantity: editQty }); setEditing(false); }}>
             <Check className="w-4 h-4" />
           </button>
           <button type="button" className="text-slate-400 px-1" onClick={() => setEditing(false)}>
@@ -1314,10 +1325,9 @@ export default function SplitPage() {
   }
 
   // ── Update / delete / add item ────────────────────────────
-  async function handleUpdateItem(itemId: number, patch: { name?: string; price?: number }) {
+  async function handleUpdateItem(itemId: number, patch: { name?: string; price?: number; quantity?: number }) {
     try {
       await updateSplitItem(itemId, patch);
-      // Optimistic local update (preserves order) + server sync for accurate totals/amounts
       setResult((prev) => {
         if (!prev) return prev;
         return {
@@ -1325,8 +1335,9 @@ export default function SplitPage() {
           items: prev.items.map((it) => {
             if (it.id !== itemId) return it;
             const newPrice = patch.price ?? it.price;
+            const newQty = patch.quantity ?? it.quantity;
             const newName = patch.name ?? it.name;
-            return { ...it, name: newName, price: newPrice, line_total: newPrice * Math.max(it.quantity, 1) };
+            return { ...it, name: newName, price: newPrice, quantity: newQty, line_total: newPrice * Math.max(newQty, 1) };
           }),
         };
       });
