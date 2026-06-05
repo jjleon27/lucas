@@ -191,6 +191,88 @@ class ItemAssignment(Base):
     person = relationship("Person", back_populates="assignments")
 
 
+class Bill(Base):
+    """A shared bill/receipt. Separate from Transaction — a Transaction is only
+    created on finalize(), representing the user's personal share of the bill."""
+    __tablename__ = "bills"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    merchant = Column(String(255), default="", nullable=False)
+    date = Column(Date, default=date.today, nullable=False)
+    total_amount = Column(Float, nullable=False, default=0.0)
+    tip_amount = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(8), default="CLP", nullable=False)
+    image_url = Column(String(1024), default="", nullable=False)
+    # draft → participants/items being edited; assigned → shares set; finalized → tx created
+    status = Column(String(16), default="draft", nullable=False)
+    # Set on finalize() — points to the user's personal expense transaction
+    transaction_id = Column(Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True)
+    public_token = Column(String(64), nullable=True, unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User")
+    transaction = relationship("Transaction")
+    participants = relationship("BillParticipant", back_populates="bill", cascade="all, delete-orphan")
+    items = relationship("BillItem", back_populates="bill", cascade="all, delete-orphan", order_by="BillItem.id")
+
+
+class BillParticipant(Base):
+    """One person in a specific bill. References the user's Person contact."""
+    __tablename__ = "bill_participants"
+    id = Column(Integer, primary_key=True)
+    bill_id = Column(Integer, ForeignKey("bills.id", ondelete="CASCADE"), nullable=False, index=True)
+    person_id = Column(Integer, ForeignKey("people.id", ondelete="CASCADE"), nullable=False)
+    paid_amount = Column(Float, nullable=False, default=0.0)  # how much they actually paid
+    owes_amount = Column(Float, nullable=False, default=0.0)  # computed on finalize
+
+    bill = relationship("Bill", back_populates="participants")
+    person = relationship("Person")
+    shares = relationship("BillItemShare", back_populates="participant", cascade="all, delete-orphan")
+
+
+class BillItem(Base):
+    """One line item on a bill."""
+    __tablename__ = "bill_items"
+    id = Column(Integer, primary_key=True)
+    bill_id = Column(Integer, ForeignKey("bills.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    qty = Column(Integer, nullable=False, default=1)
+    unit_price = Column(Float, nullable=False)
+    line_total = Column(Float, nullable=False)  # = qty * unit_price
+
+    bill = relationship("Bill", back_populates="items")
+    shares = relationship("BillItemShare", back_populates="item", cascade="all, delete-orphan")
+
+
+class BillItemShare(Base):
+    """Fraction of one item assigned to one participant.
+    weight is 0-1 (e.g. 0.333 for 1/3). All weights for an item must sum to 1.0."""
+    __tablename__ = "bill_item_shares"
+    id = Column(Integer, primary_key=True)
+    item_id = Column(Integer, ForeignKey("bill_items.id", ondelete="CASCADE"), nullable=False, index=True)
+    participant_id = Column(Integer, ForeignKey("bill_participants.id", ondelete="CASCADE"), nullable=False)
+    weight = Column(Float, nullable=False)  # fraction 0-1
+
+    item = relationship("BillItem", back_populates="shares")
+    participant = relationship("BillParticipant", back_populates="shares")
+
+
+class BillDebt(Base):
+    """Materialized debt after finalize(). 'from' owes 'to' the amount."""
+    __tablename__ = "bill_debts"
+    id = Column(Integer, primary_key=True)
+    bill_id = Column(Integer, ForeignKey("bills.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_participant_id = Column(Integer, ForeignKey("bill_participants.id", ondelete="CASCADE"), nullable=False)
+    to_participant_id = Column(Integer, ForeignKey("bill_participants.id", ondelete="CASCADE"), nullable=False)
+    amount = Column(Float, nullable=False)
+    status = Column(String(16), default="pending", nullable=False)  # pending | settled
+    settled_at = Column(DateTime, nullable=True)
+
+    bill = relationship("Bill")
+    from_participant = relationship("BillParticipant", foreign_keys=[from_participant_id])
+    to_participant = relationship("BillParticipant", foreign_keys=[to_participant_id])
+
+
 class MerchantCategoryRule(Base):
     """
     A per-user learned rule: "when merchant looks like X, category is Y".

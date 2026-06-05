@@ -1,2238 +1,1101 @@
 "use client";
 /**
- * Split page — 3-step flow:
- *  1. Setup  — people + upload receipt OR manual amount entry
- *  2. Assign — tap person avatars per item; adjust split rules
- *  3. Settle — who paid? → show debts → optionally save to Lucas
+ * Split page — 5-step Bill splitting flow (new /bills API)
+ * Steps: 1 Capture+People → 2 Items → 3 Asignar → 4 ¿Quién pagó? → 5 Resumen
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  Account,
-  AssigneeIn,
-  Person,
-  ReceiptItemV2,
-  SettleOut,
-  SplitResultV2,
-  addSplitItem,
-  updateSplitItem,
-  deleteSplitItem,
-  assignItemV2,
-  createPerson,
-  createTransaction,
-  deletePerson,
-  getMe,
-  getToken,
-  listAccounts,
-  listPeople,
-  settleSplit,
-  splitResultV2,
-  startManualSplit,
-  startSplit,
-  uploadImage,
-  resolveBackendUrl,
-} from "@/lib/api";
-import UploadZone from "@/components/UploadZone";
-import BillSplitter from "@/components/BillSplitter";
-import NumericInput from "@/components/NumericInput";
-import { useT, formatMoney } from "@/lib/i18n";
-import { X, ZoomIn, Pencil, Trash2, Plus, Check, Scissors } from "lucide-react";
+import { Account, Person, listAccounts, listPeople, getToken, resolveBackendUrl } from "@/lib/api";
+import { Camera, Plus, Trash2, Pencil, Check, X, ChevronRight, ChevronLeft, Share2 } from "lucide-react";
 
-const PALETTE = [
-  "#ef4444", "#f97316", "#eab308", "#10b981",
-  "#06b6d4", "#6366f1", "#a855f7", "#ec4899",
-];
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-type Transfer = {
-  fromId: number; fromName: string; fromColor: string;
-  toId: number;   toName: string;   toColor: string;
-  amount: number;
-};
-
-function computeMultiPayer(
-  people: Person[],
-  resultPeople: { person_id: number; person_name: string; person_color: string; total: number }[],
-  amounts: Record<number, number>,
-): Transfer[] {
-  const net = people.map((p) => ({
-    id: p.id, name: p.name, color: p.color,
-    balance: (amounts[p.id] ?? 0) - (resultPeople.find((r) => r.person_id === p.id)?.total ?? 0),
-  }));
-  const creds = net.filter((p) => p.balance > 0.5).map((p) => ({ ...p }));
-  const debts = net.filter((p) => p.balance < -0.5).map((p) => ({ ...p }));
-  creds.sort((a, b) => b.balance - a.balance);
-  debts.sort((a, b) => a.balance - b.balance);
-  const out: Transfer[] = [];
-  let ci = 0, di = 0;
-  while (ci < creds.length && di < debts.length) {
-    const t = Math.min(creds[ci].balance, -debts[di].balance);
-    if (t > 0.5) out.push({ fromId: debts[di].id, fromName: debts[di].name, fromColor: debts[di].color, toId: creds[ci].id, toName: creds[ci].name, toColor: creds[ci].color, amount: Math.round(t) });
-    creds[ci].balance -= t; debts[di].balance += t;
-    if (creds[ci].balance < 0.5) ci++;
-    if (debts[di].balance > -0.5) di++;
-  }
-  return out;
+interface BillParticipant {
+  id: number;
+  person_id: number;
+  name: string;
+  color: string;
+  is_me: boolean;
+  paid_amount: number;
+  owes_amount: number;
 }
 
-type Step = "setup" | "review" | "assign" | "settle";
+interface BillItemShare {
+  participant_id: number;
+  weight: number;
+}
 
-// ── Step indicator ──────────────────────────────────────────
-function StepBar({ step }: { step: Step }) {
-  const steps: Step[] = ["setup", "review", "assign", "settle"];
-  const labels = ["Subir", "Revisar", "Asignar", "Liquidar"];
-  const current = steps.indexOf(step);
+interface BillItem {
+  id: number;
+  name: string;
+  qty: number;
+  unit_price: number;
+  line_total: number;
+  shares: BillItemShare[];
+}
+
+interface Bill {
+  id: number;
+  merchant: string;
+  date: string;
+  total_amount: number;
+  tip_amount: number;
+  currency: string;
+  image_url: string;
+  status: "draft" | "assigned" | "finalized";
+  transaction_id: number | null;
+  public_token: string | null;
+  participants: BillParticipant[];
+  items: BillItem[];
+}
+
+// ─── API helpers ──────────────────────────────────────────────────────────────
+
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+async function billReq<T>(
+  path: string,
+  init: RequestInit = {},
+  isForm = false,
+): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (!isForm) headers["Content-Type"] = "application/json";
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API}${path}`, { ...init, headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status}: ${text}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+async function createBill(opts?: { merchant?: string; date?: string; currency?: string }): Promise<Bill> {
+  return billReq("/bills", { method: "POST", body: JSON.stringify(opts ?? {}) });
+}
+async function ocrBill(id: number, file: File): Promise<Bill> {
+  const form = new FormData();
+  form.append("file", file);
+  const token = getToken();
+  const res = await fetch(`${API}/bills/${id}/ocr`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  if (!res.ok) throw new Error(`OCR ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+async function addParticipant(billId: number, personId: number): Promise<Bill> {
+  return billReq(`/bills/${billId}/participants`, { method: "POST", body: JSON.stringify({ person_id: personId }) });
+}
+async function removeParticipant(billId: number, pid: number): Promise<Bill> {
+  return billReq(`/bills/${billId}/participants/${pid}`, { method: "DELETE" });
+}
+async function addItem(billId: number, item: { name: string; qty: number; unit_price: number }): Promise<Bill> {
+  return billReq(`/bills/${billId}/items`, { method: "POST", body: JSON.stringify(item) });
+}
+async function patchItem(billId: number, iid: number, patch: { name?: string; qty?: number; unit_price?: number }): Promise<Bill> {
+  return billReq(`/bills/${billId}/items/${iid}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+async function deleteItem(billId: number, iid: number): Promise<Bill> {
+  return billReq(`/bills/${billId}/items/${iid}`, { method: "DELETE" });
+}
+async function postShares(billId: number, itemId: number, shares: { participant_id: number; weight: number }[]): Promise<Bill> {
+  return billReq(`/bills/${billId}/shares`, { method: "POST", body: JSON.stringify({ item_id: itemId, shares }) });
+}
+async function assignEqual(billId: number): Promise<Bill> {
+  return billReq(`/bills/${billId}/assign-equal`, { method: "POST" });
+}
+async function setPayers(billId: number, payers: { participant_id: number; paid_amount: number }[]): Promise<Bill> {
+  return billReq(`/bills/${billId}/set-payers`, { method: "POST", body: JSON.stringify(payers) });
+}
+async function finalizeBill(billId: number, opts: { account_id?: number; category?: string }): Promise<Bill> {
+  return billReq(`/bills/${billId}/finalize`, { method: "POST", body: JSON.stringify(opts) });
+}
+async function patchBill(billId: number, patch: { tip_amount?: number }): Promise<Bill> {
+  return billReq(`/bills/${billId}`, { method: "PATCH", body: JSON.stringify(patch) });
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function clp(n: number) {
+  return "$" + Math.round(n).toLocaleString("es-CL");
+}
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+// ─── Step indicator ───────────────────────────────────────────────────────────
+
+function StepDots({ step }: { step: number }) {
   return (
-    <div className="flex items-center gap-0 mb-6">
-      {steps.map((s, i) => (
-        <div key={s} className="flex items-center flex-1">
-          <div className="flex flex-col items-center flex-1">
-            <div
-              className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all ${
-                i < current
-                  ? "bg-emerald-500 border-emerald-500 text-white"
-                  : i === current
-                    ? "bg-indigo-600 border-indigo-600 text-white"
-                    : "bg-white border-slate-300 text-slate-400"
-              }`}
-            >
-              {i < current ? "✓" : i + 1}
-            </div>
-            <span
-              className={`text-[11px] mt-1 font-medium ${
-                i === current ? "text-indigo-600" : "text-slate-400"
-              }`}
-            >
-              {labels[i]}
-            </span>
-          </div>
-          {i < steps.length - 1 && (
-            <div
-              className={`h-0.5 flex-1 mb-4 ${
-                i < current ? "bg-emerald-400" : "bg-slate-200"
-              }`}
-            />
-          )}
-        </div>
+    <div className="flex items-center justify-center gap-2 mb-4">
+      {[1, 2, 3, 4, 5].map((s) => (
+        <div
+          key={s}
+          className={`rounded-full transition-all ${
+            s === step
+              ? "w-6 h-2.5 bg-indigo-600"
+              : s < step
+              ? "w-2.5 h-2.5 bg-emerald-500"
+              : "w-2.5 h-2.5 bg-slate-300"
+          }`}
+        />
       ))}
     </div>
   );
 }
 
-// ── Review Step — side-by-side layout ──────────────────────
-function ReviewStep({
-  items,
-  imageUrl,
-  imageFullscreen,
-  onOpenFullscreen,
-  onCloseFullscreen,
-  onUpdateItem,
-  onDeleteItem,
-  onAddItem,
-  onConfirm,
-}: {
-  items: ReceiptItemV2[];
-  imageUrl: string;
-  imageFullscreen: boolean;
-  onOpenFullscreen: () => void;
-  onCloseFullscreen: () => void;
-  onUpdateItem: (id: number, patch: { name?: string; price?: number; quantity?: number }) => void;
-  onDeleteItem: (id: number) => void;
-  onAddItem: (name: string, price: number) => void;
-  onConfirm: () => void;
-}) {
-  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set());
-  const [showAdd, setShowAdd] = useState(false);
-  const [addName, setAddName] = useState("");
-  const [addPrice, setAddPrice] = useState(0);
+// ─── Error toast ──────────────────────────────────────────────────────────────
 
-  // ── Resizable panel ─────────────────────────────────────────
-  const [panelWidth, setPanelWidth] = useState(43);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef(false);
-
+function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
   useEffect(() => {
-    function onMove(e: MouseEvent | TouchEvent) {
-      if (!draggingRef.current || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const x = (e as TouchEvent).touches
-        ? (e as TouchEvent).touches[0].clientX
-        : (e as MouseEvent).clientX;
-      const pct = Math.min(72, Math.max(20, ((x - rect.left) / rect.width) * 100));
-      setPanelWidth(pct);
-    }
-    function onUp() { draggingRef.current = false; }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("touchmove", onMove, { passive: false });
-    document.addEventListener("mouseup", onUp);
-    document.addEventListener("touchend", onUp);
-    return () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("touchmove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      document.removeEventListener("touchend", onUp);
-    };
-  }, []);
-
-  // ── Drawing canvas ───────────────────────────────────────────
-  const [drawMode, setDrawMode] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imgRef = useRef<HTMLImageElement>(null);
-  const drawingRef = useRef(false);
-  const lastPosRef = useRef({ x: 0, y: 0 });
-
-  function initCanvas() {
-    if (!canvasRef.current || !imgRef.current) return;
-    canvasRef.current.width = imgRef.current.naturalWidth;
-    canvasRef.current.height = imgRef.current.naturalHeight;
-  }
-
-  function canvasPos(e: React.MouseEvent | React.TouchEvent) {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    const clientX = (e as React.TouchEvent).touches
-      ? (e as React.TouchEvent).touches[0].clientX
-      : (e as React.MouseEvent).clientX;
-    const clientY = (e as React.TouchEvent).touches
-      ? (e as React.TouchEvent).touches[0].clientY
-      : (e as React.MouseEvent).clientY;
-    return {
-      x: ((clientX - rect.left) / rect.width) * canvas.width,
-      y: ((clientY - rect.top) / rect.height) * canvas.height,
-    };
-  }
-
-  function onDrawStart(e: React.MouseEvent | React.TouchEvent) {
-    if (!drawMode) return;
-    e.preventDefault();
-    drawingRef.current = true;
-    lastPosRef.current = canvasPos(e);
-  }
-
-  function onDrawMove(e: React.MouseEvent | React.TouchEvent) {
-    if (!drawMode || !drawingRef.current || !canvasRef.current) return;
-    e.preventDefault();
-    const ctx = canvasRef.current.getContext("2d");
-    if (!ctx) return;
-    const pos = canvasPos(e);
-    ctx.beginPath();
-    ctx.strokeStyle = "#ef4444";
-    ctx.lineWidth = 4;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.moveTo(lastPosRef.current.x, lastPosRef.current.y);
-    ctx.lineTo(pos.x, pos.y);
-    ctx.stroke();
-    lastPosRef.current = pos;
-  }
-
-  function onDrawEnd() { drawingRef.current = false; }
-
-  // ── Image zoom + pan ────────────────────────────────────────
-  const [imgTransform, setImgTransform] = useState({ zoom: 1, x: 0, y: 0 });
-  const imgPanelRef = useRef<HTMLDivElement>(null);
-  const pinchRef = useRef<{ dist: number; mx: number; my: number } | null>(null);
-  const panMouseRef = useRef<{ sx: number; sy: number; tx: number; ty: number } | null>(null);
-
-  /** Zoom around a focal point (container-relative px). */
-  function zoomAround(newZoom: number, fx: number, fy: number) {
-    setImgTransform(prev => {
-      const z = Math.min(5, Math.max(1, newZoom));
-      if (z <= 1) return { zoom: 1, x: 0, y: 0 };
-      const ratio = z / prev.zoom;
-      return { zoom: z, x: fx - (fx - prev.x) * ratio, y: fy - (fy - prev.y) * ratio };
-    });
-  }
-
-  function zoomBtn(delta: number) {
-    const el = imgPanelRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    zoomAround(imgTransform.zoom + delta, r.width / 2, r.height / 2);
-  }
-
-  // Wheel zoom centered on cursor
-  useEffect(() => {
-    const el = imgPanelRef.current;
-    if (!el) return;
-    function onWheel(e: WheelEvent) {
-      e.preventDefault();
-      const r = el!.getBoundingClientRect();
-      setImgTransform(prev => {
-        const z = Math.min(5, Math.max(1, prev.zoom - e.deltaY * 0.003));
-        if (z <= 1) return { zoom: 1, x: 0, y: 0 };
-        const fx = e.clientX - r.left, fy = e.clientY - r.top;
-        const ratio = z / prev.zoom;
-        return { zoom: z, x: fx - (fx - prev.x) * ratio, y: fy - (fy - prev.y) * ratio };
-      });
-    }
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
-
-  // Mouse pan (drag when not drawing)
-  useEffect(() => {
-    function onMove(e: MouseEvent) {
-      const start = panMouseRef.current;
-      if (!start) return;
-      const dx = e.clientX - start.sx, dy = e.clientY - start.sy;
-      const tx = start.tx + dx, ty = start.ty + dy;
-      setImgTransform(prev => ({ ...prev, x: tx, y: ty }));
-    }
-    function onUp() { panMouseRef.current = null; }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    return () => { document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
-  }, []);
-
-  function onPanelMouseDown(e: React.MouseEvent) {
-    if (drawMode) return;
-    panMouseRef.current = { sx: e.clientX, sy: e.clientY, tx: imgTransform.x, ty: imgTransform.y };
-  }
-
-  function onPanelTouchStart(e: React.TouchEvent) {
-    if (e.touches.length === 2) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      pinchRef.current = {
-        dist: Math.hypot(dx, dy),
-        mx: (e.touches[0].clientX + e.touches[1].clientX) / 2,
-        my: (e.touches[0].clientY + e.touches[1].clientY) / 2,
-      };
-    }
-  }
-
-  function onPanelTouchMove(e: React.TouchEvent) {
-    // Extract ALL coordinates immediately — synthetic events are nullified after handler returns
-    if (e.touches.length === 2) {
-      const t0x = e.touches[0].clientX, t0y = e.touches[0].clientY;
-      const t1x = e.touches[1].clientX, t1y = e.touches[1].clientY;
-      const dist = Math.hypot(t0x - t1x, t0y - t1y);
-      const mx = (t0x + t1x) / 2, my = (t0y + t1y) / 2;
-      const prev2 = pinchRef.current;
-      pinchRef.current = { dist, mx, my };
-      if (!prev2 || dist === 0) return;
-      const el = imgPanelRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const ratio = dist / prev2.dist;
-      const dmx = mx - prev2.mx, dmy = my - prev2.my;
-      const fx = mx - r.left, fy = my - r.top;
-      setImgTransform(prev => {
-        const z = Math.min(5, Math.max(1, prev.zoom * ratio));
-        if (z <= 1) return { zoom: 1, x: 0, y: 0 };
-        const zr = z / prev.zoom;
-        return { zoom: z, x: fx - (fx - prev.x) * zr + dmx, y: fy - (fy - prev.y) * zr + dmy };
-      });
-    } else if (e.touches.length === 1 && !drawMode) {
-      const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
-      const start = panMouseRef.current;
-      if (!start) {
-        // Initialize on first move event (touchstart doesn't give us start transform easily)
-        setImgTransform(prev => {
-          panMouseRef.current = { sx: cx, sy: cy, tx: prev.x, ty: prev.y };
-          return prev;
-        });
-      } else {
-        const tx = start.tx + (cx - start.sx), ty = start.ty + (cy - start.sy);
-        setImgTransform(prev => ({ ...prev, x: tx, y: ty }));
-      }
-    }
-  }
-
-  function onPanelTouchEnd() {
-    pinchRef.current = null;
-    panMouseRef.current = null;
-  }
-
-  // ── Item group colors ────────────────────────────────────────
-  const [dividedNameColors, setDividedNameColors] = useState<Record<string, string>>({});
-  // Saves the original sort position of a divided item so the group stays in place
-  const [dividedNamePositions, setDividedNamePositions] = useState<Record<string, number>>({});
-
-  const groupColorByName = useMemo(() => {
-    // Count how many times each name appears
-    const counts: Record<string, number> = {};
-    for (const item of items) {
-      const key = item.name.trim().toLowerCase();
-      counts[key] = (counts[key] || 0) + 1;
-    }
-    // Only names that appear more than once get a color
-    const map: Record<string, string> = {};
-    let idx = 0;
-    for (const [key, count] of Object.entries(counts)) {
-      if (count > 1) { map[key] = PALETTE[idx % PALETTE.length]; idx++; }
-    }
-    return map;
-  }, [items]);
-
-  function getItemColor(item: ReceiptItemV2 | undefined): string | undefined {
-    if (!item) return undefined;
-    const key = item.name.trim().toLowerCase();
-    return groupColorByName[key] || dividedNameColors[key];
-  }
-
-  // Keep divided items together at their original position (new items arrive at end from API)
-  const displayItems = useMemo(() => {
-    const idxMap = new Map(items.map((it, i) => [it.id, i]));
-    const firstColorIdx: Record<string, number> = {};
-    items.forEach((it, i) => {
-      const c = getItemColor(it);
-      if (c && !(c in firstColorIdx)) firstColorIdx[c] = i;
-    });
-    // Override with saved positions: use savedPos-0.5 so the group slots back
-    // between the items that surrounded the original before deletion.
-    Object.entries(dividedNamePositions).forEach(([name, savedPos]) => {
-      const c = dividedNameColors[name];
-      if (c !== undefined) firstColorIdx[c] = savedPos - 0.5;
-    });
-    return [...items].sort((a, b) => {
-      const ca = getItemColor(a), cb = getItemColor(b);
-      const ka = ca !== undefined ? firstColorIdx[ca] : (idxMap.get(a.id) ?? 0);
-      const kb = cb !== undefined ? firstColorIdx[cb] : (idxMap.get(b.id) ?? 0);
-      if (ka !== kb) return ka - kb;
-      return (idxMap.get(a.id) ?? 0) - (idxMap.get(b.id) ?? 0);
-    });
-  }, [items, groupColorByName, dividedNameColors, dividedNamePositions]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const billTotal = useMemo(() => items.reduce((s, it) => s + it.line_total, 0), [items]);
-
-  // ── Divide action ─────────────────────────────────────────────
-  const [divideItemId, setDivideItemId] = useState<number | null>(null);
-
-  function handleDivide(item: ReceiptItemV2, count: number) {
-    const unitPrice = Math.round(item.line_total / Math.max(count, 1));
-    const color = getItemColor(item);
-    const key = item.name.trim().toLowerCase();
-    const originalPos = items.findIndex(it => it.id === item.id);
-    if (color) {
-      setDividedNameColors(prev => ({ ...prev, [key]: color }));
-      setDividedNamePositions(prev => ({ ...prev, [key]: originalPos }));
-    }
-    onDeleteItem(item.id);
-    for (let i = 0; i < count; i++) onAddItem(item.name, unitPrice);
-    setDivideItemId(null);
-  }
-
-  function clearDraw() {
-    if (!canvasRef.current) return;
-    canvasRef.current.getContext("2d")?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-  }
-
-  function toggleCheck(id: number) {
-    setCheckedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
-  const allChecked = items.length > 0 && checkedIds.size >= items.length;
-  const pct = items.length > 0 ? Math.round((checkedIds.size / items.length) * 100) : 0;
-
-  const hasOtrosCargos = items.some((it) => /^otros cargos$/i.test(it.name.trim()));
-
+    const t = setTimeout(onClose, 3000);
+    return () => clearTimeout(t);
+  }, [msg, onClose]);
   return (
-    <div className="space-y-3">
-      {/* ── "Otros cargos" explanation banner ───────────────── */}
-      {hasOtrosCargos && (
-        <div className="flex items-start gap-2 rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5 text-xs text-blue-700">
-          <span className="shrink-0 text-sm">ℹ️</span>
-          <span>
-            <strong>Otros cargos</strong> cubre la diferencia entre la suma de ítems y el total de la boleta. Si el valor no parece correcto, edítalo con el lápiz o elimínalo.
-          </span>
-        </div>
-      )}
-
-      {/* ── Split panel ──────────────────────────────────────── */}
-      <div
-        ref={containerRef}
-        className="flex rounded-2xl border border-slate-200 overflow-hidden bg-white"
-        style={{ height: "60vh" }}
-      >
-        {/* Left: receipt image */}
-        {imageUrl ? (
-          <div
-            ref={imgPanelRef}
-            className="relative flex-shrink-0 bg-slate-100 overflow-hidden border-r border-slate-200"
-            style={{ width: `${panelWidth}%`, touchAction: "none", cursor: drawMode ? "crosshair" : "grab" }}
-            onMouseDown={onPanelMouseDown}
-            onTouchStart={onPanelTouchStart}
-            onTouchMove={onPanelTouchMove}
-            onTouchEnd={onPanelTouchEnd}
-          >
-            {/* Transformed image + canvas — controls are OUTSIDE this div */}
-            <div
-              className="relative"
-              style={{
-                transformOrigin: "0 0",
-                transform: `translate(${imgTransform.x}px, ${imgTransform.y}px) scale(${imgTransform.zoom})`,
-                willChange: "transform",
-              }}
-            >
-              <img
-                ref={imgRef}
-                src={imageUrl}
-                alt="Boleta"
-                className="w-full block"
-                onLoad={initCanvas}
-                draggable={false}
-              />
-              <canvas
-                ref={canvasRef}
-                className="absolute inset-0 w-full h-full"
-                style={{
-                  cursor: drawMode ? "crosshair" : "inherit",
-                  pointerEvents: drawMode ? "auto" : "none",
-                }}
-                onMouseDown={onDrawStart}
-                onMouseMove={onDrawMove}
-                onMouseUp={onDrawEnd}
-                onTouchStart={(e) => { if (e.touches.length === 1) onDrawStart(e); }}
-                onTouchMove={(e) => { if (e.touches.length === 1) onDrawMove(e); }}
-                onTouchEnd={onDrawEnd}
-              />
-            </div>
-
-            {/* Controls — outside transform, always fixed top-right */}
-            <div className="absolute top-2 right-2 flex flex-col gap-1 z-10 items-end pointer-events-auto">
-              <div className="flex gap-1">
-                <button
-                  type="button"
-                  onClick={() => setDrawMode((v) => !v)}
-                  className={`p-1.5 rounded-full backdrop-blur-sm transition ${
-                    drawMode ? "bg-rose-500 text-white ring-2 ring-rose-300" : "bg-black/50 text-white hover:bg-black/70"
-                  }`}
-                  title={drawMode ? "Lápiz activo · 2 dedos para mover" : "Dibujar en la foto"}
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                </button>
-                {drawMode && (
-                  <button
-                    type="button"
-                    onClick={clearDraw}
-                    className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
-                    title="Borrar dibujo"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={onOpenFullscreen}
-                  className="p-1.5 rounded-full bg-black/50 backdrop-blur-sm text-white hover:bg-black/70"
-                  title="Ver completa"
-                >
-                  <ZoomIn className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {/* Zoom controls */}
-              <div className="flex items-center bg-black/50 backdrop-blur-sm rounded-full px-1.5 py-0.5 gap-1">
-                <button type="button" onClick={() => zoomBtn(-0.5)}
-                  className="text-white text-sm font-bold w-4 text-center leading-none">−</button>
-                <span className="text-white text-[9px] font-mono w-7 text-center">{Math.round(imgTransform.zoom * 100)}%</span>
-                <button type="button" onClick={() => zoomBtn(0.5)}
-                  className="text-white text-sm font-bold w-4 text-center leading-none">+</button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div
-            className="flex-shrink-0 bg-slate-50 border-r border-slate-200 flex items-center justify-center text-slate-400 text-xs text-center px-2"
-            style={{ width: `${panelWidth}%` }}
-          >
-            Sin imagen
-          </div>
-        )}
-
-        {/* Drag handle */}
-        <div
-          className="w-2 flex-shrink-0 bg-slate-200 hover:bg-indigo-400 active:bg-indigo-500 cursor-col-resize flex items-center justify-center select-none transition-colors"
-          onMouseDown={(e) => { draggingRef.current = true; e.preventDefault(); }}
-          onTouchStart={() => { draggingRef.current = true; }}
-          title="Arrastra para cambiar tamaño"
-        >
-          <div className="w-0.5 h-8 bg-slate-400 rounded-full" />
-        </div>
-
-        {/* Right: items list */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          <div className="px-2.5 py-2 border-b border-slate-100 flex-shrink-0">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Ítems</span>
-              <span className="text-[10px] text-slate-400 font-mono">{checkedIds.size}/{items.length}</span>
-            </div>
-            <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
-              <div className="h-1 bg-emerald-500 rounded-full transition-all duration-300" style={{ width: `${pct}%` }} />
-            </div>
-          </div>
-
-          <ul className="flex-1 overflow-y-auto divide-y divide-slate-50">
-            {items.length === 0 && (
-              <li className="px-3 py-6 text-center">
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  No se reconocieron ítems en la boleta.
-                  <br />
-                  Usa el botón "Agregar ítem" para ingresar los productos manualmente.
-                </p>
-              </li>
-            )}
-            {(() => {
-              // Pre-compute group metadata (last index, total, count, within-group index)
-              const lastIdxByColor: Record<string, number> = {};
-              const totalByColor: Record<string, number> = {};
-              const countByColor: Record<string, number> = {};
-              const groupIndexByItemId: Record<number, number> = {};
-              const groupCountSoFar: Record<string, number> = {};
-              displayItems.forEach((it, i) => {
-                const c = getItemColor(it);
-                if (c) {
-                  lastIdxByColor[c] = i;
-                  totalByColor[c] = (totalByColor[c] || 0) + it.line_total;
-                  countByColor[c] = (countByColor[c] || 0) + 1;
-                  groupCountSoFar[c] = (groupCountSoFar[c] || 0) + 1;
-                  groupIndexByItemId[it.id] = groupCountSoFar[c];
-                }
-              });
-              return displayItems.map((item, idx) => {
-              const color = getItemColor(item);
-              const isLastInGroup = color ? lastIdxByColor[color] === idx : false;
-              const groupTotal = color ? totalByColor[color] : 0;
-              const groupCount = color ? countByColor[color] : 0;
-              return (
-                <Fragment key={item.id}>
-                  {divideItemId === item.id ? (
-                    <DivideRow
-                      item={item}
-                      color={color}
-                      onConfirm={(count) => handleDivide(item, count)}
-                      onCancel={() => setDivideItemId(null)}
-                    />
-                  ) : (
-                    <ReviewItemRow
-                      item={item}
-                      checked={checkedIds.has(item.id)}
-                      onToggleCheck={() => toggleCheck(item.id)}
-                      onUpdate={(patch) => onUpdateItem(item.id, patch)}
-                      onDelete={() => onDeleteItem(item.id)}
-                      groupColor={color}
-                      onDivide={() => setDivideItemId(item.id)}
-                      globalIndex={idx + 1}
-                      groupIndex={color ? groupIndexByItemId[item.id] : undefined}
-                    />
-                  )}
-                  {isLastInGroup && groupCount > 1 && (
-                    <li
-                      className="flex justify-between px-3 py-1 text-[10px] font-medium"
-                      style={{ borderLeft: `3px solid ${color}`, backgroundColor: `${color}18` }}
-                    >
-                      <span className="text-slate-500 truncate">Subtotal</span>
-                      <span className="font-mono text-slate-700 ml-2">${groupTotal.toLocaleString("es-CL")}</span>
-                    </li>
-                  )}
-                </Fragment>
-              );
-            });
-            })()}
-            {showAdd ? (
-              <li className="p-2 space-y-1.5 bg-indigo-50/50">
-                <input
-                  className="input w-full text-xs py-1 px-2"
-                  placeholder="Nombre"
-                  value={addName}
-                  onChange={(e) => setAddName(e.target.value)}
-                  autoFocus
-                />
-                <div className="flex gap-1">
-                  <NumericInput
-                    className="input flex-1 text-xs py-1 px-2 font-mono"
-                    placeholder="Precio"
-                    value={addPrice}
-                    onChange={setAddPrice}
-                    allowDecimals
-                  />
-                  <button type="button" className="text-emerald-600 px-1"
-                    onClick={() => {
-                      if (addName.trim() && addPrice > 0) {
-                        onAddItem(addName.trim(), addPrice);
-                        setAddName(""); setAddPrice(0); setShowAdd(false);
-                      }
-                    }}>
-                    <Check className="w-4 h-4" />
-                  </button>
-                  <button type="button" className="text-slate-400 px-1"
-                    onClick={() => { setAddName(""); setAddPrice(0); setShowAdd(false); }}>
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </li>
-            ) : (
-              <li>
-                <button
-                  type="button"
-                  onClick={() => setShowAdd(true)}
-                  className="w-full flex items-center gap-1.5 px-2.5 py-2.5 text-[11px] text-slate-400 hover:text-indigo-500 hover:bg-indigo-50/50 transition"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Agregar ítem
-                </button>
-              </li>
-            )}
-            {items.length > 0 && (
-              <li className="flex justify-between px-3 py-2 text-[11px] font-bold bg-slate-100 border-t-2 border-slate-300 sticky bottom-0">
-                <span className="text-slate-600 uppercase tracking-wide">Total boleta</span>
-                <span className="font-mono text-slate-900">${billTotal.toLocaleString("es-CL")}</span>
-              </li>
-            )}
-          </ul>
-        </div>
-      </div>
-
-      {/* ── Confirm button ──────────────────────────────────── */}
-      <button
-        type="button"
-        className={`w-full py-3 text-base font-semibold rounded-xl transition ${
-          allChecked ? "btn-primary shadow-lg" : "bg-indigo-600 text-white opacity-80 rounded-xl"
-        }`}
-        onClick={onConfirm}
-      >
-        {allChecked
-          ? "Todo revisado — Asignar →"
-          : `Continuar${checkedIds.size > 0 ? ` (${items.length - checkedIds.size} sin revisar)` : ""} →`}
-      </button>
-
-      {/* ── Fullscreen image modal ───────────────────────────── */}
-      {imageFullscreen && imageUrl && (
-        <div className="fixed inset-0 z-50 bg-black/95 overflow-auto" onClick={onCloseFullscreen}>
-          <button
-            type="button"
-            className="fixed top-4 right-4 z-10 bg-black/60 rounded-full p-2.5 text-white"
-            onClick={onCloseFullscreen}
-          >
-            <X className="w-6 h-6" />
-          </button>
-          <img
-            src={imageUrl}
-            alt="Boleta completa"
-            className="w-full"
-            style={{ touchAction: "pinch-zoom" }}
-            onClick={(e) => e.stopPropagation()}
-          />
-        </div>
-      )}
+    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white text-sm px-4 py-2 rounded-xl shadow-lg max-w-xs text-center">
+      {msg}
     </div>
   );
 }
 
-// ── Divide item row ──────────────────────────────────────────
-function DivideRow({ item, color, onConfirm, onCancel }: {
-  item: ReceiptItemV2;
-  color?: string;
-  onConfirm: (count: number) => void;
-  onCancel: () => void;
-}) {
-  const [count, setCount] = useState(2);
-  const unitPrice = count > 0 ? Math.round(item.line_total / count) : item.line_total;
-  const borderColor = color || "#6366f1";
-  return (
-    <li className="p-2 space-y-1.5" style={{ borderLeft: `3px solid ${borderColor}`, backgroundColor: `${borderColor}14` }}>
-      <div className="text-[11px] font-semibold text-slate-700 truncate">
-        ÷ Dividir "{item.name}" · ${item.line_total.toLocaleString("es-CL")}
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-slate-500">Partes:</span>
-        <NumericInput
-          className="input w-12 text-xs py-0.5 px-1.5 font-mono text-center"
-          value={count}
-          onChange={v => setCount(Math.max(1, Math.round(v)))}
-          allowDecimals={false}
-        />
-        <span className="text-[10px] text-slate-500">→ ${unitPrice.toLocaleString("es-CL")} c/u</span>
-      </div>
-      <div className="flex gap-3">
-        <button type="button" className="flex items-center gap-1 text-emerald-600 text-[11px] font-medium"
-          onClick={() => onConfirm(count)}>
-          <Check className="w-3.5 h-3.5" />Dividir
-        </button>
-        <button type="button" className="text-slate-400 text-[11px]" onClick={onCancel}>Cancelar</button>
-      </div>
-    </li>
-  );
-}
+// ─── Avatar chip ──────────────────────────────────────────────────────────────
 
-// ── Compact item row for review step (narrow right panel) ───
-function ReviewItemRow({
-  item,
-  checked,
-  onToggleCheck,
-  onUpdate,
-  onDelete,
-  groupColor,
-  onDivide,
-  globalIndex,
-  groupIndex,
+function Avatar({
+  name,
+  color,
+  selected,
+  onClick,
+  locked,
 }: {
-  item: ReceiptItemV2;
-  checked: boolean;
-  onToggleCheck: () => void;
-  onUpdate: (patch: { name?: string; price?: number; quantity?: number }) => void;
-  onDelete: () => void;
-  groupColor?: string;
-  onDivide?: () => void;
-  globalIndex?: number;
-  groupIndex?: number;
+  name: string;
+  color: string;
+  selected: boolean;
+  onClick?: () => void;
+  locked?: boolean;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(item.name);
-  const [editPrice, setEditPrice] = useState(item.line_total / Math.max(item.quantity, 1));
-  const [editQty, setEditQty] = useState(item.quantity);
-
-  useEffect(() => {
-    if (!editing) {
-      setEditName(item.name);
-      setEditPrice(item.line_total / Math.max(item.quantity, 1));
-      setEditQty(item.quantity);
-    }
-  }, [item.name, item.line_total, item.quantity, editing]);
-
-  if (editing) {
-    return (
-      <li className="p-2 space-y-1.5 bg-indigo-50/40">
-        <input
-          className="input w-full text-xs py-1 px-2"
-          value={editName}
-          onChange={(e) => setEditName(e.target.value)}
-          autoFocus
-        />
-        <div className="flex gap-1 items-center">
-          <span className="text-[10px] text-slate-400 flex-shrink-0">$</span>
-          <NumericInput
-            className="input flex-1 text-xs py-1 px-2 font-mono"
-            value={editPrice}
-            onChange={setEditPrice}
-            allowDecimals
-            placeholder="precio unit."
-          />
-          <span className="text-[10px] text-slate-400 flex-shrink-0">×</span>
-          <input
-            type="number"
-            min={1}
-            className="input w-14 text-xs py-1 px-2 font-mono text-center"
-            value={editQty}
-            onChange={(e) => setEditQty(Math.max(1, parseInt(e.target.value) || 1))}
-          />
-          <button type="button" className="text-emerald-600 px-1"
-            onClick={() => { onUpdate({ name: editName, price: editPrice, quantity: editQty }); setEditing(false); }}>
-            <Check className="w-4 h-4" />
-          </button>
-          <button type="button" className="text-slate-400 px-1" onClick={() => setEditing(false)}>
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      </li>
-    );
-  }
-
-  const unitPrice = item.quantity > 1 ? Math.round(item.line_total / item.quantity) : item.line_total;
   return (
-    <li
-      className={`flex items-center gap-1.5 px-2 py-2 transition ${checked ? "bg-emerald-50/60" : ""}`}
-      style={groupColor ? { borderLeft: `3px solid ${groupColor}`, backgroundColor: checked ? undefined : `${groupColor}10` } : {}}
+    <button
+      type="button"
+      onClick={locked ? undefined : onClick}
+      className={`flex flex-col items-center gap-1 transition-opacity ${locked ? "opacity-60 cursor-default" : "cursor-pointer"}`}
     >
-      {/* Checkbox */}
-      <button
-        type="button"
-        onClick={onToggleCheck}
-        className={`w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all ${
-          checked ? "bg-emerald-500 border-emerald-500" : "border-slate-300"
+      <div
+        className={`w-11 h-11 rounded-full flex items-center justify-center text-white font-bold text-sm ring-2 transition-all ${
+          selected ? "ring-indigo-500 ring-offset-1" : "ring-transparent"
         }`}
+        style={{ background: color }}
       >
-        {checked && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
-      </button>
-
-      {/* Index badges */}
-      {globalIndex !== undefined && (
-        <div className="flex flex-col items-center w-4 flex-shrink-0 gap-px">
-          <span className="text-[8px] font-mono text-slate-400 leading-none">{globalIndex}</span>
-          {groupIndex !== undefined && (
-            <span className="text-[8px] font-bold leading-none" style={{ color: groupColor }}>
-              {groupIndex}
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Name + price */}
-      <div className="flex-1 min-w-0">
-        <p className={`text-[11px] font-medium leading-tight truncate ${checked ? "line-through text-slate-400" : "text-slate-800"}`}>
-          {item.name}
-        </p>
-        <p className="text-[10px] font-mono text-slate-500">
-          {item.quantity > 1
-            ? <>${unitPrice.toLocaleString("es-CL")} <span className="text-slate-400">×{item.quantity}</span></>
-            : <>${item.line_total.toLocaleString("es-CL")}</>}
-        </p>
+        {initials(name)}
       </div>
-
-      {/* Divide / Edit / Delete */}
-      {onDivide && (
-        <button type="button" onClick={onDivide}
-          className="text-slate-300 hover:text-indigo-500 transition flex-shrink-0" title="Dividir en partes">
-          <Scissors className="w-3.5 h-3.5" />
-        </button>
-      )}
-      <button type="button" onClick={() => setEditing(true)}
-        className="text-slate-300 hover:text-indigo-500 transition flex-shrink-0">
-        <Pencil className="w-3.5 h-3.5" />
-      </button>
-      <button type="button" onClick={onDelete}
-        className="text-slate-300 hover:text-rose-500 transition flex-shrink-0">
-        <Trash2 className="w-3.5 h-3.5" />
-      </button>
-    </li>
+      <span className="text-[10px] text-slate-600 max-w-[48px] truncate">{name.split(" ")[0]}</span>
+    </button>
   );
 }
 
-// ── CropModal ──────────────────────────────────────────────────────────────
-type Pt = { x: number; y: number };
-
-function ptInQuad(p: Pt, [tl, tr, br, bl]: Pt[]): boolean {
-  function sign(a: Pt, b: Pt, c: Pt) {
-    return (a.x - c.x) * (b.y - c.y) - (b.x - c.x) * (a.y - c.y);
-  }
-  const d1 = sign(p, tl, tr), d2 = sign(p, tr, br);
-  const d3 = sign(p, br, bl), d4 = sign(p, bl, tl);
-  const neg = d1 < 0 || d2 < 0 || d3 < 0 || d4 < 0;
-  const pos = d1 > 0 || d2 > 0 || d3 > 0 || d4 > 0;
-  return !(neg && pos);
-}
-
-function CropModal({
-  file,
-  onConfirm,
-  onSkip,
-  onCancel,
-}: {
-  file: File;
-  onConfirm: (cropped: File) => void;
-  onSkip: () => void;
-  onCancel: () => void;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null);
-  // 4 corners in image-pixel coords: [TL, TR, BR, BL]
-  const [corners, setCorners] = useState<Pt[]>([]);
-  const drag = useRef<{ idx: number | "quad"; startPt: Pt; origCorners: Pt[] } | null>(null);
-  const HANDLE_R = 22; // hit radius in screen px
-
-  useEffect(() => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      setImgEl(img);
-      const pad = 0.08;
-      const W = img.width, H = img.height;
-      setCorners([
-        { x: W * pad,       y: H * pad },
-        { x: W * (1 - pad), y: H * pad },
-        { x: W * (1 - pad), y: H * (1 - pad) },
-        { x: W * pad,       y: H * (1 - pad) },
-      ]);
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
-  }, [file]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !imgEl || !corners.length) return;
-    const MAX_W = Math.min(window.innerWidth - 32, 500);
-    const scale = MAX_W / imgEl.width;
-    canvas.width = MAX_W;
-    canvas.height = imgEl.height * scale;
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-
-    const sc = corners.map(p => ({ x: p.x * scale, y: p.y * scale }));
-    const [tl, tr, br, bl] = sc;
-
-    // Dim outside quad using evenodd
-    ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,0.5)";
-    ctx.beginPath();
-    ctx.rect(0, 0, canvas.width, canvas.height);
-    ctx.moveTo(tl.x, tl.y);
-    ctx.lineTo(tr.x, tr.y);
-    ctx.lineTo(br.x, br.y);
-    ctx.lineTo(bl.x, bl.y);
-    ctx.closePath();
-    ctx.fill("evenodd");
-    ctx.restore();
-
-    // Border
-    ctx.strokeStyle = "#6366f1";
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(tl.x, tl.y);
-    ctx.lineTo(tr.x, tr.y);
-    ctx.lineTo(br.x, br.y);
-    ctx.lineTo(bl.x, bl.y);
-    ctx.closePath();
-    ctx.stroke();
-
-    // Corner handles
-    sc.forEach(p => {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 14, 0, Math.PI * 2);
-      ctx.fillStyle = "#6366f1";
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-      ctx.fillStyle = "#fff";
-      ctx.fill();
-    });
-  }, [imgEl, corners]);
-
-  function screenToImg(e: React.PointerEvent<HTMLCanvasElement>): Pt {
-    const canvas = canvasRef.current!;
-    const b = canvas.getBoundingClientRect();
-    const scale = imgEl!.width / canvas.width;
-    return { x: (e.clientX - b.left) * scale, y: (e.clientY - b.top) * scale };
-  }
-
-  function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!imgEl || !corners.length) return;
-    const canvas = canvasRef.current!;
-    const b = canvas.getBoundingClientRect();
-    const scale = imgEl.width / canvas.width;
-    const sp = { x: e.clientX - b.left, y: e.clientY - b.top }; // screen px
-
-    // Check corner handles first (large touch target)
-    const ci = corners.findIndex(c =>
-      Math.hypot(c.x / scale - sp.x, c.y / scale - sp.y) < HANDLE_R
-    );
-    if (ci !== -1) {
-      canvas.setPointerCapture(e.pointerId);
-      drag.current = { idx: ci, startPt: screenToImg(e), origCorners: corners.map(c => ({ ...c })) };
-      return;
-    }
-    // Inside quad → move all
-    const imgPt = screenToImg(e);
-    if (ptInQuad(imgPt, corners as [Pt, Pt, Pt, Pt])) {
-      canvas.setPointerCapture(e.pointerId);
-      drag.current = { idx: "quad", startPt: imgPt, origCorners: corners.map(c => ({ ...c })) };
-    }
-  }
-
-  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!drag.current || !imgEl) return;
-    const cur = screenToImg(e);
-    const dx = cur.x - drag.current.startPt.x;
-    const dy = cur.y - drag.current.startPt.y;
-    const W = imgEl.width, H = imgEl.height;
-    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-    if (drag.current.idx === "quad") {
-      setCorners(drag.current.origCorners.map(c => ({
-        x: clamp(c.x + dx, 0, W),
-        y: clamp(c.y + dy, 0, H),
-      })));
-    } else {
-      const next = drag.current.origCorners.map((c, i) =>
-        i === drag.current!.idx
-          ? { x: clamp(c.x + dx, 0, W), y: clamp(c.y + dy, 0, H) }
-          : { ...c }
-      );
-      setCorners(next);
-    }
-  }
-
-  function onPointerUp() { drag.current = null; }
-
-  async function handleConfirm() {
-    if (!imgEl || !corners.length) { onSkip(); return; }
-    const [tl, tr, br, bl] = corners;
-    const minX = Math.max(0, Math.min(tl.x, bl.x));
-    const minY = Math.max(0, Math.min(tl.y, tr.y));
-    const maxX = Math.min(imgEl.width,  Math.max(tr.x, br.x));
-    const maxY = Math.min(imgEl.height, Math.max(bl.y, br.y));
-    const W = Math.round(maxX - minX), H = Math.round(maxY - minY);
-    if (W < 10 || H < 10) { onSkip(); return; }
-    const off = document.createElement("canvas");
-    off.width = W; off.height = H;
-    const ctx = off.getContext("2d")!;
-    ctx.translate(-minX, -minY);
-    ctx.beginPath();
-    ctx.moveTo(tl.x, tl.y);
-    ctx.lineTo(tr.x, tr.y);
-    ctx.lineTo(br.x, br.y);
-    ctx.lineTo(bl.x, bl.y);
-    ctx.closePath();
-    ctx.clip();
-    ctx.drawImage(imgEl, 0, 0);
-    off.toBlob(blob => {
-      if (!blob) { onSkip(); return; }
-      onConfirm(new File([blob], file.name, { type: "image/jpeg" }));
-    }, "image/jpeg", 0.92);
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/70 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
-        <div className="px-4 pt-4 pb-2">
-          <p className="font-semibold text-slate-800 text-sm">Selecciona la zona de items</p>
-          <p className="text-xs text-slate-500 mt-0.5">Arrastra las esquinas para encuadrar — incluso si la boleta está chueca</p>
-        </div>
-        <div className="overflow-auto max-h-[60vh] flex justify-center bg-slate-100 px-2 py-2">
-          <canvas
-            ref={canvasRef}
-            className="rounded touch-none cursor-crosshair"
-            style={{ maxWidth: "100%" }}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-          />
-        </div>
-        <div className="flex gap-2 p-4">
-          <button type="button" onClick={onCancel}
-            className="flex-1 btn-secondary py-2.5 text-sm">Cancelar</button>
-          <button type="button" onClick={onSkip}
-            className="flex-1 btn-secondary py-2.5 text-sm text-slate-500">Boleta completa</button>
-          <button type="button" onClick={handleConfirm}
-            className="flex-1 btn-primary py-2.5 text-sm">Analizar</button>
-        </div>
-      </div>
-    </div>
-  );
-}
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function SplitPage() {
   const router = useRouter();
-  const { t, locale } = useT();
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  // ── State ──────────────────────────────────────────────────
-  const [step, setStep] = useState<Step>("setup");
+  const [step, setStep] = useState(1);
+  const [bill, setBill] = useState<Bill | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [result, setResult] = useState<SplitResultV2 | null>(null);
-  const [txId, setTxId] = useState<number | null>(null);
-  const [currency, setCurrency] = useState("CLP");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Setup form — manual entry
-  const [manualAmount, setManualAmount] = useState(0);
-  const [manualMerchant, setManualMerchant] = useState("");
+  // Step 1 state
+  const [selectedPeople, setSelectedPeople] = useState<Set<number>>(new Set());
 
-  // Upload state
-  const [uploading, setUploading] = useState(false);
-  const [uploadStage, setUploadStage] = useState("");
-  const [uploadErr, setUploadErr] = useState("");
-  // Crop modal state
-  const [cropFile, setCropFile] = useState<File | null>(null);
-  // Propina state
-  const [propinaAmount, setPropinaAmount] = useState(0);
-  const [propinaPct, setPropinaPct] = useState(10);
-  const [propinaMode, setPropinaMode] = useState<"pct" | "clp">("pct");
-  const [addingPropina, setAddingPropina] = useState(false);
-  const [addingIva, setAddingIva] = useState(false);
-  // Descuento state
-  const [discountAmount, setDiscountAmount] = useState(0);
-  const [discountPct, setDiscountPct] = useState(10);
-  const [discountMode, setDiscountMode] = useState<"pct" | "clp">("pct");
-  const [addingDiscount, setAddingDiscount] = useState(false);
-  // IVA info
-  const [ivaIncluded, setIvaIncluded] = useState(false);
-  // Duplicate detection
-  const [dupeDetected, setDupeDetected] = useState(false);
-  // Receipt image for review step
-  const [receiptImageUrl, setReceiptImageUrl] = useState("");
-  const [imageFullscreen, setImageFullscreen] = useState(false);
+  // Step 2 state
+  const [editItemId, setEditItemId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState({ name: "", qty: 1, unit_price: 0 });
+  const [newItem, setNewItem] = useState<{ name: string; qty: number; unit_price: number } | null>(null);
+  const [tipPct, setTipPct] = useState<number | null>(null);
+  const [customTip, setCustomTip] = useState("");
+  const [showCustomTip, setShowCustomTip] = useState(false);
 
-  // Settlement — single payer
-  const [settlement, setSettlement] = useState<SettleOut | null>(null);
-  const [payerPersonId, setPayerPersonId] = useState<number | null>(null);
-  const [payerAccountId, setPayerAccountId] = useState<number | null>(null);
-  const [settling, setSettling] = useState(false);
-  // Settlement — multi payer
-  const [multiPayer, setMultiPayer] = useState(false);
-  const [payerAmounts, setPayerAmounts] = useState<Record<number, number>>({});
-  const [multiSettlement, setMultiSettlement] = useState<Transfer[] | null>(null);
-  const [copied, setCopied] = useState(false);
+  // Step 3 state
+  const [shareItemId, setShareItemId] = useState<number | null>(null);
+  const [shareSelected, setShareSelected] = useState<Set<number>>(new Set());
 
-  // ── Boot ───────────────────────────────────────────────────
+  // Step 4 state
+  const [payerMode, setPayerMode] = useState<"me" | "other" | "split">("me");
+  const [otherPayer, setOtherPayer] = useState<number | null>(null);
+  const [multiAmounts, setMultiAmounts] = useState<Record<number, string>>({});
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
+
+  // Step 5 state
+  const [finalized, setFinalized] = useState(false);
+  const [myShare, setMyShare] = useState(0);
+
+  function showError(msg: string) {
+    setError(msg);
+  }
+
+  // Load people and accounts on mount
   useEffect(() => {
-    if (!getToken()) { router.replace("/"); return; }
-    Promise.all([getMe(), listPeople(), listAccounts()]).then(
-      ([me, all, accs]) => {
-        // "Yo" first, then the rest (deduped)
-        const others = all.filter((p) => !p.is_me);
-        setPeople([me, ...others]);
-        setAccounts(accs);
-        setPayerPersonId(null); // default payer = me
-      },
-    );
-  }, [router]);
-
-  // ── Helpers ────────────────────────────────────────────────
-  const refreshResult = useCallback(async (id: number) => {
-    const r = await splitResultV2(id);
-    setResult(r);
-    return r;
+    listPeople().then((ps) => {
+      setPeople(ps);
+      const me = ps.find((p) => p.is_me);
+      if (me) setSelectedPeople(new Set([me.id]));
+    }).catch(() => {});
+    listAccounts().then(setAccounts).catch(() => {});
   }, []);
 
-  // ── Upload receipt ─────────────────────────────────────────
-  function handleFile(file: File) {
-    setCropFile(file);
-  }
+  // ── File upload ──────────────────────────────────────────────
 
-  async function handleCropConfirm(croppedFile: File) {
-    setCropFile(null);
-    const file = croppedFile;
-    setUploadErr("");
-    setUploading(true);
-    // Show image immediately from local file — no waiting for backend
-    const localBlobUrl = URL.createObjectURL(file);
-    setReceiptImageUrl(localBlobUrl);
-    setUploadStage("Analizando imagen con IA...");
+  async function handleFile(file: File) {
+    setLoading(true);
     try {
-      const upload = await uploadImage(file);
-      // Swap to backend URL once available
-      setReceiptImageUrl(resolveBackendUrl(upload.image_url || "") || localBlobUrl);
-      setUploadStage("Preparando sesión...");
-      if (!upload.transactions.length) throw new Error("No se pudo leer la boleta");
+      // 1. Create the bill
+      const today = new Date().toISOString().split("T")[0];
+      let b = await createBill({ date: today });
 
-      // Duplicate detection via dupe_of flag from the OCR parser
-      const hasDupe = upload.transactions.some((t) => t.dupe_of != null);
-      if (hasDupe) setDupeDetected(true);
-
-      const txCurrency = upload.transactions[0].currency || upload.currency || "CLP";
-
-      // Normalize items: OCR may return (a) 1 tx with many items, or
-      // (b) N txs each as a separate line item. Detect and unify.
-      let totalAmount: number;
-      let merchant: string;
-      let txDate: string;
-      let splitItems: { name: string; price: number; quantity: number }[];
-
-      if (upload.transactions.length === 1) {
-        const t0 = upload.transactions[0];
-        totalAmount = t0.amount;
-        merchant = t0.merchant || "";
-        txDate = t0.date;
-        splitItems = t0.items.length > 0
-          ? t0.items
-          : [{ name: t0.merchant || "Total", price: t0.amount, quantity: 1 }];
-      } else {
-        // Multiple transactions — each is a line item of the same receipt
-        const allTxs = upload.transactions.filter((t) => !t.is_income && !t.is_cc_payment);
-        totalAmount = allTxs.reduce((s, t) => s + t.amount, 0);
-        merchant = allTxs[0]?.merchant || upload.transactions[0].merchant || "";
-        txDate = allTxs[0]?.date || upload.transactions[0].date;
-
-        // If some txs already have items, flatten them; otherwise each tx = 1 item
-        const flatItems = allTxs.flatMap((t) => t.items);
-        splitItems = flatItems.length > 0
-          ? flatItems
-          : allTxs.map((t) => ({ name: t.merchant || "Ítem", price: t.amount, quantity: 1 }));
+      // 2. Add selected participants
+      const me = people.find((p) => p.is_me);
+      const toAdd = Array.from(selectedPeople);
+      if (me && !toAdd.includes(me.id)) toAdd.unshift(me.id);
+      for (const pid of toAdd) {
+        b = await addParticipant(b.id, pid);
       }
 
-      // ── IVA detection ──────────────────────────────────────────────────────
-      // Chilean boletas have two formats:
-      //
-      //  Case A — OCR returns an explicit "IVA" row (boleta shows Total Neto +
-      //           IVA + Total con IVA). Remove the IVA row and distribute its
-      //           amount proportionally into each item's unit price.
-      //
-      //  Case B — No "IVA" row but itemsSum < totalAmount by ~19%. Same math,
-      //           but derived from the gap instead of an explicit row.
-      //
-      //  Case C — No gap (items already include IVA, or it's a service ticket
-      //           with no IVA). Do nothing.
-      //
-      // Either way: each person pays IVA proportional to THEIR items.
-
-      /** Distribute `ivaTotal` pesos across `items` in proportion to their subtotals. */
-      function distributeIva(
-        items: { name: string; price: number; quantity: number }[],
-        ivaTotal: number,
-      ) {
-        const baseSum = items.reduce((s, it) => s + it.price * it.quantity, 0);
-        if (baseSum === 0) return items;
-        let remaining = Math.round(ivaTotal);
-        return items.map((it, idx) => {
-          const itemBase = it.price * it.quantity;
-          const share =
-            idx === items.length - 1
-              ? remaining                                          // last absorbs rounding
-              : Math.round((itemBase / baseSum) * ivaTotal);
-          remaining -= share;
-          return { ...it, price: Math.round((itemBase + share) / it.quantity) };
-        });
-      }
-
-      const ivaIdx = splitItems.findIndex((it) =>
-        /^(iva|impuesto|tax)\b/i.test(it.name.trim()),
-      );
-
-      if (ivaIdx >= 0) {
-        // Case A: OCR returned an explicit IVA item — remove it, distribute its amount
-        const ivaRow = splitItems[ivaIdx];
-        const ivaTotal = ivaRow.price * ivaRow.quantity;
-        const nonIva = splitItems.filter((_, i) => i !== ivaIdx);
-        splitItems = distributeIva(nonIva, ivaTotal);
-        setIvaIncluded(true);
-      } else {
-        // Case B or C: no explicit IVA row
-        const itemsSum = splitItems.reduce((s, it) => s + it.price * it.quantity, 0);
-        const gap = Math.round(totalAmount - itemsSum);
-        const expectedIva = Math.round(itemsSum * 0.19);
-
-        if (gap > 0 && Math.abs(gap - expectedIva) <= Math.max(1, expectedIva * 0.05)) {
-          // Case B: gap ≈ 19% → the boleta shows neto prices, IVA not listed explicitly.
-          // Calculate IVA once on the full total (SII rule), then distribute across items.
-          const ivaAmount = Math.round(itemsSum * 0.19);
-          splitItems = distributeIva(splitItems, ivaAmount);
-          setIvaIncluded(true);
-        } else if (gap > 0 && gap > itemsSum * 0.01) {
-          // Unknown positive gap > 1% → "Otros cargos"
-          splitItems = [...splitItems, { name: "Otros cargos", price: gap, quantity: 1 }];
-        }
-        // Case C: gap ≈ 0 → IVA already included in prices, do nothing
-      }
-
-      // Drop free modifier items (price = 0) — they don't affect the split
-      splitItems = splitItems.filter((it) => it.price !== 0);
-
-      // Auto-detect discount lines from OCR: ensure their price is negative
-      splitItems = splitItems.map((it) => {
-        if (/^(descuento|dscto|dcto|rebaja)/i.test(it.name.trim()) && it.price > 0) {
-          return { ...it, price: -it.price };
-        }
-        return it;
-      });
-
-      // Expand items with quantity > 1 into individual units (capped at 20)
-      splitItems = splitItems.flatMap((it) => {
-        if (it.quantity > 1 && it.price > 0) {
-          return Array.from({ length: Math.min(it.quantity, 20) }, () => ({
-            name: it.name,
-            price: it.price,
-            quantity: 1,
-          }));
-        }
-        return [it];
-      });
-
-      // Validate we have something real to split
-      if (totalAmount <= 0) {
-        throw new Error(
-          "No se pudo leer el monto de la boleta. " +
-          "Intenta con otra foto o ingresa el monto manualmente."
-        );
-      }
-      const zeroItems = splitItems.every((it) => it.price <= 0);
-      if (zeroItems) {
-        throw new Error(
-          "Los precios de los ítems son 0. " +
-          "Ingresa el monto total manualmente."
-        );
-      }
-
-      // Create the transaction — handle 409 (same receipt re-uploaded) gracefully
-      let txIdToUse: number;
-      try {
-        const tx = await createTransaction({
-          amount: totalAmount,
-          currency: txCurrency,
-          category: "Dividido",
-          date: txDate,
-          merchant,
-          notes: "",
-          is_income: false,
-          account_id: null,
-          image_url: upload.image_url,
-          items: splitItems,
-        });
-        txIdToUse = tx.id;
-      } catch (e: any) {
-        // 409 = duplicate receipt within 60s — reuse the existing transaction
-        const dupeMatch = e.message?.match(/"existing_id"\s*:\s*(\d+)/);
-        if (dupeMatch) {
-          txIdToUse = parseInt(dupeMatch[1]);
-          setDupeDetected(true);
-        } else {
-          throw e;
-        }
-      }
-
-      setCurrency(txCurrency);
-      setTxId(txIdToUse);
-      await startSplit(txIdToUse, splitItems);
-      await refreshResult(txIdToUse);
-      setStep("review");
-    } catch (e: any) {
-      setUploadErr(e.message || "Error al subir");
+      // 3. OCR
+      b = await ocrBill(b.id, file);
+      setBill(b);
+      setStep(2);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al leer boleta");
     } finally {
-      setUploading(false);
+      setLoading(false);
     }
   }
 
-  // ── Manual start ───────────────────────────────────────────
-  async function handleManualStart() {
-    const amount = manualAmount;
-    if (!amount || isNaN(amount)) return;
-    setUploading(true);
+  // ── Step 2: tip ──────────────────────────────────────────────
+
+  const subtotal = bill ? bill.items.reduce((s, i) => s + i.line_total, 0) : 0;
+
+  async function applyTipPct(pct: number) {
+    if (!bill) return;
+    setTipPct(pct);
+    setShowCustomTip(false);
+    const tipAmt = Math.round(subtotal * pct);
     try {
-      const today = new Date().toISOString().slice(0, 10);
-      const res = await startManualSplit({
-        merchant: manualMerchant || undefined,
-        total_amount: amount,
-        currency,
-        date: today,
-      });
-      setTxId(res.transaction_id);
-      await refreshResult(res.transaction_id);
-      setStep("assign");
-    } catch (e: any) {
-      setUploadErr(e.message || "Error");
-    } finally {
-      setUploading(false);
+      const b = await patchBill(bill.id, { tip_amount: tipAmt });
+      setBill(b);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al guardar propina");
     }
   }
 
-  // ── Toggle a person on/off for an item ─────────────────────
-  async function handleTogglePerson(itemId: number, personId: number) {
-    if (!result) return;
-    const item = result.items.find((i) => i.id === itemId);
+  async function applyCustomTip() {
+    if (!bill) return;
+    const tipAmt = parseInt(customTip.replace(/\D/g, ""), 10) || 0;
+    try {
+      const b = await patchBill(bill.id, { tip_amount: tipAmt });
+      setBill(b);
+      setShowCustomTip(false);
+      setTipPct(null);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al guardar propina");
+    }
+  }
+
+  // ── Step 2: items ────────────────────────────────────────────
+
+  async function saveEditItem() {
+    if (!bill || editItemId === null) return;
+    try {
+      const b = await patchItem(bill.id, editItemId, editDraft);
+      setBill(b);
+      setEditItemId(null);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al guardar ítem");
+    }
+  }
+
+  async function handleDeleteItem(iid: number) {
+    if (!bill) return;
+    try {
+      const b = await deleteItem(bill.id, iid);
+      setBill(b);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al eliminar ítem");
+    }
+  }
+
+  async function handleAddItem() {
+    if (!bill || !newItem || !newItem.name.trim()) return;
+    try {
+      const b = await addItem(bill.id, newItem);
+      setBill(b);
+      setNewItem(null);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al agregar ítem");
+    }
+  }
+
+  // ── Step 3: shares ───────────────────────────────────────────
+
+  function openShareSheet(itemId: number) {
+    const item = bill?.items.find((i) => i.id === itemId);
     if (!item) return;
+    const currentPids = new Set(item.shares.map((s) => s.participant_id));
+    setShareSelected(currentPids.size > 0 ? currentPids : new Set(bill?.participants.map((p) => p.id)));
+    setShareItemId(itemId);
+  }
 
-    const currentIds = new Set(item.assignees.map((a) => a.person_id));
-    let newIds: number[];
-    if (currentIds.has(personId)) {
-      newIds = [...currentIds].filter((id) => id !== personId);
+  async function confirmShares() {
+    if (!bill || shareItemId === null || shareSelected.size === 0) return;
+    const pids = Array.from(shareSelected);
+    const w = 1 / pids.length;
+    const shares = pids.map((pid) => ({ participant_id: pid, weight: w }));
+    try {
+      const b = await postShares(bill.id, shareItemId, shares);
+      setBill(b);
+      setShareItemId(null);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al asignar");
+    }
+  }
+
+  async function handleAssignEqual() {
+    if (!bill) return;
+    try {
+      const b = await assignEqual(bill.id);
+      setBill(b);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al dividir igual");
+    }
+  }
+
+  // ── Step 4: payers ───────────────────────────────────────────
+
+  async function handleSetPayers() {
+    if (!bill) return;
+    const me = bill.participants.find((p) => p.is_me);
+    let payers: { participant_id: number; paid_amount: number }[] = [];
+    const total = bill.total_amount;
+
+    if (payerMode === "me") {
+      if (!me) return;
+      payers = [{ participant_id: me.id, paid_amount: total }];
+    } else if (payerMode === "other") {
+      if (!otherPayer) { showError("Selecciona quién pagó"); return; }
+      payers = [{ participant_id: otherPayer, paid_amount: total }];
     } else {
-      newIds = [...currentIds, personId];
+      const sum = Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+      if (Math.abs(sum - total) > 1) { showError(`La suma ($${Math.round(sum).toLocaleString("es-CL")}) no coincide con el total`); return; }
+      payers = bill.participants
+        .filter((p) => (parseFloat(multiAmounts[p.id] || "0") || 0) > 0)
+        .map((p) => ({ participant_id: p.id, paid_amount: parseFloat(multiAmounts[p.id] || "0") || 0 }));
     }
 
-    const assignees: AssigneeIn[] = newIds.map((pid) => {
-      const existing = item.assignees.find((a) => a.person_id === pid);
-      return {
-        person_id: pid,
-        split_type: existing?.split_type ?? "equal",
-        value: existing?.value ?? null,
-      };
-    });
-
     try {
-      await assignItemV2(itemId, assignees);
-      if (txId) await refreshResult(txId);
-    } catch (e: any) {
-      alert(e?.message || "Error al asignar");
+      const b = await setPayers(bill.id, payers);
+      setBill(b);
+      setStep(5);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al guardar pagadores");
     }
   }
 
-  // ── Assign all people to one item in a single call ────────
-  async function handleAssignAll(itemId: number, personIds: number[]) {
-    const assignees: AssigneeIn[] = personIds.map((pid) => ({
-      person_id: pid,
-      split_type: "equal",
-      value: null,
-    }));
-    try {
-      await assignItemV2(itemId, assignees);
-      if (txId) await refreshResult(txId);
-    } catch (e: any) {
-      alert(e?.message || "Error al asignar");
-    }
-  }
+  // ── Step 5: finalize ─────────────────────────────────────────
 
-  // ── Save adjusted split for one item ──────────────────────
-  async function handleSaveAdjust(itemId: number, assignees: AssigneeIn[]) {
+  async function handleFinalize() {
+    if (!bill) return;
+    setLoading(true);
     try {
-      await assignItemV2(itemId, assignees);
-      if (txId) await refreshResult(txId);
-    } catch (e: any) {
-      alert(e?.message || "Error al guardar ajuste");
-    }
-  }
-
-  // ── Settle ─────────────────────────────────────────────────
-  async function handleSettle(saveToLucas: boolean = true) {
-    if (!txId) return;
-    setSettling(true);
-    try {
-      const out = await settleSplit({
-        transaction_id: txId,
-        payer_person_id: payerPersonId,
-        account_id: payerAccountId ?? undefined,
-        save_to_lucas: saveToLucas,
+      const b = await finalizeBill(bill.id, {
+        account_id: selectedAccountId ?? undefined,
+        category: "Comida",
       });
-      setSettlement(out);
-    } catch (e: any) {
-      alert(e.message);
+      setBill(b);
+      const me = b.participants.find((p) => p.is_me);
+      setMyShare(me?.owes_amount ?? 0);
+      setFinalized(true);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al finalizar");
     } finally {
-      setSettling(false);
+      setLoading(false);
     }
   }
 
-  // ── People management ──────────────────────────────────────
-  async function handleAddPerson(name: string, color: string) {
-    try {
-      const p = await createPerson(name, color);
-      setPeople((prev) => [...prev, p]);
-    } catch (e: any) {
-      alert(e?.message || "Error al agregar persona");
-    }
-  }
-  async function handleRemovePerson(id: number) {
-    try {
-      await deletePerson(id);
-      setPeople((prev) => prev.filter((x) => x.id !== id));
-    } catch (e: any) {
-      alert(e?.message || "Error al eliminar persona");
-    }
-  }
-  async function handleClearPeople() {
-    try {
-      const toRemove = people.filter((p) => !p.is_me);
-      await Promise.all(toRemove.map((p) => deletePerson(p.id)));
-      setPeople((prev) => prev.filter((p) => p.is_me));
-    } catch (e: any) {
-      alert(e?.message || "Error al limpiar lista");
-    }
+  function buildWhatsApp() {
+    if (!bill) return "";
+    const lines = bill.participants.map((p) => `${p.name}: ${clp(p.owes_amount)}`);
+    const merchant = bill.merchant || "la cuenta";
+    const msg = `Cuenta en ${merchant} 🍽️\n${lines.join("\n")}\nTotal: ${clp(bill.total_amount)}`;
+    return `https://wa.me/?text=${encodeURIComponent(msg)}`;
   }
 
-  // ── Add propina ────────────────────────────────────────────
-  async function handleAddPropina() {
-    if (!txId || !result) return;
-    const base = result.items
-      .filter((it) => !/propina|tip|iva/i.test(it.name))
-      .reduce((s, it) => s + it.price * it.quantity, 0);
-    const amount = propinaMode === "pct" ? Math.round(base * propinaPct / 100) : propinaAmount;
-    if (amount <= 0) return;
-    setAddingPropina(true);
-    try {
-      await addSplitItem(txId, { name: "Propina", price: amount, quantity: 1 });
-      setPropinaAmount(0);
-      await refreshResult(txId);
-    } catch (e: any) {
-      alert(e.message || "Error al agregar propina");
-    } finally {
-      setAddingPropina(false);
-    }
-  }
+  // ── Participant management in bill ───────────────────────────
 
-  // ── Add discount ───────────────────────────────────────────
-  async function handleAddDiscount() {
-    if (!txId || !result) return;
-    const base = result.items
-      .filter((it) => !/propina|tip|iva|descuento|dscto|dcto|rebaja/i.test(it.name))
-      .reduce((s, it) => s + it.price * it.quantity, 0);
-    const rawAmt = discountMode === "pct"
-      ? Math.round(base * discountPct / 100)
-      : Math.abs(discountAmount);
-    if (rawAmt <= 0) return;
-    const negativePrice = -rawAmt;
-    setAddingDiscount(true);
-    try {
-      const discountItem = await addSplitItem(txId, { name: "Descuento", price: negativePrice, quantity: 1 });
-      // Assign discount to all people equally
-      await handleAssignAll(discountItem.id, people.map((p) => p.id));
-      setDiscountAmount(0);
-      await refreshResult(txId);
-    } catch (e: any) {
-      alert(e.message || "Error al agregar descuento");
-    } finally {
-      setAddingDiscount(false);
-    }
-  }
-
-  // ── Update / delete / add item ────────────────────────────
-  async function handleUpdateItem(itemId: number, patch: { name?: string; price?: number; quantity?: number }) {
-    try {
-      await updateSplitItem(itemId, patch);
-      setResult((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          items: prev.items.map((it) => {
-            if (it.id !== itemId) return it;
-            const newPrice = patch.price ?? it.price;
-            const newQty = patch.quantity ?? it.quantity;
-            const newName = patch.name ?? it.name;
-            return { ...it, name: newName, price: newPrice, quantity: newQty, line_total: newPrice * Math.max(newQty, 1) };
-          }),
-        };
+  async function toggleParticipant(pid: number) {
+    if (!bill) {
+      // Pre-bill phase: just toggle local selection
+      const me = people.find((p) => p.is_me);
+      if (me && pid === me.id) return;
+      setSelectedPeople((prev) => {
+        const next = new Set(prev);
+        if (next.has(pid)) next.delete(pid);
+        else next.add(pid);
+        return next;
       });
-      if (txId) await refreshResult(txId);
-    } catch (e: any) {
-      alert(e?.message || "Error al actualizar ítem");
+      return;
     }
-  }
-
-  async function handleDeleteItem(itemId: number) {
+    const existing = bill.participants.find((p) => p.person_id === pid);
     try {
-      await deleteSplitItem(itemId);
-      if (txId) {
-        await refreshResult(txId);
+      if (existing) {
+        if (existing.is_me) return;
+        const b = await removeParticipant(bill.id, existing.id);
+        setBill(b);
       } else {
-        setResult((prev) => {
-          if (!prev) return prev;
-          return { ...prev, items: prev.items.filter((it) => it.id !== itemId) };
-        });
+        const b = await addParticipant(bill.id, pid);
+        setBill(b);
       }
-    } catch (e: any) {
-      alert(e?.message || "Error al eliminar ítem");
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error al actualizar participantes");
     }
   }
 
-  async function handleAddItem(name: string, price: number) {
-    if (!txId) return;
-    try {
-      await addSplitItem(txId, { name, price, quantity: 1 });
-      await refreshResult(txId);
-    } catch (e: any) {
-      alert(e?.message || "Error al agregar ítem");
-    }
+  // ── Render helpers ───────────────────────────────────────────
+
+  const participantIds = bill
+    ? new Set(bill.participants.map((p) => p.person_id))
+    : selectedPeople;
+
+  function unassignedTotal() {
+    if (!bill) return 0;
+    return bill.items
+      .filter((i) => i.shares.length === 0)
+      .reduce((s, i) => s + i.line_total, 0);
   }
 
-  // ── Correct total ─────────────────────────────────────────
-  async function handleUpdateTotal(newTotal: number) {
-    if (!txId || !result) return;
-    const currentSum = result.items.reduce((s, it) => s + it.price * it.quantity, 0);
-    const gap = Math.round(newTotal - currentSum);
-    // Find existing adjustment item to update or delete
-    const adjItem = result.items.find((it) => /^(otros cargos|ajuste)/i.test(it.name));
-    try {
-      if (gap === 0) {
-        if (adjItem) await deleteSplitItem(adjItem.id);
-      } else if (adjItem) {
-        await updateSplitItem(adjItem.id, { price: adjItem.price + gap });
-      } else {
-        await addSplitItem(txId, { name: gap > 0 ? "Otros cargos" : "Descuento", price: gap, quantity: 1 });
-      }
-      await refreshResult(txId);
-    } catch (e: any) {
-      alert(e?.message || "Error al actualizar total");
-    }
-  }
+  // ─── RENDER ──────────────────────────────────────────────────────────────────
 
-  // ── Add IVA manually ──────────────────────────────────────
-  async function handleAddIva() {
-    if (!txId || !result) return;
-    setAddingIva(true);
-    try {
-      const baseTotal = result.items.reduce((s, it) => s + it.price * it.quantity, 0);
-      const ivaAmt = Math.round(baseTotal * 0.19);
-      await addSplitItem(txId, { name: "IVA (19%)", price: ivaAmt, quantity: 1 });
-      setIvaIncluded(true);
-      await refreshResult(txId);
-    } catch (e: any) {
-      alert(e.message || "Error al agregar IVA");
-    } finally {
-      setAddingIva(false);
-    }
-  }
-
-  // ── Reset ──────────────────────────────────────────────────
-  function reset() {
-    setStep("setup");
-    setResult(null);
-    setTxId(null);
-    setSettlement(null);
-    setMultiSettlement(null);
-    setMultiPayer(false);
-    setPayerAmounts({});
-    setPayerPersonId(null);
-    setPayerAccountId(null);
-    setManualAmount(0);
-    setManualMerchant("");
-    setUploadErr("");
-    setPropinaAmount(0);
-    setPropinaPct(10);
-    setPropinaMode("pct");
-    setDiscountAmount(0);
-    setDiscountPct(10);
-    setDiscountMode("pct");
-    setIvaIncluded(false);
-    setDupeDetected(false);
-    setReceiptImageUrl("");
-    setImageFullscreen(false);
-  }
-
-  // ── Render ─────────────────────────────────────────────────
   return (
-    <div className="max-w-2xl mx-auto space-y-2 pb-24 md:pb-0">
-      <h1 className="text-3xl font-semibold tracking-tight mb-1">{t("split.title")}</h1>
-      <StepBar step={step} />
-
-      {/* ── Crop modal ─────────────────────────────────────────── */}
-      {cropFile && (
-        <CropModal
-          file={cropFile}
-          onConfirm={handleCropConfirm}
-          onSkip={() => { handleCropConfirm(cropFile); }}
-          onCancel={() => setCropFile(null)}
-        />
-      )}
-
-      {/* ══ STEP 1: Setup ══════════════════════════════════════ */}
-      {step === "setup" && (
-        <div className="space-y-5">
-          {/* Upload receipt */}
-          <div className="card">
-            <h2 className="text-base font-semibold mb-3">{t("split.uploadReceipt")}</h2>
-            <UploadZone onFile={handleFile} loading={uploading} />
-            {uploading && receiptImageUrl && (
-              <div className="mt-3 rounded-xl overflow-hidden border border-slate-200 relative">
-                <img src={receiptImageUrl} alt="Boleta" className="w-full max-h-48 object-cover object-top" />
-                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                  <div className="flex items-center gap-2 bg-white/90 rounded-full px-4 py-2 text-sm font-medium text-slate-700">
-                    <svg className="animate-spin w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-                    </svg>
-                    {uploadStage || "Procesando..."}
-                  </div>
-                </div>
-              </div>
-            )}
-            {uploadErr && (
-              <div className="mt-3 rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 space-y-2">
-                <p className="text-sm text-rose-700 font-medium">{uploadErr}</p>
-                <p className="text-xs text-rose-500">
-                  Intenta con otra foto más nítida o usa el ingreso manual de abajo.
-                </p>
-                <button
-                  type="button"
-                  className="text-xs font-semibold text-rose-600 hover:text-rose-800 underline underline-offset-2"
-                  onClick={() => setUploadErr("")}
-                >
-                  Reintentar →
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Divider */}
-          <div className="flex items-center gap-3 text-slate-400 text-sm">
-            <div className="flex-1 h-px bg-slate-200" />
-            {t("split.orManual")}
-            <div className="flex-1 h-px bg-slate-200" />
-          </div>
-
-          {/* Manual entry */}
-          <div className="card space-y-3">
-            <input
-              className="input"
-              placeholder={t("split.manualMerchant")}
-              value={manualMerchant}
-              onChange={(e) => setManualMerchant(e.target.value)}
-            />
-            <div className="flex gap-2">
-              <NumericInput
-                className="input flex-1"
-                placeholder={t("split.manualAmount")}
-                value={manualAmount}
-                onChange={setManualAmount}
-                allowDecimals
-              />
-              <select
-                className="input w-24"
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
-              >
-                {["CLP", "USD", "EUR", "ARS", "MXN"].map((c) => (
-                  <option key={c}>{c}</option>
-                ))}
-              </select>
-            </div>
-            <button
-              className="btn-primary w-full"
-              disabled={!manualAmount || manualAmount === 0 || uploading}
-              onClick={handleManualStart}
-            >
-              {t("split.manualStart")}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ══ STEP 2: Review ═════════════════════════════════════ */}
-      {step === "review" && result && (
-        <ReviewStep
-          items={result.items}
-          imageUrl={receiptImageUrl}
-          imageFullscreen={imageFullscreen}
-          onOpenFullscreen={() => setImageFullscreen(true)}
-          onCloseFullscreen={() => setImageFullscreen(false)}
-          onUpdateItem={handleUpdateItem}
-          onDeleteItem={handleDeleteItem}
-          onAddItem={handleAddItem}
-          onConfirm={() => { setImageFullscreen(false); setStep("assign"); }}
-        />
-      )}
-
-      {/* ══ STEP 3: Assign ══════════════════════════════════════ */}
-      {step === "assign" && result && (
-        <div className="space-y-4">
-          {/* Duplicate warning banner */}
-          {dupeDetected && (
-            <div className="flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
-              <span className="shrink-0 text-base">⚠️</span>
-              <span>
-                <strong>Boleta duplicada detectada.</strong> Esta boleta ya fue subida anteriormente. Puedes continuar de todas formas, pero verifica que no estés dividiendo la misma cuenta dos veces.
-              </span>
-            </div>
-          )}
-
-          {/* IVA info banner */}
-          {ivaIncluded && (
-            <div className="flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
-              <span className="shrink-0 text-base">🧾</span>
-              <span>
-                <strong>IVA 19% incluido por ítem.</strong> Cada precio ya incluye el IVA correspondiente — quien pide más, paga más IVA automáticamente.
-              </span>
-            </div>
-          )}
-          <BillSplitter
-            result={result}
-            people={people}
-            currency={currency}
-            onTogglePerson={handleTogglePerson}
-            onSaveAdjust={handleSaveAdjust}
-            onAddPerson={handleAddPerson}
-            onRemovePerson={handleRemovePerson}
-            onClearPeople={handleClearPeople}
-            onUpdateItem={handleUpdateItem}
-            onDeleteItem={handleDeleteItem}
-            onAddItem={handleAddItem}
-            onAssignAll={handleAssignAll}
-            onUpdateTotal={handleUpdateTotal}
-          />
-
-          {/* ── Propina ─────────────────────────────────────────── */}
-          {!result.items.some((it) => /propina|tip/i.test(it.name)) && (() => {
-            const base = result.items
-              .filter((it) => !/propina|tip|iva/i.test(it.name))
-              .reduce((s, it) => s + it.price * it.quantity, 0);
-            const clp = propinaMode === "pct"
-              ? Math.round(base * propinaPct / 100)
-              : propinaAmount;
-            return (
-              <div className="card space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-700">🙏 Propina</span>
-                  <div className="flex text-xs rounded-lg bg-slate-100 p-0.5">
-                    {(["pct", "clp"] as const).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        className={`px-3 py-1 rounded-md transition ${
-                          propinaMode === m ? "bg-white shadow-soft font-medium" : "text-slate-500"
-                        }`}
-                        onClick={() => setPropinaMode(m)}
-                      >
-                        {m === "pct" ? "%" : currency}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {propinaMode === "pct" ? (
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1 flex-1">
-                      <NumericInput
-                        className="input w-20 font-mono text-sm text-center"
-                        value={propinaPct}
-                        onChange={setPropinaPct}
-                        allowDecimals
-                        placeholder="10"
-                      />
-                      <span className="text-sm text-slate-500">%</span>
-                    </div>
-                    {base > 0 && (
-                      <span className="text-sm text-slate-500">
-                        = {formatMoney(clp, currency)}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <NumericInput
-                      className="input flex-1 font-mono text-sm"
-                      value={propinaAmount}
-                      onChange={setPropinaAmount}
-                      placeholder="0"
-                    />
-                    <span className="text-xs text-slate-400 shrink-0">{currency}</span>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="btn-primary w-full text-sm"
-                  disabled={clp <= 0 || addingPropina}
-                  onClick={handleAddPropina}
-                >
-                  {addingPropina ? "…" : `+ Agregar propina${clp > 0 ? ` (${formatMoney(clp, currency)})` : ""}`}
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* ── Descuento ─────────────────────────────────────────── */}
-          {!result.items.some((it) => /descuento|dscto|dcto|rebaja/i.test(it.name)) && (() => {
-            const base = result.items
-              .filter((it) => !/propina|tip|iva|descuento|dscto|dcto|rebaja/i.test(it.name))
-              .reduce((s, it) => s + it.price * it.quantity, 0);
-            const clp = discountMode === "pct"
-              ? Math.round(base * discountPct / 100)
-              : Math.abs(discountAmount);
-            return (
-              <div className="card space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-slate-700">% Descuento</span>
-                  <div className="flex text-xs rounded-lg bg-slate-100 p-0.5">
-                    {(["pct", "clp"] as const).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        className={`px-3 py-1 rounded-md transition ${
-                          discountMode === m ? "bg-white shadow-soft font-medium" : "text-slate-500"
-                        }`}
-                        onClick={() => setDiscountMode(m)}
-                      >
-                        {m === "pct" ? "%" : currency}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {discountMode === "pct" ? (
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1 flex-1">
-                      <NumericInput
-                        className="input w-20 font-mono text-sm text-center"
-                        value={discountPct}
-                        onChange={setDiscountPct}
-                        allowDecimals
-                        placeholder="10"
-                      />
-                      <span className="text-sm text-slate-500">%</span>
-                    </div>
-                    {base > 0 && (
-                      <span className="text-sm text-slate-500 text-emerald-600">
-                        = -{formatMoney(clp, currency)}
-                      </span>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <NumericInput
-                      className="input flex-1 font-mono text-sm"
-                      value={discountAmount}
-                      onChange={setDiscountAmount}
-                      placeholder="0"
-                    />
-                    <span className="text-xs text-slate-400 shrink-0">{currency}</span>
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="btn-ghost w-full text-sm border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                  disabled={clp <= 0 || addingDiscount}
-                  onClick={handleAddDiscount}
-                >
-                  {addingDiscount ? "…" : `− Agregar descuento${clp > 0 ? ` (-${formatMoney(clp, currency)})` : ""}`}
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* ── IVA manual ─────────────────────────────────────── */}
-          {!ivaIncluded && (
-            <div className="card">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-slate-700">Agregar IVA (19%)</p>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Para boletas donde el IVA no estaba incluido en los precios
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="btn-ghost text-sm px-4 py-2 shrink-0"
-                  disabled={addingIva}
-                  onClick={handleAddIva}
-                >
-                  {addingIva ? "…" : "+ IVA"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-3 pt-2">
-            <button className="btn-ghost flex-1" onClick={reset}>
-              ← Volver
-            </button>
-            <button
-              className="btn-primary flex-1"
-              onClick={() => setStep("settle")}
-            >
-              {t("split.stepSettle")} →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ══ STEP 3: Settle ═════════════════════════════════════ */}
-      {step === "settle" && result && !settlement && !multiSettlement && (
-        <div className="space-y-5">
-          {/* Who paid? */}
-          <div className="card space-y-3">
-            <h2 className="text-base font-semibold">{t("split.whoPayd")}</h2>
-
-            {/* Mode toggle */}
-            <div className="flex text-sm rounded-xl bg-slate-100 p-1">
-              <button type="button" className={`flex-1 py-2 rounded-lg transition ${!multiPayer ? "bg-white shadow-soft font-medium" : "text-slate-500"}`} onClick={() => setMultiPayer(false)}>
-                Una persona
-              </button>
-              <button type="button" className={`flex-1 py-2 rounded-lg transition ${multiPayer ? "bg-white shadow-soft font-medium" : "text-slate-500"}`} onClick={() => setMultiPayer(true)}>
-                Entre varios
-              </button>
-            </div>
-
-            {!multiPayer ? (
-              <>
-                <div className="flex flex-wrap gap-2">
-                  <button type="button" onClick={() => setPayerPersonId(null)}
-                    className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition ${payerPersonId === null ? "border-indigo-600 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}>
-                    {t("split.paidByMe")}
-                  </button>
-                  {people.filter((p) => !p.is_me).map((p) => (
-                    <button key={p.id} type="button" onClick={() => setPayerPersonId(p.id)}
-                      className={`px-4 py-2 rounded-xl text-sm font-medium border-2 transition ${payerPersonId === p.id ? "text-white" : "border-slate-200 text-slate-600 hover:border-slate-300"}`}
-                      style={payerPersonId === p.id ? { borderColor: p.color, backgroundColor: p.color } : {}}>
-                      {p.name}
-                    </button>
-                  ))}
-                </div>
-                {payerPersonId === null && accounts.length > 0 && (
-                  <div className="space-y-1">
-                    <label className="text-sm text-slate-500">{t("split.deductFromAccount")}</label>
-                    <select className="input" value={payerAccountId ?? ""} onChange={(e) => setPayerAccountId(e.target.value ? Number(e.target.value) : null)}>
-                      <option value="">— No descontar —</option>
-                      {accounts.map((a) => (
-                        <option key={a.id} value={a.id}>{a.name} ({formatMoney(a.current_balance, a.currency)})</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="space-y-2">
-                {people.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3">
-                    <span className="text-sm font-medium w-20 truncate shrink-0" style={{ color: p.color }}>
-                      {p.is_me ? "Yo" : p.name}
-                    </span>
-                    <NumericInput
-                      className="input flex-1 font-mono text-sm"
-                      value={payerAmounts[p.id] ?? 0}
-                      onChange={(v) => setPayerAmounts((prev) => ({ ...prev, [p.id]: v }))}
-                      placeholder="0"
-                    />
-                    <span className="text-xs text-slate-400 shrink-0 w-8">{currency}</span>
-                  </div>
-                ))}
-                {(() => {
-                  const paid = Object.values(payerAmounts).reduce((s, v) => s + v, 0);
-                  const diff = result.total_amount - paid;
-                  return (
-                    <p className={`text-xs font-medium ${Math.abs(diff) < 1 ? "text-emerald-600" : "text-amber-600"}`}>
-                      Pagado: {formatMoney(paid, currency)} / {formatMoney(result.total_amount, currency)}
-                      {Math.abs(diff) >= 1 && ` (${diff > 0 ? "falta" : "sobra"} ${formatMoney(Math.abs(diff), currency)})`}
-                    </p>
-                  );
-                })()}
-              </div>
-            )}
-          </div>
-
-          {/* Per-person totals */}
-          <div className="card">
-            <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">{t("split.totals")}</h3>
-            <ul className="space-y-2">
-              {result.people.map((p) => (
-                <li key={p.person_id} className="flex justify-between text-sm">
-                  <span className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: p.person_color }} />
-                    {p.person_name}
-                    {p.is_me && <span className="text-xs text-slate-400">(tú)</span>}
-                  </span>
-                  <span className="font-mono">{formatMoney(p.total, currency)}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <button type="button" className={`btn-ghost w-full flex items-center justify-center gap-2 text-sm ${copied ? "text-emerald-600" : ""}`}
-            onClick={() => {
-              const lines = ["💰 División de cuenta", ""];
-              result.people.forEach((p) => lines.push(`${p.person_name}: ${formatMoney(p.total, currency)}`));
-              lines.push(`\nTotal: ${formatMoney(result.total_amount, currency)}`);
-              navigator.clipboard.writeText(lines.join("\n"))
-                .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })
-                .catch(() => alert("No se pudo copiar al portapapeles"));
-            }}>
-            {copied ? "✓ Copiado" : "📋 Copiar para WhatsApp"}
+    <div className="min-h-screen bg-slate-50 flex flex-col">
+      {/* Header */}
+      <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 pt-safe pt-4 pb-3">
+        <div className="flex items-center gap-3 max-w-lg mx-auto">
+          <button onClick={() => step > 1 ? setStep(step - 1) : router.back()} className="text-slate-400 hover:text-slate-700">
+            <ChevronLeft size={22} />
           </button>
+          <h1 className="font-bold text-slate-800 flex-1">
+            {step === 1 && "Dividir cuenta"}
+            {step === 2 && (bill?.merchant || "Ítems")}
+            {step === 3 && "Asignar ítems"}
+            {step === 4 && "¿Quién pagó?"}
+            {step === 5 && "Resumen"}
+          </h1>
+          {bill?.image_url && (
+            <a href={resolveBackendUrl(bill.image_url)} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-indigo-600">
+              <Camera size={18} />
+            </a>
+          )}
+        </div>
+        <div className="max-w-lg mx-auto mt-2">
+          <StepDots step={step} />
+        </div>
+      </div>
 
-          <div className="flex gap-3">
-            <button className="btn-ghost flex-1" onClick={() => setStep("assign")}>← Editar</button>
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto max-w-lg mx-auto w-full px-4 py-4 pb-28">
+
+        {/* ── STEP 1: Capture + Participants ── */}
+        {step === 1 && (
+          <div className="space-y-6">
+            {/* Upload area */}
+            <div
+              className="border-2 border-dashed border-indigo-300 rounded-2xl bg-white flex flex-col items-center justify-center py-12 gap-3 cursor-pointer hover:border-indigo-500 transition-colors"
+              onClick={() => fileRef.current?.click()}
+            >
+              {loading ? (
+                <>
+                  <div className="w-10 h-10 border-4 border-indigo-300 border-t-indigo-600 rounded-full animate-spin" />
+                  <p className="text-slate-500 text-sm">Leyendo boleta…</p>
+                </>
+              ) : (
+                <>
+                  <Camera size={36} className="text-indigo-400" />
+                  <p className="font-semibold text-slate-700">Subir boleta</p>
+                  <p className="text-slate-400 text-sm">Foto o imagen</p>
+                </>
+              )}
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleFile(f);
+              }}
+            />
+
+            {/* Participants */}
+            <div>
+              <p className="text-sm font-semibold text-slate-600 mb-3">¿Con quiénes?</p>
+              <div className="flex flex-wrap gap-3">
+                {people.map((p) => (
+                  <Avatar
+                    key={p.id}
+                    name={p.name}
+                    color={p.color}
+                    selected={participantIds.has(p.id)}
+                    locked={!!p.is_me}
+                    onClick={() => toggleParticipant(p.id)}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Skip OCR: continue without image */}
             <button
-              className="btn-primary flex-1"
-              disabled={settling || (multiPayer && Math.abs(result.total_amount - Object.values(payerAmounts).reduce((s, v) => s + v, 0)) > 1)}
-              onClick={() => {
-                if (multiPayer) {
-                  setMultiSettlement(computeMultiPayer(people, result.people, payerAmounts));
-                } else {
-                  handleSettle(true);
+              className="w-full text-sm text-indigo-600 underline text-center py-1"
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  const today = new Date().toISOString().split("T")[0];
+                  let b = await createBill({ date: today });
+                  const toAdd = Array.from(selectedPeople);
+                  for (const pid of toAdd) b = await addParticipant(b.id, pid);
+                  setBill(b);
+                  setStep(2);
+                } catch (e: unknown) {
+                  showError(e instanceof Error ? e.message : "Error");
+                } finally {
+                  setLoading(false);
                 }
               }}
             >
-              {settling ? "…" : "Liquidar →"}
+              Ingresar manualmente
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP 2: Items ── */}
+        {step === 2 && bill && (
+          <div className="space-y-3">
+            {bill.items.map((item) => (
+              <div key={item.id} className="bg-white rounded-xl shadow-sm overflow-hidden">
+                {editItemId === item.id ? (
+                  <div className="p-3 space-y-2">
+                    <input
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                      value={editDraft.name}
+                      onChange={(e) => setEditDraft((d) => ({ ...d, name: e.target.value }))}
+                      placeholder="Nombre"
+                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                        value={editDraft.qty}
+                        min={1}
+                        onChange={(e) => setEditDraft((d) => ({ ...d, qty: parseInt(e.target.value) || 1 }))}
+                        placeholder="Cant."
+                      />
+                      <input
+                        type="number"
+                        className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                        value={editDraft.unit_price}
+                        min={0}
+                        onChange={(e) => setEditDraft((d) => ({ ...d, unit_price: parseFloat(e.target.value) || 0 }))}
+                        placeholder="Precio unit."
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        className="flex-1 bg-indigo-600 text-white rounded-lg py-2 text-sm font-medium"
+                        onClick={saveEditItem}
+                      >
+                        Guardar
+                      </button>
+                      <button
+                        className="px-4 py-2 text-slate-500 text-sm"
+                        onClick={() => setEditItemId(null)}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center px-4 py-3 gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-slate-800 truncate">
+                        {item.qty > 1 ? `${item.qty}× ` : ""}{item.name}
+                      </p>
+                      <p className="text-xs text-slate-400">{clp(item.unit_price)} c/u</p>
+                    </div>
+                    <span className="text-sm font-semibold text-slate-700 shrink-0">{clp(item.line_total)}</span>
+                    <button
+                      onClick={() => {
+                        setEditItemId(item.id);
+                        setEditDraft({ name: item.name, qty: item.qty, unit_price: item.unit_price });
+                      }}
+                      className="text-slate-400 hover:text-indigo-600 p-1"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button onClick={() => handleDeleteItem(item.id)} className="text-slate-400 hover:text-red-500 p-1">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* New item form */}
+            {newItem !== null ? (
+              <div className="bg-white rounded-xl shadow-sm p-3 space-y-2">
+                <input
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  value={newItem.name}
+                  autoFocus
+                  onChange={(e) => setNewItem((n) => n && { ...n, name: e.target.value })}
+                  placeholder="Nombre del ítem"
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                    value={newItem.qty}
+                    min={1}
+                    onChange={(e) => setNewItem((n) => n && { ...n, qty: parseInt(e.target.value) || 1 })}
+                    placeholder="Cant."
+                  />
+                  <input
+                    type="number"
+                    className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                    value={newItem.unit_price || ""}
+                    min={0}
+                    onChange={(e) => setNewItem((n) => n && { ...n, unit_price: parseFloat(e.target.value) || 0 })}
+                    placeholder="Precio unit."
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    className="flex-1 bg-indigo-600 text-white rounded-lg py-2 text-sm font-medium"
+                    onClick={handleAddItem}
+                  >
+                    Agregar
+                  </button>
+                  <button className="px-4 py-2 text-slate-500 text-sm" onClick={() => setNewItem(null)}>
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                className="flex items-center gap-2 text-indigo-600 text-sm font-medium py-2"
+                onClick={() => setNewItem({ name: "", qty: 1, unit_price: 0 })}
+              >
+                <Plus size={16} /> Agregar ítem
+              </button>
+            )}
+
+            {/* Tip */}
+            <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+              <p className="text-sm font-semibold text-slate-700">Propina</p>
+              <div className="flex gap-2">
+                {[0, 0.1, 0.15].map((pct) => (
+                  <button
+                    key={pct}
+                    onClick={() => applyTipPct(pct)}
+                    className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                      tipPct === pct && !showCustomTip
+                        ? "bg-indigo-600 text-white border-indigo-600"
+                        : "border-slate-200 text-slate-700"
+                    }`}
+                  >
+                    {pct === 0 ? "Sin propina" : `${pct * 100}%`}
+                  </button>
+                ))}
+                <button
+                  onClick={() => { setShowCustomTip(true); setTipPct(null); }}
+                  className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                    showCustomTip ? "bg-indigo-600 text-white border-indigo-600" : "border-slate-200 text-slate-700"
+                  }`}
+                >
+                  Otro
+                </button>
+              </div>
+              {showCustomTip && (
+                <div className="flex gap-2">
+                  <input
+                    type="number"
+                    className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                    value={customTip}
+                    onChange={(e) => setCustomTip(e.target.value)}
+                    placeholder="Monto propina"
+                  />
+                  <button onClick={applyCustomTip} className="bg-indigo-600 text-white px-4 rounded-lg text-sm">
+                    <Check size={16} />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Summary bar inlined above sticky */}
+            <div className="bg-white rounded-xl shadow-sm divide-y divide-slate-100 text-sm">
+              <div className="flex justify-between px-4 py-2 text-slate-500">
+                <span>Subtotal</span><span>{clp(subtotal)}</span>
+              </div>
+              <div className="flex justify-between px-4 py-2 text-slate-500">
+                <span>Propina</span><span>{clp(bill.tip_amount)}</span>
+              </div>
+              <div className="flex justify-between px-4 py-3 font-bold text-slate-800">
+                <span>Total</span><span>{clp(bill.total_amount)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── STEP 3: Assign ── */}
+        {step === 3 && bill && (
+          <div className="space-y-3">
+            <button
+              onClick={handleAssignEqual}
+              className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium py-3 rounded-xl flex items-center justify-center gap-2"
+            >
+              <Check size={16} /> Dividir todo igual
+            </button>
+
+            {unassignedTotal() > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-sm text-amber-700">
+                Sin asignar: {clp(unassignedTotal())}
+              </div>
+            )}
+
+            {bill.items.map((item) => {
+              const assignedParticipants = bill.participants.filter((p) =>
+                item.shares.some((s) => s.participant_id === p.id),
+              );
+              return (
+                <div
+                  key={item.id}
+                  className="bg-white rounded-xl shadow-sm px-4 py-3 flex items-center gap-3 cursor-pointer hover:bg-slate-50"
+                  onClick={() => openShareSheet(item.id)}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-800 truncate">
+                      {item.qty > 1 ? `${item.qty}× ` : ""}{item.name}
+                    </p>
+                    <p className="text-xs text-slate-400">{clp(item.line_total)}</p>
+                  </div>
+                  <div className="flex -space-x-1.5">
+                    {assignedParticipants.length === 0 ? (
+                      <span className="text-xs text-slate-400 italic">Sin asignar</span>
+                    ) : (
+                      assignedParticipants.map((p) => (
+                        <div
+                          key={p.id}
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-bold ring-2 ring-white"
+                          style={{ background: p.color }}
+                          title={p.name}
+                        >
+                          {initials(p.name)}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <ChevronRight size={16} className="text-slate-300 shrink-0" />
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ── STEP 4: Who paid ── */}
+        {step === 4 && bill && (
+          <div className="space-y-4">
+            {/* Me */}
+            <button
+              onClick={() => setPayerMode("me")}
+              className={`w-full rounded-2xl p-4 text-left border-2 transition-colors ${
+                payerMode === "me" ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"
+              }`}
+            >
+              <p className="font-semibold text-slate-800">Yo pagué</p>
+              <p className="text-sm text-slate-500 mt-1">{clp(bill.total_amount)} de mi bolsillo</p>
+              {payerMode === "me" && accounts.length > 0 && (
+                <select
+                  className="mt-3 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white"
+                  value={selectedAccountId ?? ""}
+                  onChange={(e) => setSelectedAccountId(e.target.value ? parseInt(e.target.value) : null)}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <option value="">Sin cuenta específica</option>
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name} ({a.bank})</option>
+                  ))}
+                </select>
+              )}
+            </button>
+
+            {/* Other person */}
+            <button
+              onClick={() => setPayerMode("other")}
+              className={`w-full rounded-2xl p-4 text-left border-2 transition-colors ${
+                payerMode === "other" ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"
+              }`}
+            >
+              <p className="font-semibold text-slate-800">Pagó otra persona</p>
+              {payerMode === "other" && (
+                <div className="flex gap-3 mt-3 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                  {bill.participants
+                    .filter((p) => !p.is_me)
+                    .map((p) => (
+                      <Avatar
+                        key={p.id}
+                        name={p.name}
+                        color={p.color}
+                        selected={otherPayer === p.id}
+                        onClick={() => setOtherPayer(p.id)}
+                      />
+                    ))}
+                </div>
+              )}
+            </button>
+
+            {/* Split */}
+            <button
+              onClick={() => setPayerMode("split")}
+              className={`w-full rounded-2xl p-4 text-left border-2 transition-colors ${
+                payerMode === "split" ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"
+              }`}
+            >
+              <p className="font-semibold text-slate-800">Pagamos varios</p>
+              {payerMode === "split" && (
+                <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>
+                  {bill.participants.map((p) => (
+                    <div key={p.id} className="flex items-center gap-3">
+                      <div
+                        className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
+                        style={{ background: p.color }}
+                      >
+                        {initials(p.name)}
+                      </div>
+                      <span className="flex-1 text-sm text-slate-700">{p.name}</span>
+                      <input
+                        type="number"
+                        className="w-28 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right"
+                        placeholder="0"
+                        value={multiAmounts[p.id] ?? ""}
+                        onChange={(e) => setMultiAmounts((m) => ({ ...m, [p.id]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
+                  <div className="flex justify-between text-xs text-slate-400 pt-1">
+                    <span>Total: {clp(bill.total_amount)}</span>
+                    <span>
+                      Ingresado:{" "}
+                      {clp(Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0))}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP 5: Summary ── */}
+        {step === 5 && bill && (
+          <div className="space-y-4">
+            {/* My share */}
+            <div className="bg-indigo-600 rounded-2xl px-5 py-6 text-white text-center">
+              <p className="text-sm opacity-80 mb-1">Tu gasto personal</p>
+              <p className="text-4xl font-extrabold">
+                {clp(finalized ? myShare : (bill.participants.find((p) => p.is_me)?.owes_amount ?? 0))}
+              </p>
+              {finalized && <p className="text-sm mt-2 opacity-80">Guardado en Lucas ✓</p>}
+            </div>
+
+            {/* Debts */}
+            <div className="bg-white rounded-2xl shadow-sm divide-y divide-slate-100">
+              {bill.participants
+                .filter((p) => !p.is_me)
+                .map((p) => {
+                  const me = bill.participants.find((q) => q.is_me);
+                  if (!me) return null;
+                  const diff = p.owes_amount - p.paid_amount;
+                  if (Math.abs(diff) < 1) return null;
+                  return (
+                    <div key={p.id} className="flex items-center gap-3 px-4 py-3">
+                      <div
+                        className="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
+                        style={{ background: p.color }}
+                      >
+                        {initials(p.name)}
+                      </div>
+                      <p className="flex-1 text-sm text-slate-700">
+                        {diff > 0 ? (
+                          <><span className="font-semibold">{p.name}</span> te debe {clp(diff)}</>
+                        ) : (
+                          <>Le debes {clp(-diff)} a <span className="font-semibold">{p.name}</span></>
+                        )}
+                      </p>
+                    </div>
+                  );
+                })}
+            </div>
+
+            {/* Account selector for finalize */}
+            {!finalized && (
+              <div className="space-y-2">
+                {accounts.length > 0 && (
+                  <select
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white"
+                    value={selectedAccountId ?? ""}
+                    onChange={(e) => setSelectedAccountId(e.target.value ? parseInt(e.target.value) : null)}
+                  >
+                    <option value="">Sin cuenta específica</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name} ({a.bank})</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            )}
+
+            {/* WhatsApp */}
+            {finalized && (
+              <a
+                href={buildWhatsApp()}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-3 rounded-xl"
+              >
+                <Share2 size={18} /> Compartir por WhatsApp
+              </a>
+            )}
+
+            {finalized && (
+              <button
+                onClick={() => router.push("/dashboard")}
+                className="w-full text-sm text-slate-500 underline py-2"
+              >
+                Cerrar
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Error toast */}
+      {error && <Toast msg={error} onClose={() => setError(null)} />}
+
+      {/* Bottom sheet: share assignment */}
+      {shareItemId !== null && bill && (
+        <div className="fixed inset-0 z-40 flex items-end">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShareItemId(null)} />
+          <div className="relative bg-white rounded-t-3xl w-full max-w-lg mx-auto p-5 pb-safe pb-8 z-50">
+            <h3 className="font-bold text-slate-800 mb-1">
+              {bill.items.find((i) => i.id === shareItemId)?.name}
+            </h3>
+            <p className="text-sm text-slate-500 mb-4">Selecciona quiénes comparten este ítem</p>
+            <div className="flex gap-4 flex-wrap mb-5">
+              {bill.participants.map((p) => (
+                <Avatar
+                  key={p.id}
+                  name={p.name}
+                  color={p.color}
+                  selected={shareSelected.has(p.id)}
+                  onClick={() =>
+                    setShareSelected((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(p.id)) next.delete(p.id);
+                      else next.add(p.id);
+                      return next;
+                    })
+                  }
+                />
+              ))}
+            </div>
+            <button
+              className="w-full bg-indigo-600 text-white font-medium py-3 rounded-xl disabled:opacity-40"
+              disabled={shareSelected.size === 0}
+              onClick={confirmShares}
+            >
+              Confirmar
             </button>
           </div>
         </div>
       )}
 
-      {/* ══ MULTI-PAYER RESULT ══════════════════════════════════ */}
-      {step === "settle" && multiSettlement && (
-        <div className="space-y-4">
-          <div className="card space-y-3">
-            <h2 className="text-lg font-semibold">Resultado simplificado</h2>
-            {multiSettlement.length === 0 ? (
-              <p className="text-sm text-emerald-600 font-medium">¡Todos pagaron exacto! No hay deudas pendientes.</p>
-            ) : (
-              <ul className="space-y-2.5">
-                {multiSettlement.map((tr, i) => (
-                  <li key={i} className="flex justify-between items-center">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: tr.fromColor }} />
-                      <span className="font-medium">{tr.fromName}</span>
-                      <span className="text-slate-400">→</span>
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: tr.toColor }} />
-                      <span className="font-medium">{tr.toName}</span>
-                    </div>
-                    <span className="font-mono font-semibold text-rose-500">
-                      {formatMoney(tr.amount, currency)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+      {/* Sticky bottom action bar */}
+      <div className="fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 px-4 py-3 pb-safe pb-5">
+        <div className="max-w-lg mx-auto flex gap-3">
+          {step > 1 && step < 5 && (
+            <button
+              onClick={() => setStep(step - 1)}
+              className="px-4 py-3 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium"
+            >
+              Atrás
+            </button>
+          )}
 
-          <button className={`btn-ghost w-full flex items-center justify-center gap-2 ${copied ? "text-emerald-600" : ""}`}
-            onClick={() => {
-              const lines = ["💰 División de cuenta", ""];
-              multiSettlement.forEach((tr) => lines.push(`${tr.fromName} → ${tr.toName}: ${formatMoney(tr.amount, currency)}`));
-              navigator.clipboard.writeText(lines.join("\n"))
-                .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })
-                .catch(() => alert("No se pudo copiar al portapapeles"));
-            }}>
-            {copied ? "✓ Copiado" : "📋 Copiar para WhatsApp"}
-          </button>
-          <button className="btn-ghost w-full" onClick={reset}>{t("split.splitAnother")}</button>
-        </div>
-      )}
-
-      {/* ══ SETTLEMENT RESULT ═══════════════════════════════════ */}
-      {step === "settle" && settlement && (
-        <div className="space-y-4">
-          <div className="card space-y-3">
-            <h2 className="text-lg font-semibold">{t("split.settleSummary")}</h2>
-
-            {/* My share */}
-            <div className="flex justify-between items-center py-2 border-b">
-              <span className="text-sm text-slate-600">{t("split.myShare")}</span>
-              <span className="font-mono font-semibold">
-                {formatMoney(settlement.my_total, currency)}
-              </span>
+          {step === 1 && (
+            <div className="flex-1 text-center text-xs text-slate-400 flex items-center justify-center">
+              Sube una foto o toca &ldquo;Ingresar manualmente&rdquo;
             </div>
+          )}
 
-            {/* Debt rows */}
-            <ul className="space-y-2.5">
-              {settlement.debts.map((d) => {
-                const payerIsMe = settlement.payer_person_id === null ||
-                  people.find((p) => p.id === settlement.payer_person_id)?.is_me;
-                const label = payerIsMe
-                  ? t("split.owesYou").replace("{name}", d.person_name)
-                  : d.is_me
-                    ? t("split.youOwe").replace("{name}", settlement.payer_name)
-                    : `${d.person_name} → ${settlement.payer_name}`;
+          {step === 2 && bill && (
+            <button
+              onClick={() => setStep(3)}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2"
+            >
+              Continuar <ChevronRight size={18} />
+            </button>
+          )}
 
-                return (
-                  <li key={d.person_id} className="flex justify-between items-center">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span
-                        className="w-2.5 h-2.5 rounded-full"
-                        style={{ backgroundColor: d.person_color }}
-                      />
-                      <span>{label}</span>
-                    </div>
-                    <span
-                      className={`font-mono font-semibold ${
-                        payerIsMe && !d.is_me ? "text-emerald-600" : "text-rose-500"
-                      }`}
-                    >
-                      {formatMoney(d.amount, currency)}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+          {step === 3 && bill && (
+            <button
+              onClick={() => setStep(4)}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2"
+            >
+              Continuar <ChevronRight size={18} />
+            </button>
+          )}
 
-            {settlement.saved_transaction_id && (
-              <p className="text-xs text-emerald-600 mt-2">
-                ✓ Tu parte ({formatMoney(settlement.my_total, currency)}) guardada en gastos
-              </p>
-            )}
-            {!settlement.saved_transaction_id && settlement.my_total === 0 && (
-              <p className="text-xs text-slate-400 mt-2">
-                No tienes ítems asignados — no se guardó ningún gasto.
-              </p>
-            )}
-          </div>
+          {step === 4 && bill && (
+            <button
+              onClick={handleSetPayers}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2"
+            >
+              Ver resumen <ChevronRight size={18} />
+            </button>
+          )}
 
-          <button
-            className={`btn-ghost w-full flex items-center justify-center gap-2 ${copied ? "text-emerald-600" : ""}`}
-            onClick={() => {
-              const payerIsMe = settlement.payer_person_id === null ||
-                people.find((p) => p.id === settlement.payer_person_id)?.is_me;
-              const lines = ["💰 División de cuenta"];
-              if (settlement.debts.length > 0) {
-                lines.push("");
-                settlement.debts.forEach((d) => {
-                  const who = payerIsMe
-                    ? `${d.person_name} te debe`
-                    : d.is_me
-                      ? `Tú le debes a ${settlement.payer_name}`
-                      : `${d.person_name} → ${settlement.payer_name}`;
-                  lines.push(`${who}: ${formatMoney(d.amount, currency)}`);
-                });
-              }
-              lines.push("");
-              lines.push(`Mi parte: ${formatMoney(settlement.my_total, currency)}`);
-              navigator.clipboard.writeText(lines.join("\n"))
-                .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); })
-                .catch(() => alert("No se pudo copiar al portapapeles"));
-            }}
-          >
-            {copied ? "✓ Copiado" : "📋 Copiar para WhatsApp"}
-          </button>
-
-          <button className="btn-ghost w-full" onClick={reset}>
-            {t("split.splitAnother")}
-          </button>
+          {step === 5 && bill && !finalized && (
+            <button
+              onClick={handleFinalize}
+              disabled={loading}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2"
+            >
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+              ) : (
+                <>Guardar en Lucas <Check size={18} /></>
+              )}
+            </button>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

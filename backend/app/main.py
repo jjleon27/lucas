@@ -15,6 +15,7 @@ from .routers import auth as auth_router
 from .routers import upload as upload_router
 from .routers import transactions as tx_router
 from .routers import split as split_router
+from .routers import bills as bills_router
 from .routers import dashboard as dash_router
 from .routers import accounts as accounts_router
 from .routers import ai as ai_router
@@ -82,6 +83,7 @@ app.include_router(auth_router.router)
 app.include_router(upload_router.router)
 app.include_router(tx_router.router)
 app.include_router(split_router.router)
+app.include_router(bills_router.router)
 app.include_router(dash_router.router)
 app.include_router(accounts_router.router)
 app.include_router(ai_router.router)
