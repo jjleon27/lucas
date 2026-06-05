@@ -246,12 +246,15 @@ class BillItem(Base):
 
 class BillItemShare(Base):
     """Fraction of one item assigned to one participant.
-    weight is 0-1 (e.g. 0.333 for 1/3). All weights for an item must sum to 1.0."""
+    weight is 0-1 (e.g. 0.333 for 1/3). All weights for an item must sum to 1.0.
+    units (optional): number of individual units assigned (e.g. 2 of 6 schops).
+    When units is set, weight = units / item.qty (computed on save)."""
     __tablename__ = "bill_item_shares"
     id = Column(Integer, primary_key=True)
     item_id = Column(Integer, ForeignKey("bill_items.id", ondelete="CASCADE"), nullable=False, index=True)
     participant_id = Column(Integer, ForeignKey("bill_participants.id", ondelete="CASCADE"), nullable=False)
-    weight = Column(Float, nullable=False)  # fraction 0-1
+    weight = Column(Float, nullable=False)   # fraction 0-1
+    units = Column(Float, nullable=True)     # optional: how many units (e.g. 2 of 6)
 
     item = relationship("BillItem", back_populates="shares")
     participant = relationship("BillParticipant", back_populates="shares")

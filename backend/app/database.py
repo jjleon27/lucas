@@ -47,6 +47,8 @@ def _migrate_schema() -> None:
         "ALTER TABLE users ADD COLUMN email_token VARCHAR(64)",
         # users.auth_provider — which provider created the account
         "ALTER TABLE users ADD COLUMN auth_provider VARCHAR(32) NOT NULL DEFAULT 'password'",
+        # bill_item_shares.units — number of individual units assigned (e.g. 2 of 6 schops)
+        "ALTER TABLE bill_item_shares ADD COLUMN units REAL",
     ]
     with engine.connect() as conn:
         for stmt in stmts:

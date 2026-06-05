@@ -64,7 +64,8 @@ class ItemPatch(BaseModel):
 
 class ShareEntry(BaseModel):
     participant_id: int
-    weight: float = Field(ge=0, le=1)
+    weight: Optional[float] = Field(None, ge=0, le=1)
+    units: Optional[float] = Field(None, ge=0)  # if set, weight is derived from units/item.qty
 
 
 class SetSharesPayload(BaseModel):
@@ -125,7 +126,7 @@ def _bill_out(bill: Bill) -> dict:
             "unit_price": it.unit_price,
             "line_total": it.line_total,
             "shares": [
-                {"participant_id": s.participant_id, "weight": s.weight}
+                {"participant_id": s.participant_id, "weight": s.weight, "units": s.units}
                 for s in it.shares
             ],
         }
@@ -483,9 +484,24 @@ def set_shares(
         if s.participant_id not in valid_pids:
             raise HTTPException(400, f"Participant {s.participant_id} not in bill")
 
-    db.query(BillItemShare).filter(BillItemShare.item_id == item.id).delete()
+    # Derive weights from units if provided
+    resolved = []
     for s in payload.shares:
-        db.add(BillItemShare(item_id=item.id, participant_id=s.participant_id, weight=s.weight))
+        if s.units is not None:
+            w = s.units / item.qty if item.qty > 0 else 0.0
+            resolved.append((s.participant_id, round(w, 10), s.units))
+        elif s.weight is not None:
+            resolved.append((s.participant_id, s.weight, None))
+        else:
+            raise HTTPException(400, "Each share must have either units or weight")
+
+    total_weight = sum(w for _, w, _ in resolved)
+    if abs(total_weight - 1.0) > 0.01:
+        raise HTTPException(400, f"Weights must sum to 1.0, got {total_weight:.3f}")
+
+    db.query(BillItemShare).filter(BillItemShare.item_id == item.id).delete()
+    for pid, w, u in resolved:
+        db.add(BillItemShare(item_id=item.id, participant_id=pid, weight=w, units=u))
 
     db.commit()
     db.refresh(bill)
