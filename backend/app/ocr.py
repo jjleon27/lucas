@@ -617,20 +617,24 @@ RULES:
 2. ITEMS — faithfully transcribe every product row, top to bottom, in the SAME ORDER they appear:
    - ONE item entry per printed receipt row. Do NOT merge or consolidate rows.
      If "Cerveza" appears on 10 separate rows, output 10 separate item entries.
-   - price = unit price printed on that row. quantity = the quantity on that row (usually 1).
-   - "NxPRICE Product LINETOTAL": price = PRICE (the number after x), quantity = N.
-     The last number is the line total — do NOT use it as price.
-   - Modifier rows starting with "+" (e.g. "+Coca Zero"): price = 0.
-   - Numbers inside product names are NOT quantities: "35°" = degrees, "500cc" = volume.
-   - Any large number appearing between item rows without a product name is a running subtotal — skip it, keep listing items below it.
+   - price = UNIT price (never the line total). quantity = the quantity on that row.
+   - Row format "N PRODUCT LINE_TOTAL" (leading integer before product name):
+     quantity = N, price = LINE_TOTAL ÷ N (unit price).
+     Example: "6 SCHOP MEDIO ESCUDO 26.400" → quantity=6, price=4400 (=26400÷6).
+     Example: "3 VIENESA ITALIANA 13.200"   → quantity=3, price=4400 (=13200÷3).
+   - Row format "NxPRICE Product LINE_TOTAL": quantity=N, price=PRICE (the number after x).
+   - Modifier rows starting with "+" (e.g. "+Coca Zero"): price=0, quantity=1.
+   - Numbers inside product names are NOT quantities: "35°"=degrees, "500cc"=volume.
+   - Any large number between item rows without a product name = running subtotal — skip it.
 
 3. AMOUNT — use the labeled final total at the bottom of the receipt:
    - Restaurant/bar POS: use "Total General Mesa" (whole table total). If absent, use "Consumo Cliente".
    - Boleta/factura: use the final "TOTAL" line (= total_neto + IVA).
    - Never use a mid-receipt running subtotal as the amount.
 
-4. IVA BOLETA: set total_neto and iva_amount from the printed "Total Neto" and "IVA" summary rows.
-   amount = total_neto + iva_amount.
+4. IVA BOLETA only: set total_neto and iva_amount ONLY when the receipt explicitly prints
+   "Total Neto" and "IVA" rows (Chilean fiscal boleta). For restaurant comandas, bars, or
+   any receipt without those labels, leave total_neto and iva_amount as null.
 
 5. CATEGORIES: Lider/Jumbo/Tottus/Unimarc→Supermercado; Uber/Cabify/Metro→Transporte;
    restaurants/cafes→Alimentación; bars/pubs/beer halls→Bares y Salidas.
