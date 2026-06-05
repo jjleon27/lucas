@@ -29,6 +29,7 @@ import pytesseract
 from PIL import Image
 
 from .ai import provider as ai_provider
+from .config import settings
 from .schemas import ParsedItem, ParsedReceipt
 
 
