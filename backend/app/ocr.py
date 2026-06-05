@@ -1327,7 +1327,16 @@ def vision_parse(
                     db=db,
                 )
                 if t2 and t2.text:
-                    raw_json_text = t2.text
+                    # Extract JSON block (model may wrap in ```json fences)
+                    _raw = t2.text.strip()
+                    _m = re.search(r'```json\s*([\s\S]+?)\s*```', _raw)
+                    if _m:
+                        _raw = _m.group(1)
+                    elif not _raw.startswith("{"):
+                        _s, _e = _raw.find("{"), _raw.rfind("}") + 1
+                        if _s != -1 and _e > _s:
+                            _raw = _raw[_s:_e]
+                    raw_json_text = _raw
                     print("[ocr] two-stage: using text-parsed result")
 
         data = json.loads(raw_json_text)
