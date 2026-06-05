@@ -3,10 +3,10 @@
  * Split — 6-step bill-splitting flow
  * 1 Capture → 2 Items review → 3 Participants → 4 Assign → 5 Who paid → 6 Summary
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Users } from "lucide-react";
+import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Users, Hand, Eraser, GripHorizontal, Sparkles } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,8 @@ const finalizeBill = (billId: number, opts: { account_id?: number; category?: st
 
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+const CIRCLED = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳"];
+const circled = (n: number) => CIRCLED[n - 1] ?? `(${n})`;
 
 function StepDots({ step }: { step: number }) {
   return (
@@ -79,7 +81,7 @@ function StepDots({ step }: { step: number }) {
 
 function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
   useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [msg, onClose]);
-  return <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white text-sm px-4 py-2 rounded-xl shadow-lg max-w-xs text-center">{msg}</div>;
+  return <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white text-sm px-4 py-2 rounded-xl shadow-lg max-w-xs text-center">{msg}</div>;
 }
 
 function Avatar({ name, color, selected, onClick, locked }: { name: string; color: string; selected: boolean; onClick?: () => void; locked?: boolean; }) {
@@ -103,19 +105,38 @@ export default function SplitPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [autoAssignBanner, setAutoAssignBanner] = useState(false);
+  const [celebrate, setCelebrate] = useState(false);
 
   // Step 2 — items
   const [editItemId, setEditItemId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState({ name: "", qty: 1, unit_price: 0 });
   const [newItem, setNewItem] = useState<{ name: string; qty: number; unit_price: number } | null>(null);
 
-  // Step 4 — assign: itemId → Set of participantIds (equal split among selected)
-  // overrides: itemId → Map<participantId, units> for unequal qty distribution
-  const [selected, setSelected] = useState<Map<number, Set<number>>>(new Map());
-  const [overrides, setOverrides] = useState<Map<number, Map<number, number>>>(new Map());
-  const [bottomSheetItemId, setBottomSheetItemId] = useState<number | null>(null);
-  const [bottomSheetDraft, setBottomSheetDraft] = useState<Record<number, number>>({});
+  // Step 4 — assignments: per-item array of length item.qty
+  //   each slot is participantId or null (unassigned)
+  //   For qty=1 items, the array has length 1; toggling a participant chip
+  //   adds/removes them across all slots (equal-split semantics).
+  //   For qty>1 items, individual slots can be cycled.
+  const [assignments, setAssignments] = useState<Map<number, (number | null)[]>>(new Map());
+
+  // Mini-selector inline for qty>1 chip taps
+  const [chipChoice, setChipChoice] = useState<{ itemId: number; pid: number } | null>(null);
+
+  // Step 4 — image panel (split-screen viewer + drawing canvas)
+  const [imgPanelH, setImgPanelH] = useState(220); // px
+  const [imgScale, setImgScale] = useState(1);
+  const [imgPan, setImgPan] = useState({ x: 0, y: 0 });
+  const [drawMode, setDrawMode] = useState(false); // false = pan, true = draw
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imgContainerRef = useRef<HTMLDivElement>(null);
+  const imgTransformRef = useRef({ scale: 1, x: 0, y: 0 });
+  const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
+  const panStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const drawingRef = useRef(false);
+  const dragHandleRef = useRef<{ startY: number; startH: number } | null>(null);
 
   // Step 5 — payers
   const [payerMode, setPayerMode] = useState<"me" | "other" | "split">("me");
@@ -189,129 +210,450 @@ export default function SplitPage() {
 
   // ── Step 4 ────────────────────────────────────────────────────
 
-  // Who is selected for a given item
-  const getSelected = (itemId: number): Set<number> => selected.get(itemId) ?? new Set();
-
-  // Running total per participant (from equal-split selected items + overrides)
-  const runningTotal = (pid: number) => {
-    if (!bill) return 0;
-    return bill.items.reduce((s, item) => {
-      const ov = overrides.get(item.id);
-      if (ov) return s + (ov.get(pid) ?? 0) * item.unit_price;
-      const sel = getSelected(item.id);
-      if (!sel.has(pid)) return s;
-      return s + item.line_total / sel.size;
-    }, 0);
-  };
-
-  const itemAssigned = (item: BillItem) =>
-    (overrides.get(item.id)?.size ?? 0) > 0 || getSelected(item.id).size > 0;
-
-  function togglePerson(itemId: number, pid: number) {
-    setSelected((prev) => {
-      const next = new Map(prev);
-      const cur = new Set(next.get(itemId) ?? []);
-      if (cur.has(pid)) { cur.delete(pid); } else { cur.add(pid); }
-      next.set(itemId, cur);
-      return next;
-    });
-    // clear any override for this item since user is switching to equal mode
-    setOverrides((prev) => { const n = new Map(prev); n.delete(itemId); return n; });
-  }
-
-  function selectAll(itemId: number) {
-    if (!bill) return;
-    setSelected((prev) => {
-      const next = new Map(prev);
-      next.set(itemId, new Set(bill.participants.map((p) => p.id)));
-      return next;
-    });
-    setOverrides((prev) => { const n = new Map(prev); n.delete(itemId); return n; });
-  }
-
-  function seedSelected(b: Bill) {
-    const sel = new Map<number, Set<number>>();
-    const ov = new Map<number, Map<number, number>>();
+  function seedFromBill(b: Bill) {
+    const next = new Map<number, (number | null)[]>();
+    const allPids = b.participants.map((p) => p.id);
     for (const item of b.items) {
+      const slots: (number | null)[] = new Array(Math.max(item.qty, 1)).fill(null);
       if (item.shares.length === 0) {
-        // default: all participants
-        sel.set(item.id, new Set(b.participants.map((p) => p.id)));
+        // not yet assigned → leave empty
       } else {
-        const hasUnequal = item.shares.some((s) => s.units != null);
-        if (hasUnequal) {
-          const inner = new Map<number, number>();
-          item.shares.forEach((s) => { if ((s.units ?? 0) > 0) inner.set(s.participant_id, s.units!); });
-          ov.set(item.id, inner);
+        const hasUnits = item.shares.some((s) => s.units != null && s.units > 0);
+        if (hasUnits && item.qty > 1) {
+          // distribute slots according to units
+          let idx = 0;
+          for (const s of item.shares) {
+            const u = Math.round(s.units ?? 0);
+            for (let i = 0; i < u && idx < slots.length; i++) {
+              slots[idx++] = s.participant_id;
+            }
+          }
+          // any remaining slots → unassigned (null)
         } else {
-          sel.set(item.id, new Set(item.shares.map((s) => s.participant_id)));
+          // equal-split: all participants in shares → fill every slot with the
+          // first share's participants set (each slot gets one person from set)
+          const pids = item.shares.map((s) => s.participant_id).filter((p) => allPids.includes(p));
+          if (item.qty === 1) {
+            // qty=1 with multiple sharers → represented as -1 marker is awkward;
+            // we use a special: store the first pid only, but the chip "isOn" logic
+            // for qty=1 uses the participants-in-shares set instead of slots.
+            // Simplest: encode as null and track via sharedSet on the fly below.
+            // To keep render simple, we duplicate slot length to participants count.
+            // But we must keep slot.length === item.qty. So we use a sidecar set below.
+            slots[0] = pids.length === 1 ? pids[0] : -1; // -1 = "shared equally among multiple"
+            (slots as unknown as { sharers: number[] }).sharers = pids;
+          } else {
+            // qty>1 equal split, no units → distribute round-robin
+            for (let i = 0; i < slots.length; i++) slots[i] = pids[i % pids.length] ?? null;
+          }
         }
       }
+      next.set(item.id, slots);
     }
-    setSelected(sel);
-    setOverrides(ov);
+    setAssignments(next);
   }
 
-  function goToAssign() {
-    if (bill) seedSelected(bill);
-    setStep(4);
+  const slotsOf = (itemId: number, qty: number): (number | null)[] => {
+    const cur = assignments.get(itemId);
+    if (cur && cur.length === qty) return cur;
+    return new Array(Math.max(qty, 1)).fill(null);
+  };
+
+  // For qty=1, the "selected set" is derived from the slot:
+  //  - if slot is a pid → only that person
+  //  - if slot is -1 (shared marker) → use sidecar sharers
+  //  - if slot is null → nobody
+  // For qty>1, "person is on" = appears in any slot.
+  function isPersonOn(item: BillItem, pid: number): boolean {
+    const slots = slotsOf(item.id, item.qty);
+    if (item.qty === 1) {
+      const s = slots[0];
+      if (s === pid) return true;
+      if (s === -1) {
+        const sharers = (slots as unknown as { sharers?: number[] }).sharers;
+        return !!sharers?.includes(pid);
+      }
+      return false;
+    }
+    return slots.includes(pid);
   }
 
-  function openBottomSheet(item: BillItem) {
+  function unitsFor(item: BillItem, pid: number): number {
+    const slots = slotsOf(item.id, item.qty);
+    if (item.qty === 1) return isPersonOn(item, pid) ? 1 : 0;
+    return slots.reduce((n: number, v) => n + (v === pid ? 1 : 0), 0);
+  }
+
+  // Cost owed by a participant for one item (used in runningTotal)
+  function itemCostFor(item: BillItem, pid: number): number {
+    if (!item.qty || item.qty <= 0 || item.unit_price <= 0) return 0;
+    const slots = slotsOf(item.id, item.qty);
+    if (item.qty === 1) {
+      const s = slots[0];
+      if (s === pid) return item.line_total;
+      if (s === -1) {
+        const sharers = (slots as unknown as { sharers?: number[] }).sharers ?? [];
+        if (!sharers.includes(pid) || sharers.length === 0) return 0;
+        return item.line_total / sharers.length;
+      }
+      return 0;
+    }
+    // qty>1: split assigned slots; unassigned slots are not charged
+    const assigned = slots.filter((v) => v !== null && v !== -1) as number[];
+    if (assigned.length === 0) return 0;
+    const myUnits = assigned.reduce((n, v) => n + (v === pid ? 1 : 0), 0);
+    // If not all slots are filled, charge proportionally to assigned units only
+    return myUnits * item.unit_price;
+  }
+
+  const runningTotal = (pid: number) => {
+    if (!bill) return 0;
+    return bill.items.reduce((s, item) => s + itemCostFor(item, pid), 0);
+  };
+
+  function itemFullyAssigned(item: BillItem): boolean {
+    const slots = slotsOf(item.id, item.qty);
+    if (item.qty === 1) {
+      const s = slots[0];
+      return s !== null;
+    }
+    return slots.every((v) => v !== null);
+  }
+
+  function itemPartiallyAssigned(item: BillItem): boolean {
+    const slots = slotsOf(item.id, item.qty);
+    return slots.some((v) => v !== null);
+  }
+
+  // Toggle a participant chip: equal-split semantics across all units
+  function toggleChip(item: BillItem, pid: number) {
     if (!bill) return;
-    const draft: Record<number, number> = {};
-    const ov = overrides.get(item.id);
-    const sel = getSelected(item.id);
-    bill.participants.forEach((p) => {
-      if (ov) draft[p.id] = ov.get(p.id) ?? 0;
-      else draft[p.id] = sel.has(p.id) ? Math.round(item.qty / sel.size) : 0;
+    if (item.qty > 1) {
+      // For qty>1, ask "todos o mitad" inline
+      const currentUnits = unitsFor(item, pid);
+      if (currentUnits > 0) {
+        // already has some → remove all of theirs
+        setAssignments((prev) => {
+          const next = new Map(prev);
+          const slots = [...(next.get(item.id) ?? new Array(item.qty).fill(null))];
+          for (let i = 0; i < slots.length; i++) if (slots[i] === pid) slots[i] = null;
+          next.set(item.id, slots);
+          return next;
+        });
+        return;
+      }
+      // No units yet → open inline selector
+      setChipChoice({ itemId: item.id, pid });
+      return;
+    }
+    // qty=1: toggle in shared set
+    setAssignments((prev) => {
+      const next = new Map(prev);
+      const slots = [...(next.get(item.id) ?? [null])] as (number | null)[];
+      const sharers = ((slots as unknown as { sharers?: number[] }).sharers ?? []).slice();
+      let nextSharers: number[] = [];
+      const first = slots[0];
+      const currentSet = new Set<number>(
+        first === -1 ? sharers : first != null ? [first] : []
+      );
+      if (currentSet.has(pid)) currentSet.delete(pid); else currentSet.add(pid);
+      nextSharers = Array.from(currentSet);
+      if (nextSharers.length === 0) {
+        slots[0] = null;
+        delete (slots as unknown as { sharers?: number[] }).sharers;
+      } else if (nextSharers.length === 1) {
+        slots[0] = nextSharers[0];
+        delete (slots as unknown as { sharers?: number[] }).sharers;
+      } else {
+        slots[0] = -1;
+        (slots as unknown as { sharers: number[] }).sharers = nextSharers;
+      }
+      next.set(item.id, slots);
+      return next;
     });
-    setBottomSheetDraft(draft);
-    setBottomSheetItemId(item.id);
   }
 
-  function confirmBottomSheet() {
-    if (bottomSheetItemId === null || !bill) return;
-    const inner = new Map<number, number>();
-    Object.entries(bottomSheetDraft).forEach(([pid, u]) => { if (u > 0) inner.set(Number(pid), u); });
-    setOverrides((prev) => { const n = new Map(prev); n.set(bottomSheetItemId, inner); return n; });
-    // also update selected to match
-    setSelected((prev) => {
-      const n = new Map(prev);
-      n.set(bottomSheetItemId, new Set(inner.keys()));
-      return n;
+  function applyChipChoice(mode: "all" | "half") {
+    if (!chipChoice || !bill) return;
+    const item = bill.items.find((i) => i.id === chipChoice.itemId);
+    if (!item) { setChipChoice(null); return; }
+    setAssignments((prev) => {
+      const next = new Map(prev);
+      const slots = [...(next.get(item.id) ?? new Array(item.qty).fill(null))];
+      const target = mode === "all" ? item.qty : Math.max(1, Math.floor(item.qty / 2));
+      // Place chipChoice.pid in first `target` empty (or any) slots
+      let placed = 0;
+      // First, fill empty slots
+      for (let i = 0; i < slots.length && placed < target; i++) {
+        if (slots[i] === null) { slots[i] = chipChoice.pid; placed++; }
+      }
+      // Then overwrite if still need more
+      for (let i = 0; i < slots.length && placed < target; i++) {
+        if (slots[i] !== chipChoice.pid) { slots[i] = chipChoice.pid; placed++; }
+      }
+      next.set(item.id, slots);
+      return next;
     });
-    setBottomSheetItemId(null);
+    setChipChoice(null);
+  }
+
+  // Cycle a numbered slot through participants (and back to null)
+  function cycleSlot(itemId: number, slotIdx: number) {
+    if (!bill) return;
+    setAssignments((prev) => {
+      const next = new Map(prev);
+      const item = bill.items.find((i) => i.id === itemId);
+      if (!item) return prev;
+      const slots = [...(next.get(itemId) ?? new Array(item.qty).fill(null))];
+      const order: (number | null)[] = [...bill.participants.map((p) => p.id), null];
+      const cur = slots[slotIdx];
+      const idx = order.findIndex((v) => v === cur);
+      const nxt = order[(idx + 1) % order.length];
+      slots[slotIdx] = nxt;
+      next.set(itemId, slots);
+      return next;
+    });
+  }
+
+  // Apply equal-split to one item across all participants
+  function selectAll(item: BillItem) {
+    if (!bill) return;
+    setAssignments((prev) => {
+      const next = new Map(prev);
+      const pids = bill.participants.map((p) => p.id);
+      if (pids.length === 0) { next.set(item.id, new Array(item.qty).fill(null)); return next; }
+      if (item.qty === 1) {
+        const slots: (number | null)[] = [pids.length === 1 ? pids[0] : -1];
+        if (pids.length > 1) (slots as unknown as { sharers: number[] }).sharers = pids.slice();
+        next.set(item.id, slots);
+      } else {
+        const slots: (number | null)[] = new Array(item.qty).fill(null);
+        for (let i = 0; i < item.qty; i++) slots[i] = pids[i % pids.length];
+        next.set(item.id, slots);
+      }
+      return next;
+    });
+  }
+
+  // Auto-assign on entering step 4
+  async function goToAssign() {
+    if (!bill) return;
+    if (bill.participants.length === 0) { showError("Agrega al menos un participante"); return; }
+    if (bill.items.length === 0) { showError("La boleta no tiene ítems"); setStep(4); return; }
+    setBusy(true);
+    try {
+      const b = await assignEqual(bill.id);
+      setBill(b);
+      seedFromBill(b);
+      setAutoAssignBanner(true);
+      setStep(4);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error");
+      seedFromBill(bill);
+      setStep(4);
+    } finally { setBusy(false); }
   }
 
   async function handleAssignEqual() {
     if (!bill) return;
+    setBusy(true);
     try {
       const b = await assignEqual(bill.id);
       setBill(b);
-      seedSelected(b);
+      seedFromBill(b);
     } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+    finally { setBusy(false); }
+  }
+
+  // Build POST payload from a slot array
+  function sharesForItem(item: BillItem): { participant_id: number; weight: number; units?: number }[] {
+    const slots = slotsOf(item.id, item.qty);
+    if (item.qty === 1) {
+      const s = slots[0];
+      if (s === null) return [];
+      if (s === -1) {
+        const sharers = (slots as unknown as { sharers?: number[] }).sharers ?? [];
+        const n = sharers.length;
+        if (n === 0) return [];
+        const w = 1 / n;
+        return sharers.map((pid) => ({ participant_id: pid, weight: w }));
+      }
+      return [{ participant_id: s, weight: 1 }];
+    }
+    // qty>1: count assigned units per pid; ignore null slots
+    const counts = new Map<number, number>();
+    for (const v of slots) {
+      if (v == null || v === -1) continue;
+      counts.set(v, (counts.get(v) ?? 0) + 1);
+    }
+    const totalUnits = Array.from(counts.values()).reduce((a, b) => a + b, 0);
+    if (totalUnits === 0) return [];
+    // Weight relative to total assigned units (not item.qty) so weights sum to 1
+    return Array.from(counts.entries()).map(([pid, units]) => ({
+      participant_id: pid,
+      units,
+      weight: units / totalUnits,
+    }));
   }
 
   async function goToWhoPaid() {
     if (!bill) return;
+    setBusy(true);
     let b = bill;
-    for (const item of bill.items) {
-      const ov = overrides.get(item.id);
-      const sel = getSelected(item.id);
-      if (ov && ov.size > 0) {
-        const shares = Array.from(ov.entries()).map(([pid, units]) => ({ participant_id: pid, units, weight: units / item.qty }));
-        try { b = await postShares(b.id, item.id, shares); }
-        catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); return; }
-      } else if (sel.size > 0) {
-        const w = 1 / sel.size;
-        const shares = Array.from(sel).map((pid) => ({ participant_id: pid, weight: w }));
-        try { b = await postShares(b.id, item.id, shares); }
-        catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); return; }
+    try {
+      for (const item of bill.items) {
+        const shares = sharesForItem(item);
+        if (shares.length === 0) continue;
+        b = await postShares(b.id, item.id, shares);
       }
-    }
-    setBill(b);
-    setStep(5);
+      setBill(b);
+      setStep(5);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error");
+    } finally { setBusy(false); }
   }
+
+  // Progress in step 4
+  const assignProgress = useMemo(() => {
+    if (!bill) return { done: 0, total: 0 };
+    const total = bill.items.length;
+    const done = bill.items.filter((i) => itemFullyAssigned(i)).length;
+    return { done, total };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bill, assignments]);
+
+  // Trigger celebrate when all items just got fully assigned
+  useEffect(() => {
+    if (step !== 4 || !bill || bill.items.length === 0) return;
+    if (assignProgress.done === assignProgress.total) {
+      setCelebrate(true);
+      const t = setTimeout(() => setCelebrate(false), 1400);
+      return () => clearTimeout(t);
+    }
+  }, [step, bill, assignProgress.done, assignProgress.total]);
+
+  // Auto-dismiss banner after 4s
+  useEffect(() => {
+    if (!autoAssignBanner) return;
+    const t = setTimeout(() => setAutoAssignBanner(false), 4500);
+    return () => clearTimeout(t);
+  }, [autoAssignBanner]);
+
+  // ── Step 4: Image viewer (zoom + pan + draw) ──────────────────
+
+  useEffect(() => {
+    if (step !== 4) return;
+    const container = imgContainerRef.current;
+    const canvas = canvasRef.current;
+    if (!container || !canvas) return;
+    const sync = () => {
+      const w = container.clientWidth, h = container.clientHeight;
+      if (canvas.width === w && canvas.height === h) return;
+      const prev = document.createElement("canvas");
+      prev.width = canvas.width; prev.height = canvas.height;
+      prev.getContext("2d")?.drawImage(canvas, 0, 0);
+      canvas.width = w; canvas.height = h;
+      if (prev.width > 0 && prev.height > 0) canvas.getContext("2d")?.drawImage(prev, 0, 0, w, h);
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [step, imgPanelH, bill?.image_url]);
+
+  const applyTransform = (scale: number, x: number, y: number) => {
+    imgTransformRef.current = { scale, x, y };
+    setImgScale(scale); setImgPan({ x, y });
+  };
+
+  const onImgTouchStart = (e: React.TouchEvent) => {
+    if (drawMode) return;
+    const t = e.touches;
+    if (t.length === 2) {
+      const dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
+      pinchRef.current = { dist: Math.hypot(dx, dy), scale: imgTransformRef.current.scale };
+    } else if (t.length === 1 && imgTransformRef.current.scale > 1) {
+      panStartRef.current = { x: t[0].clientX, y: t[0].clientY, px: imgTransformRef.current.x, py: imgTransformRef.current.y };
+    }
+  };
+  const onImgTouchMove = (e: React.TouchEvent) => {
+    if (drawMode) return;
+    const t = e.touches;
+    if (t.length === 2 && pinchRef.current) {
+      const dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
+      const ratio = Math.hypot(dx, dy) / pinchRef.current.dist;
+      const next = Math.min(4, Math.max(1, pinchRef.current.scale * ratio));
+      const { x, y } = imgTransformRef.current;
+      next === 1 ? applyTransform(1, 0, 0) : applyTransform(next, x, y);
+    } else if (t.length === 1 && panStartRef.current) {
+      const dx = t[0].clientX - panStartRef.current.x, dy = t[0].clientY - panStartRef.current.y;
+      applyTransform(imgTransformRef.current.scale, panStartRef.current.px + dx, panStartRef.current.py + dy);
+    }
+  };
+  const onImgTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) pinchRef.current = null;
+    if (e.touches.length === 0) panStartRef.current = null;
+  };
+
+  const onImgMouseDown = (e: React.MouseEvent) => {
+    if (drawMode || imgTransformRef.current.scale <= 1) return;
+    panStartRef.current = { x: e.clientX, y: e.clientY, px: imgTransformRef.current.x, py: imgTransformRef.current.y };
+  };
+  const onImgMouseMove = (e: React.MouseEvent) => {
+    if (!panStartRef.current || drawMode) return;
+    const dx = e.clientX - panStartRef.current.x, dy = e.clientY - panStartRef.current.y;
+    applyTransform(imgTransformRef.current.scale, panStartRef.current.px + dx, panStartRef.current.py + dy);
+  };
+  const onImgMouseUp = () => { panStartRef.current = null; };
+
+  const canvasPoint = (clientX: number, clientY: number) => {
+    const c = canvasRef.current;
+    if (!c) return { x: 0, y: 0 };
+    const r = c.getBoundingClientRect();
+    return { x: (clientX - r.left) * (c.width / r.width), y: (clientY - r.top) * (c.height / r.height) };
+  };
+  const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawMode) return;
+    const c = canvasRef.current; if (!c) return;
+    const ctx = c.getContext("2d"); if (!ctx) return;
+    c.setPointerCapture(e.pointerId);
+    const { x, y } = canvasPoint(e.clientX, e.clientY);
+    ctx.strokeStyle = "rgba(220, 38, 38, 0.75)";
+    ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.beginPath(); ctx.moveTo(x, y);
+    drawingRef.current = true;
+  };
+  const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawMode || !drawingRef.current) return;
+    const c = canvasRef.current; if (!c) return;
+    const ctx = c.getContext("2d"); if (!ctx) return;
+    const { x, y } = canvasPoint(e.clientX, e.clientY);
+    ctx.lineTo(x, y); ctx.stroke();
+  };
+  const onCanvasPointerUp = () => { drawingRef.current = false; };
+  const clearCanvas = () => {
+    const c = canvasRef.current; if (!c) return;
+    c.getContext("2d")?.clearRect(0, 0, c.width, c.height);
+  };
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!dragHandleRef.current) return;
+      const dy = e.clientY - dragHandleRef.current.startY;
+      const maxH = Math.round(window.innerHeight * 0.6);
+      const next = Math.min(maxH, Math.max(120, dragHandleRef.current.startH + dy));
+      requestAnimationFrame(() => setImgPanelH(next));
+    };
+    const onUp = () => { dragHandleRef.current = null; };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+  const onHandleDown = (e: React.PointerEvent) => { dragHandleRef.current = { startY: e.clientY, startH: imgPanelH }; };
+  const resetImgTransform = () => applyTransform(1, 0, 0);
 
   // ── Step 5 ────────────────────────────────────────────────────
 
@@ -332,8 +674,10 @@ export default function SplitPage() {
       payers = bill.participants.filter((p) => (parseFloat(multiAmounts[p.id] || "0") || 0) > 0)
         .map((p) => ({ participant_id: p.id, paid_amount: parseFloat(multiAmounts[p.id] || "0") || 0 }));
     }
+    setBusy(true);
     try { setBill(await setPayers(bill.id, payers)); setStep(6); }
     catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+    finally { setBusy(false); }
   }
 
   // ── Step 6 ────────────────────────────────────────────────────
@@ -357,8 +701,11 @@ export default function SplitPage() {
 
   const stepLabels: Record<number, string> = { 1: "Dividir cuenta", 2: bill?.merchant || "Ítems", 3: "Participantes", 4: "Asignar ítems", 5: "¿Quién pagó?", 6: "Resumen" };
 
+  const splitSum = Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  const splitMatches = bill ? Math.abs(splitSum - bill.total_amount) <= 1 : false;
+
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="h-[100dvh] bg-slate-50 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-4 pt-safe pt-4 pb-3">
         <div className="flex items-center gap-3 max-w-lg mx-auto">
@@ -376,7 +723,7 @@ export default function SplitPage() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto max-w-lg mx-auto w-full px-4 py-4 pb-28">
+      <div className="flex-1 min-h-0 overflow-y-auto max-w-lg mx-auto w-full px-4 py-4 pb-10">
 
         {/* ── STEP 1: Capture ── */}
         {step === 1 && (
@@ -456,8 +803,11 @@ export default function SplitPage() {
                 <Plus size={16} /> Agregar ítem
               </button>
             )}
-            {/* Inline CTA — always visible without relying on fixed positioning */}
-            <button onClick={() => setStep(3)} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2">
+            <button
+              onClick={() => setStep(3)}
+              disabled={bill.items.length === 0}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+            >
               Participantes <ChevronRight size={18} />
             </button>
           </div>
@@ -483,12 +833,136 @@ export default function SplitPage() {
               {bill.participants.length} participante{bill.participants.length !== 1 ? "s" : ""}:&nbsp;
               {bill.participants.map((p) => p.name.split(" ")[0]).join(", ")}
             </div>
+            <button
+              onClick={goToAssign}
+              disabled={busy || bill.participants.length === 0}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+            >
+              {busy ? <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Preparando…</> : <>Asignar ítems <ChevronRight size={18} /></>}
+            </button>
           </div>
         )}
 
         {/* ── STEP 4: Assign ── */}
         {step === 4 && bill && (
           <div className="space-y-2.5">
+            {/* Image viewer panel (only if bill has image) */}
+            {bill.image_url && (
+              <>
+                <div
+                  ref={imgContainerRef}
+                  className="relative w-full bg-slate-900 rounded-xl overflow-hidden select-none"
+                  style={{ height: imgPanelH, touchAction: "none" }}
+                  onTouchStart={onImgTouchStart}
+                  onTouchMove={onImgTouchMove}
+                  onTouchEnd={onImgTouchEnd}
+                  onMouseDown={onImgMouseDown}
+                  onMouseMove={onImgMouseMove}
+                  onMouseUp={onImgMouseUp}
+                  onMouseLeave={onImgMouseUp}
+                >
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`,
+                      transformOrigin: "center center",
+                      willChange: "transform",
+                    }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={resolveBackendUrl(bill.image_url)}
+                      alt="Boleta"
+                      className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                      draggable={false}
+                    />
+                    <canvas
+                      ref={canvasRef}
+                      className="absolute inset-0 w-full h-full"
+                      style={{ pointerEvents: drawMode ? "auto" : "none", touchAction: "none" }}
+                      onPointerDown={onCanvasPointerDown}
+                      onPointerMove={onCanvasPointerMove}
+                      onPointerUp={onCanvasPointerUp}
+                      onPointerCancel={onCanvasPointerUp}
+                    />
+                  </div>
+
+                  <div className="absolute top-2 right-2 flex flex-col gap-2 z-10">
+                    <button
+                      type="button"
+                      onClick={() => setDrawMode((m) => !m)}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center shadow-md transition-colors ${
+                        drawMode ? "bg-red-500 text-white" : "bg-white/95 text-slate-700"
+                      }`}
+                      aria-label={drawMode ? "Modo mover" : "Modo rallar"}
+                    >
+                      {drawMode ? <Hand size={16} /> : <Pencil size={16} />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearCanvas}
+                      className="w-9 h-9 rounded-full bg-white/95 text-slate-700 flex items-center justify-center shadow-md"
+                      aria-label="Borrar dibujo"
+                    >
+                      <Eraser size={16} />
+                    </button>
+                    {imgScale > 1 && (
+                      <button
+                        type="button"
+                        onClick={resetImgTransform}
+                        className="px-2 h-7 rounded-full bg-white/95 text-slate-700 text-[10px] font-semibold flex items-center justify-center shadow-md"
+                        aria-label="Restablecer zoom"
+                      >
+                        {imgScale.toFixed(1)}x
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="absolute top-2 left-2 z-10 bg-black/40 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">
+                    {drawMode ? "Rallar" : "Mover / Zoom"}
+                  </div>
+                </div>
+
+                <div
+                  onPointerDown={onHandleDown}
+                  className="w-full flex items-center justify-center py-1.5 cursor-row-resize touch-none"
+                  style={{ touchAction: "none" }}
+                >
+                  <div className="flex items-center gap-1 px-3 py-1 rounded-full bg-slate-200 hover:bg-slate-300 transition-colors">
+                    <GripHorizontal size={14} className="text-slate-500" />
+                    <span className="text-[10px] text-slate-500 font-medium">Arrastrar</span>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Auto-assign banner */}
+            {autoAssignBanner && (
+              <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-medium rounded-xl px-3 py-2">
+                <Sparkles size={14} className="shrink-0" />
+                <span>Asignado igual entre todos · Ajusta si necesitas</span>
+                <button className="ml-auto text-indigo-400 hover:text-indigo-600" onClick={() => setAutoAssignBanner(false)}>×</button>
+              </div>
+            )}
+
+            {/* Progress */}
+            {bill.items.length > 0 && (
+              <div className="bg-white rounded-xl px-3 py-2 shadow-sm">
+                <div className="flex items-center justify-between text-[11px] font-medium text-slate-500 mb-1">
+                  <span>{assignProgress.done} de {assignProgress.total} ítems asignados</span>
+                  {assignProgress.done === assignProgress.total && (
+                    <span className="text-emerald-600 flex items-center gap-1"><Check size={12} /> Listo</span>
+                  )}
+                </div>
+                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 transition-all duration-300"
+                    style={{ width: `${assignProgress.total === 0 ? 0 : (assignProgress.done / assignProgress.total) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             {/* Running totals per participant */}
             <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
               {bill.participants.map((p) => {
@@ -504,17 +978,30 @@ export default function SplitPage() {
             </div>
 
             {/* "Dividir todo igual" shortcut */}
-            <button onClick={handleAssignEqual} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm font-medium py-2 rounded-xl flex items-center justify-center gap-2">
+            <button
+              onClick={handleAssignEqual}
+              disabled={busy}
+              className="w-full bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-600 text-sm font-medium py-2 rounded-xl flex items-center justify-center gap-2"
+            >
               <Check size={14} /> Dividir todo por igual
             </button>
 
             {/* Item cards — per-item chip selection */}
-            {bill.items.map((item) => {
-              const sel = getSelected(item.id);
-              const ov = overrides.get(item.id);
-              const assigned = itemAssigned(item);
+            {bill.items.length === 0 ? (
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 text-sm rounded-xl px-4 py-3">
+                La boleta no tiene ítems. Vuelve atrás para agregarlos.
+              </div>
+            ) : bill.items.map((item) => {
+              const assigned = itemFullyAssigned(item);
+              const partial = itemPartiallyAssigned(item) && !assigned;
+              const slots = slotsOf(item.id, item.qty);
               return (
-                <div key={item.id} className={`bg-white rounded-xl shadow-sm px-4 py-3 transition-all ${assigned ? "border border-emerald-200" : "border border-slate-100"}`}>
+                <div
+                  key={item.id}
+                  className={`bg-white rounded-xl shadow-sm px-4 py-3 transition-all border ${
+                    assigned ? "border-emerald-200" : partial ? "border-amber-200" : "border-slate-100"
+                  }`}
+                >
                   {/* Item header */}
                   <div className="flex items-center justify-between mb-2.5">
                     <div className="min-w-0 flex-1">
@@ -523,55 +1010,97 @@ export default function SplitPage() {
                       </p>
                       <p className="text-xs text-slate-400 mt-0.5">
                         {item.qty > 1 ? `${clp(item.unit_price)} c/u · ` : ""}{clp(item.line_total)}
-                        {ov && <span className="ml-1 text-amber-600">(personalizado)</span>}
                       </p>
                     </div>
                     {assigned && <Check size={16} className="text-emerald-500 shrink-0 ml-2" />}
                   </div>
-                  {/* Participant chips — tap to toggle */}
+
+                  {/* Numbered slot chips (only for qty>1) */}
+                  {item.qty > 1 && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {slots.map((slot, idx) => {
+                        const pid = typeof slot === "number" && slot > 0 ? slot : null;
+                        const p = pid ? bill.participants.find((x) => x.id === pid) : null;
+                        const bg = p?.color ?? "#e2e8f0";
+                        const fg = p ? "white" : "#64748b";
+                        return (
+                          <button
+                            key={idx}
+                            onClick={() => cycleSlot(item.id, idx)}
+                            className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shadow-sm transition-transform active:scale-95"
+                            style={{ background: bg, color: fg }}
+                            title={p ? `Unidad ${idx + 1}: ${p.name}` : `Unidad ${idx + 1}: sin asignar`}
+                          >
+                            {circled(idx + 1)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Participant chips */}
                   <div className="flex flex-wrap gap-2">
                     {bill.participants.map((p) => {
-                      const isOn = ov ? (ov.get(p.id) ?? 0) > 0 : sel.has(p.id);
-                      const unitsLabel = ov ? (ov.get(p.id) ?? 0) : null;
+                      const on = isPersonOn(item, p.id);
+                      const u = item.qty > 1 ? unitsFor(item, p.id) : 0;
                       return (
                         <button
                           key={p.id}
-                          onClick={() => togglePerson(item.id, p.id)}
+                          onClick={() => toggleChip(item, p.id)}
                           className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all border-2 ${
-                            isOn
+                            on
                               ? "text-white border-transparent shadow-sm"
                               : "bg-white text-slate-400 border-slate-200"
                           }`}
-                          style={isOn ? { background: p.color, borderColor: p.color } : {}}
+                          style={on ? { background: p.color, borderColor: p.color } : {}}
                         >
                           <span>{p.name.split(" ")[0]}</span>
-                          {unitsLabel != null && unitsLabel > 0 && <span className="bg-white/30 rounded-full px-1">{unitsLabel}</span>}
+                          {u > 0 && <span className="bg-white/30 rounded-full px-1">{u}</span>}
                         </button>
                       );
                     })}
-                    {/* Todos shortcut */}
                     <button
-                      onClick={() => selectAll(item.id)}
+                      onClick={() => selectAll(item)}
                       className="px-2.5 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 hover:bg-slate-200 border-2 border-transparent"
                     >Todos</button>
-                    {/* Repartir for qty>1 unequal distribution */}
-                    {item.qty > 1 && (
-                      <button
-                        onClick={() => openBottomSheet(item)}
-                        className="px-2.5 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 hover:bg-slate-200 border-2 border-transparent"
-                      >÷ Repartir</button>
-                    )}
                   </div>
+
+                  {/* Inline mini-selector for chip choice on qty>1 */}
+                  {chipChoice && chipChoice.itemId === item.id && (
+                    <div className="mt-3 bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2">
+                      <span className="text-xs text-slate-600 flex-1">
+                        {(bill.participants.find((p) => p.id === chipChoice.pid)?.name.split(" ")[0]) ?? "?"} se lleva:
+                      </span>
+                      <button
+                        onClick={() => applyChipChoice("all")}
+                        className="px-2.5 py-1 rounded-full bg-indigo-600 text-white text-xs font-semibold"
+                      >Todos ({item.qty})</button>
+                      <button
+                        onClick={() => applyChipChoice("half")}
+                        className="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-semibold"
+                      >Mitad ({Math.max(1, Math.floor(item.qty / 2))})</button>
+                      <button
+                        onClick={() => setChipChoice(null)}
+                        className="px-1.5 text-slate-400 text-xs"
+                      >×</button>
+                    </div>
+                  )}
                 </div>
               );
             })}
+            <button
+              onClick={goToWhoPaid}
+              disabled={busy || bill.items.length === 0}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+            >
+              {busy ? <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Guardando…</> : <>¿Quién pagó? <ChevronRight size={18} /></>}
+            </button>
           </div>
         )}
 
         {/* ── STEP 5: Who paid ── */}
         {step === 5 && bill && (
           <div className="space-y-4">
-            {/* Me */}
             <button onClick={() => setPayerMode("me")} className={`w-full rounded-2xl p-4 text-left border-2 transition-colors ${payerMode === "me" ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"}`}>
               <p className="font-semibold text-slate-800">Yo pagué</p>
               <p className="text-sm text-slate-500 mt-1">{clp(bill.total_amount)} de mi bolsillo</p>
@@ -582,7 +1111,6 @@ export default function SplitPage() {
                 </select>
               )}
             </button>
-            {/* Other */}
             <button onClick={() => setPayerMode("other")} className={`w-full rounded-2xl p-4 text-left border-2 transition-colors ${payerMode === "other" ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"}`}>
               <p className="font-semibold text-slate-800">Pagó otra persona</p>
               {payerMode === "other" && (
@@ -591,7 +1119,6 @@ export default function SplitPage() {
                 </div>
               )}
             </button>
-            {/* Split */}
             <button onClick={() => setPayerMode("split")} className={`w-full rounded-2xl p-4 text-left border-2 transition-colors ${payerMode === "split" ? "border-indigo-500 bg-indigo-50" : "border-slate-200 bg-white"}`}>
               <p className="font-semibold text-slate-800">Pagamos varios</p>
               {payerMode === "split" && (
@@ -603,12 +1130,21 @@ export default function SplitPage() {
                       <input type="number" className="w-28 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" placeholder="0" value={multiAmounts[p.id] ?? ""} onChange={(e) => setMultiAmounts((m) => ({ ...m, [p.id]: e.target.value }))} />
                     </div>
                   ))}
-                  <div className="flex justify-between text-xs text-slate-400 pt-1">
-                    <span>Total: {clp(bill.total_amount)}</span>
-                    <span>Ingresado: {clp(Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0))}</span>
+                  <div className="flex justify-between text-xs pt-1">
+                    <span className="text-slate-400">Total: {clp(bill.total_amount)}</span>
+                    <span className={splitMatches ? "text-emerald-600 font-medium" : "text-red-600 font-medium"}>
+                      Ingresado: {clp(splitSum)}{!splitMatches && " ✗"}
+                    </span>
                   </div>
                 </div>
               )}
+            </button>
+            <button
+              onClick={handleSetPayers}
+              disabled={busy}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+            >
+              {busy ? <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Guardando…</> : <>Ver resumen <ChevronRight size={18} /></>}
             </button>
           </div>
         )}
@@ -621,6 +1157,8 @@ export default function SplitPage() {
               <p className="text-4xl font-extrabold">{clp(finalized ? myShare : (bill.participants.find((p) => p.is_me)?.owes_amount ?? 0))}</p>
               {finalized && <p className="text-sm mt-2 opacity-80">Guardado en Lucas ✓</p>}
             </div>
+
+            {/* Per-person owes/paid summary */}
             <div className="bg-white rounded-2xl shadow-sm divide-y divide-slate-100">
               {bill.participants.filter((p) => !p.is_me).map((p) => {
                 const diff = p.owes_amount - p.paid_amount;
@@ -635,11 +1173,58 @@ export default function SplitPage() {
                 );
               })}
             </div>
+
+            {/* Per-item breakdown */}
+            <details className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <summary className="px-4 py-3 text-sm font-semibold text-slate-700 cursor-pointer select-none">
+                Desglose por ítem
+              </summary>
+              <div className="divide-y divide-slate-100">
+                {bill.items.map((item) => {
+                  const cost = (pid: number) => itemCostFor(item, pid);
+                  const eaters = bill.participants.filter((p) => cost(p.id) > 0.01);
+                  return (
+                    <div key={item.id} className="px-4 py-3">
+                      <div className="flex justify-between items-center mb-1.5">
+                        <p className="text-xs font-medium text-slate-800 truncate">
+                          {item.qty > 1 ? `${item.qty}× ` : ""}{item.name}
+                        </p>
+                        <span className="text-xs text-slate-500">{clp(item.line_total)}</span>
+                      </div>
+                      {eaters.length === 0 ? (
+                        <p className="text-[11px] text-slate-400 italic">Sin asignar</p>
+                      ) : (
+                        <div className="space-y-0.5">
+                          {eaters.map((p) => (
+                            <div key={p.id} className="flex justify-between text-[11px]">
+                              <span className="flex items-center gap-1.5 text-slate-600">
+                                <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
+                                {p.name.split(" ")[0]}
+                                {item.qty > 1 && unitsFor(item, p.id) > 0 && (
+                                  <span className="text-slate-400">×{unitsFor(item, p.id)}</span>
+                                )}
+                              </span>
+                              <span className="text-slate-500 font-medium">{clp(cost(p.id))}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </details>
+
             {!finalized && accounts.length > 0 && (
               <select className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white" value={selectedAccountId ?? ""} onChange={(e) => setSelectedAccountId(e.target.value ? parseInt(e.target.value) : null)}>
                 <option value="">Sin cuenta específica</option>
                 {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.bank})</option>)}
               </select>
+            )}
+            {!finalized && (
+              <button onClick={handleFinalize} disabled={loading} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
+                {loading ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <><Check size={18} /> Guardar en Lucas</>}
+              </button>
             )}
             {finalized && (
               <a href={buildWhatsApp()} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-3 rounded-xl">
@@ -651,57 +1236,28 @@ export default function SplitPage() {
         )}
       </div>
 
+      {/* Celebration on full assignment */}
+      {celebrate && step === 4 && (
+        <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center">
+          <div className="bg-emerald-500 text-white rounded-full p-6 shadow-2xl animate-ping-once">
+            <Check size={42} strokeWidth={3} />
+          </div>
+        </div>
+      )}
+
       {/* Error toast */}
       {error && <Toast msg={error} onClose={() => setError(null)} />}
 
-      {/* Bottom sheet: per-item unit stepper */}
-      {bottomSheetItemId !== null && bill && (() => {
-        const item = bill.items.find((i) => i.id === bottomSheetItemId);
-        if (!item) return null;
-        const total = Object.values(bottomSheetDraft).reduce((s, v) => s + v, 0);
-        return (
-          <div className="fixed inset-0 z-40 flex items-end">
-            <div className="absolute inset-0 bg-black/40" onClick={() => setBottomSheetItemId(null)} />
-            <div className="relative bg-white rounded-t-3xl w-full max-w-lg mx-auto p-5 pb-safe pb-8 z-50">
-              <h3 className="font-bold text-slate-800 mb-1">{item.name}</h3>
-              <p className="text-sm text-slate-500 mb-4">Total asignado: {total}/{item.qty} {total === item.qty && <span className="text-emerald-600 font-medium">✓</span>}</p>
-              <div className="space-y-3 mb-5">
-                {bill.participants.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ background: p.color }}>{initials(p.name)}</div>
-                    <span className="flex-1 text-sm text-slate-700">{p.name.split(" ")[0]}</span>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => setBottomSheetDraft((d) => ({ ...d, [p.id]: Math.max(0, (d[p.id] ?? 0) - 1) }))} className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600 font-bold">−</button>
-                      <span className="w-6 text-center text-sm font-semibold">{bottomSheetDraft[p.id] ?? 0}</span>
-                      <button onClick={() => setBottomSheetDraft((d) => ({ ...d, [p.id]: (d[p.id] ?? 0) + 1 }))} className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600 font-bold">+</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <button className="w-full bg-indigo-600 text-white font-medium py-3 rounded-xl" onClick={confirmBottomSheet}>Confirmar</button>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Sticky bottom CTA */}
-      <div className="fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 px-4 py-3 pb-safe pb-5">
-        <div className="max-w-lg mx-auto flex gap-3">
-          {step > 1 && step < 6 && (
-            <button onClick={() => setStep(step - 1)} className="px-4 py-3 rounded-xl border border-slate-200 text-slate-600 text-sm font-medium">Atrás</button>
-          )}
-          {step === 1 && <div className="flex-1 text-center text-xs text-slate-400 flex items-center justify-center">Sube una foto o toca &ldquo;Ingresar manualmente&rdquo;</div>}
-          {step === 2 && bill && <button onClick={() => setStep(3)} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2">Participantes <ChevronRight size={18} /></button>}
-          {step === 3 && bill && <button onClick={goToAssign} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2">Asignar <ChevronRight size={18} /></button>}
-          {step === 4 && bill && <button onClick={goToWhoPaid} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2">¿Quién pagó? <ChevronRight size={18} /></button>}
-          {step === 5 && bill && <button onClick={handleSetPayers} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2">Ver resumen <ChevronRight size={18} /></button>}
-          {step === 6 && bill && !finalized && (
-            <button onClick={handleFinalize} disabled={loading} className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold py-3 rounded-xl flex items-center justify-center gap-2">
-              {loading ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <>Guardar en Lucas <Check size={18} /></>}
-            </button>
-          )}
-        </div>
-      </div>
+      <style jsx>{`
+        @keyframes ping-once {
+          0% { transform: scale(0.4); opacity: 0; }
+          40% { transform: scale(1.1); opacity: 1; }
+          100% { transform: scale(1.4); opacity: 0; }
+        }
+        :global(.animate-ping-once) {
+          animation: ping-once 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+      `}</style>
     </div>
   );
 }
