@@ -1272,72 +1272,63 @@ def vision_parse(
                 currency="CLP", items=items_fp,
             )])
 
-        # ── GPT-4o VISION: send image directly, no Tesseract grounding ───────────
-        # This is exactly what ChatGPT does. The model reads the image itself.
+        # ── TWO-STAGE: transcribe image → parse text (same as ChatGPT) ──────────
+        # Stage 1: GPT-4o reads image and produces plain text (pure transcription)
+        # Stage 2: gpt-4o-mini parses the clean text into JSON (pure structuring)
+        # Separating concerns is more reliable than doing both at once.
         compact = _shrink_for_vision(image_bytes)
         mime = _detect_mime(compact)
         b64 = base64.b64encode(compact).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
-        resp = ai_provider.vision_json(
-            system_prompt=_RECEIPT_PROMPT,
-            user_text=(
-                "Transcribe every product row from this receipt exactly as printed, "
-                "top to bottom, in order. Each row = one item. Do not merge identical rows. "
-                "Then return the JSON."
-            ),
-            image_data_url=data_url,
-            temperature=0.0,
-            purpose="parse",
+
+        t1 = ai_provider.vision_transcribe(
+            data_url,
+            purpose="transcribe",
             user_id=user_id,
             db=db,
         )
-        if resp is None or not resp.text:
-            return None
-
-        # ── TWO-STAGE FALLBACK ────────────────────────────────────────────────
-        # If single-stage returned no items, retry: transcribe image → parse text.
-        # Separating concerns (read vs. structure) is more reliable for complex
-        # comandas where the model tries to read+structure simultaneously.
-        raw_json_text = resp.text
-        try:
-            _probe = json.loads(raw_json_text)
-            _txs_probe = _probe.get("transactions", [])
-            _has_items = any(_t.get("items") for _t in _txs_probe)
-        except Exception:
-            _has_items = True  # parse error handled below, don't retry
-
-        if not _has_items:
-            print("[ocr] single-stage gave no items — retrying with two-stage pipeline")
-            t1 = ai_provider.vision_transcribe(
-                data_url,
-                purpose="transcribe",
+        if t1 and t1.text:
+            print(f"[ocr] stage-1 transcript ({len(t1.text)} chars) → stage-2 parse")
+            t2 = ai_provider.chat_completion(
+                messages=[
+                    {"role": "system", "content": _RECEIPT_TEXT_PROMPT},
+                    {"role": "user", "content": f"Receipt text:\n{t1.text}\n\nReturn JSON."},
+                ],
+                model=settings.openai_model,
+                temperature=0.0,
+                purpose="parse_text",
                 user_id=user_id,
                 db=db,
             )
-            if t1 and t1.text:
-                t2 = ai_provider.chat_completion(
-                    messages=[
-                        {"role": "system", "content": _RECEIPT_TEXT_PROMPT},
-                        {"role": "user", "content": f"Receipt text:\n{t1.text}\n\nReturn JSON."},
-                    ],
-                    model=settings.openai_model,  # cheaper text model (gpt-4o-mini)
-                    temperature=0.0,
-                    purpose="parse_text",
-                    user_id=user_id,
-                    db=db,
-                )
-                if t2 and t2.text:
-                    # Extract JSON block (model may wrap in ```json fences)
-                    _raw = t2.text.strip()
-                    _m = re.search(r'```json\s*([\s\S]+?)\s*```', _raw)
-                    if _m:
-                        _raw = _m.group(1)
-                    elif not _raw.startswith("{"):
-                        _s, _e = _raw.find("{"), _raw.rfind("}") + 1
-                        if _s != -1 and _e > _s:
-                            _raw = _raw[_s:_e]
+            raw_json_text = ""
+            if t2 and t2.text:
+                _raw = t2.text.strip()
+                _m = re.search(r'```json\s*([\s\S]+?)\s*```', _raw)
+                if _m:
+                    raw_json_text = _m.group(1)
+                elif _raw.startswith("{"):
                     raw_json_text = _raw
-                    print("[ocr] two-stage: using text-parsed result")
+                else:
+                    _s, _e = _raw.find("{"), _raw.rfind("}") + 1
+                    raw_json_text = _raw[_s:_e] if _s != -1 and _e > _s else ""
+        else:
+            raw_json_text = ""
+
+        # Fallback: single-stage vision_json if transcription failed
+        if not raw_json_text:
+            print("[ocr] two-stage failed, falling back to single-stage vision_json")
+            resp = ai_provider.vision_json(
+                system_prompt=_RECEIPT_PROMPT,
+                user_text="Parse this receipt and return the JSON.",
+                image_data_url=data_url,
+                temperature=0.0,
+                purpose="parse",
+                user_id=user_id,
+                db=db,
+            )
+            if resp is None or not resp.text:
+                return None
+            raw_json_text = resp.text
 
         data = json.loads(raw_json_text)
         txs = data.get("transactions", [])
