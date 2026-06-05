@@ -424,6 +424,10 @@ export default function SplitPage() {
                 <Plus size={16} /> Agregar ítem
               </button>
             )}
+            {/* Inline CTA — always visible without relying on fixed positioning */}
+            <button onClick={() => setStep(3)} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2">
+              Participantes <ChevronRight size={18} />
+            </button>
           </div>
         )}
 
