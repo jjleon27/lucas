@@ -588,64 +588,54 @@ Return strict JSON — no markdown, no commentary.
 
 # Shorter prompt for when grounding confirms a receipt/boleta (not a bank statement).
 # ~40% fewer tokens → faster LLM response for the common split-expense case.
-_RECEIPT_PROMPT = """You are a receipt parser for Chilean receipts (boletas, comandas, facturas).
-Read the image carefully. Return ONLY a JSON object — no markdown, no explanation.
+_RECEIPT_PROMPT = """Parser de boletas/comandas/facturas chilenas. Lee la imagen y devuelve SOLO el JSON, sin markdown.
 
-JSON shape:
-{
-  "currency": "CLP",
-  "total_neto": number_or_null,
-  "iva_amount": number_or_null,
-  "transactions": [{
-    "amount": number,
-    "date": "YYYY-MM-DD",
-    "merchant": string,
-    "description": "",
-    "category": "Alimentación"|"Supermercado"|"Transporte"|"Compras"|"Entretenimiento"|"Bares y Salidas"|"Cuentas y Servicios"|"Salud"|"Otros",
-    "is_income": false,
-    "is_cc_payment": false,
-    "cuota_actual": null,
-    "cuotas_total": null,
-    "items": [{"name": string, "price": number, "quantity": integer}]
-  }]
-}
+SCHEMA:
+{"currency":"CLP","total_neto":number|null,"iva_amount":number|null,"transactions":[{"amount":number,"date":"YYYY-MM-DD"|null,"merchant":string,"description":"","category":"Alimentación"|"Bares y Salidas"|"Supermercado"|"Transporte"|"Compras"|"Entretenimiento"|"Cuentas y Servicios"|"Salud"|"Belleza"|"Suscripciones"|"Otros","is_income":false,"is_cc_payment":false,"cuota_actual":int|null,"cuotas_total":int|null,"items":[{"name":string,"price":number,"quantity":int}]}]}
 
-RULES:
+REGLAS:
 
-1. CLP NUMBER FORMAT: dots = thousand separators, never decimals.
-   9.000 = 9000 · 127.900 = 127900 · 1.489.991 = 1489991
+1) CLP: punto = miles, NUNCA decimal. 9.000=9000, 127.900=127900.
 
-2. ITEMS — faithfully transcribe every product row, top to bottom, in the SAME ORDER they appear:
-   - ONE item entry per printed receipt row. Do NOT merge or consolidate rows.
-     If "Cerveza" appears on 10 separate rows, output 10 separate item entries.
-   - price = UNIT price (never the line total). quantity = the quantity on that row.
-   - Row format "N PRODUCT LINE_TOTAL" (leading integer before product name):
-     quantity = N, price = LINE_TOTAL ÷ N (unit price).
-     Example: "6 SCHOP MEDIO ESCUDO 26.400" → quantity=6, price=4400 (=26400÷6).
-     Example: "3 VIENESA ITALIANA 13.200"   → quantity=3, price=4400 (=13200÷3).
-   - Row format "NxPRICE Product LINE_TOTAL": quantity=N, price=PRICE (the number after x).
-   - Modifier rows starting with "+" (e.g. "+Coca Zero"): price=0, quantity=1.
-   - Numbers inside product names are NOT quantities: "35°"=degrees, "500cc"=volume.
-   - Any large number between item rows without a product name = running subtotal — skip it.
+2) ITEMS — un item por fila impresa, en orden, sin fusionar duplicados.
+   price=precio UNITARIO, quantity=cantidad de esa fila.
+   Detecta cantidad en este orden:
+   a) "NxPRECIO_UNIT producto LINE_TOTAL" (ej "2x4.990 Pechu 9.980"): qty=N, price=PRECIO_UNIT.
+   b) "Nx producto LINE_TOTAL" (ej "2x Hamburguesa 10.000"): qty=N, price=LINE_TOTAL÷N.
+   c) "N producto LINE_TOTAL" (entero líder 1-50; ej "3 Vienesa 13.200"): qty=N, price=LINE_TOTAL÷N.
+   d) "producto xN LINE_TOTAL" o "producto N LINE_TOTAL" (sufijo; ej "Yogurt x2 1.980"): qty=N, price=LINE_TOTAL÷N.
+   e) Sin cantidad detectable: qty=1, price=LINE_TOTAL.
+   Números embebidos en nombre NO son cantidad: "35°", "500cc", "12 años", "1.2kg".
+   Modificadores "+": price=0, quantity=1.
+   Descuentos/DCTO/AHORRO/"-": price NEGATIVO, quantity=1.
+   Cargos extra (Propina, Delivery, Servicio): price positivo, quantity=1.
 
-3. AMOUNT — use the labeled final total at the bottom of the receipt:
-   - Restaurant/bar POS: use "Total General Mesa" (whole table total). If absent, use "Consumo Cliente".
-   - Boleta/factura: use the final "TOTAL" line (= total_neto + IVA).
-   - Never use a mid-receipt running subtotal as the amount.
+3) AMOUNT — prioridad: a) línea "TOTAL" de boleta fiscal (neto+IVA). b) "Consumo Cliente" si existe,
+   si no "Total General Mesa". c) mayor número al final del documento. NUNCA un subtotal intermedio.
 
-4. IVA BOLETA only: set total_neto and iva_amount ONLY when the receipt explicitly prints
-   "Total Neto" and "IVA" rows (Chilean fiscal boleta). For restaurant comandas, bars, or
-   any receipt without those labels, leave total_neto and iva_amount as null.
+4) TOTAL_NETO/IVA_AMOUNT — solo cuando el doc imprime AMBAS líneas "Total Neto" e "IVA"
+   (boleta SII). Comanda restaurante/bar o ticket POS sin esas etiquetas → null.
+   "SUBTOTAL" solo NO cuenta como total_neto.
 
-5. CATEGORIES: Lider/Jumbo/Tottus/Unimarc→Supermercado; Uber/Cabify/Metro→Transporte;
-   restaurants/cafes→Alimentación; bars/pubs/beer halls→Bares y Salidas.
+5) CUOTAS — "CUOTAS: N" o "CUOTA M DE N" o "M/N": cuota_actual=M, cuotas_total=N. Sin mención → null.
+
+6) FECHA — solo si está impresa. Si no: date=null (no inventes).
+
+7) MERCHANT — nombre limpio. Delivery (PedidosYa/Rappi/UberEats) con sub-comercio:
+   "Sub-comercio (Aggregator)". "MERPAGO*LIDER" → "Lider".
+
+8) CATEGORÍA: Lider/Jumbo/Tottus/Unimarc/Santa Isabel→Supermercado; Uber/Cabify/DiDi/Metro/Copec→Transporte;
+   McDonald's/KFC/Starbucks/restaurantes/delivery comida→Alimentación;
+   bares/pubs/schoperías o comanda con ≥2 de {schop,pisco,cerveza,trago}→Bares y Salidas;
+   Cruz Verde/Salcobrand/clínicas→Salud; peluquerías/salones/spa→Belleza;
+   Netflix/Spotify/Disney→Suscripciones; Falabella/Ripley/Paris/Sodimac→Compras;
+   agua/luz/gas/internet→Cuentas y Servicios.
 """
 
-# Stage-2 prompt: same rules but input is plain text, not image.
-# Used in the two-stage fallback pipeline (transcribe → parse).
+# Stage-2 prompt (texto → JSON). Reemplaza la instrucción de imagen por texto.
 _RECEIPT_TEXT_PROMPT = _RECEIPT_PROMPT.replace(
-    "Read the image carefully. Return ONLY a JSON object — no markdown, no explanation.",
-    "Parse the receipt text below. Return ONLY a JSON object — no markdown, no explanation.",
+    "Lee la imagen y devuelve SOLO el JSON, sin markdown.",
+    "Parsea el texto de recibo abajo. Devuelve SOLO el JSON, sin markdown.",
 )
 
 
@@ -1278,28 +1268,58 @@ def vision_parse(
             )])
 
         # ── TWO-STAGE: transcribe image → parse text (same as ChatGPT) ──────────
-        # Stage 1: GPT-4o reads image and produces plain text (pure transcription)
-        # Stage 2: gpt-4o-mini parses the clean text into JSON (pure structuring)
-        # Separating concerns is more reliable than doing both at once.
+        # Stage 1: GPT-4o reads image → plain text
+        # Stage 2: gpt-4o-mini (or gpt-4o for complex receipts) → JSON
         compact = _shrink_for_vision(image_bytes)
         mime = _detect_mime(compact)
         b64 = base64.b64encode(compact).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
+
+        # Detect image dimensions for adaptive detail level
+        try:
+            import struct as _struct
+            _img_long = 0
+            if mime == "image/jpeg":
+                # Quick JPEG dimension sniff (SOF0/SOF2 markers)
+                i = 2
+                while i < len(compact) - 8:
+                    if compact[i] == 0xFF and compact[i+1] in (0xC0, 0xC2):
+                        _h, _w = _struct.unpack_from(">HH", compact, i+5)
+                        _img_long = max(_h, _w)
+                        break
+                    seg_len = _struct.unpack_from(">H", compact, i+2)[0]
+                    i += 2 + seg_len
+            elif mime == "image/png":
+                _w, _h = _struct.unpack_from(">II", compact, 16)
+                _img_long = max(_w, _h)
+        except Exception:
+            _img_long = 0
 
         t1 = ai_provider.vision_transcribe(
             data_url,
             purpose="transcribe",
             user_id=user_id,
             db=db,
+            image_long_side=_img_long,
         )
         if t1 and t1.text:
-            print(f"[ocr] stage-1 transcript ({len(t1.text)} chars) → stage-2 parse")
+            # Scale to gpt-4o for complex receipts: multi-client POS, many discounts, >15 items
+            _needs_full = (
+                "Total General Mesa" in t1.text
+                or t1.text.upper().count("DCTO") + t1.text.upper().count("PROMO") > 1
+                or t1.text.count("\n") > 25
+            )
+            _stage2_model = settings.openai_vision_model if _needs_full else settings.openai_model
+            if _needs_full:
+                print(f"[ocr] complex receipt → using {_stage2_model} for stage-2")
+            else:
+                print(f"[ocr] stage-1 transcript ({len(t1.text)} chars) → stage-2 parse")
             t2 = ai_provider.chat_completion(
                 messages=[
                     {"role": "system", "content": _RECEIPT_TEXT_PROMPT},
-                    {"role": "user", "content": f"Receipt text:\n{t1.text}\n\nReturn JSON."},
+                    {"role": "user", "content": f"Texto del recibo:\n{t1.text}"},
                 ],
-                model=settings.openai_model,
+                model=_stage2_model,
                 temperature=0.0,
                 purpose="parse_text",
                 user_id=user_id,

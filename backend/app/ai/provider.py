@@ -128,24 +128,28 @@ class OpenAIProvider(LLMProvider):
             provider=self.name,
         )
 
-    def vision_transcribe(self, image_data_url: str, *, model=None, temperature=0.0) -> "LLMResponse":
+    def vision_transcribe(self, image_data_url: str, *, model=None, temperature=0.0,
+                          image_long_side: int = 0) -> "LLMResponse":
         """Image → plain text transcription only. No JSON, no structure.
         Used as stage 1 of the two-stage pipeline for complex receipts.
+        image_long_side: longest pixel dimension of original image (0 = unknown → use high).
         """
         from openai import OpenAI
         vision_model = model or settings.openai_vision_model
         client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
+        # Use "low" detail for small images to save ~85% of vision tokens.
+        # Receipts < 1500px long side are sharp enough at low detail.
+        detail = "low" if 0 < image_long_side < 1500 else "high"
         resp = client.chat.completions.create(
             model=vision_model,
             messages=[
                 {"role": "system", "content": (
-                    "You are a receipt transcriber. Read the image and output the exact text "
-                    "printed on it, line by line, in order. Preserve numbers, prices, product "
-                    "names and quantities exactly as they appear. Do not interpret or restructure."
+                    "Transcribe el recibo exactamente como aparece: línea por línea, "
+                    "de arriba a abajo. Preserva números, precios y cantidades. No interpretes."
                 )},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Transcribe this receipt exactly as printed, line by line, top to bottom."},
-                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
+                    {"type": "text", "text": "Transcribe."},
+                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": detail}},
                 ]},
             ],
             temperature=temperature,
@@ -335,13 +339,15 @@ def vision_transcribe(
     purpose: str = "transcribe",
     user_id: Optional[int] = None,
     db=None,
+    image_long_side: int = 0,
 ) -> Optional[LLMResponse]:
     """Vision-in, plain text-out. Stage 1 of the two-stage pipeline."""
     prov = _pick_provider()
     if prov is None or not hasattr(prov, "vision_transcribe"):
         return None
     try:
-        resp = prov.vision_transcribe(image_data_url, model=model, temperature=temperature)
+        resp = prov.vision_transcribe(image_data_url, model=model, temperature=temperature,
+                                      image_long_side=image_long_side)
     except Exception as e:  # noqa: BLE001
         print(f"[ai.provider] {prov.name} vision_transcribe failed: {e}")
         return None
