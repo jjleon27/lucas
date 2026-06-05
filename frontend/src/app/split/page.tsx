@@ -893,6 +893,19 @@ function ReviewItemRow({
 }
 
 // ── CropModal ──────────────────────────────────────────────────────────────
+type Pt = { x: number; y: number };
+
+function ptInQuad(p: Pt, [tl, tr, br, bl]: Pt[]): boolean {
+  function sign(a: Pt, b: Pt, c: Pt) {
+    return (a.x - c.x) * (b.y - c.y) - (b.x - c.x) * (a.y - c.y);
+  }
+  const d1 = sign(p, tl, tr), d2 = sign(p, tr, br);
+  const d3 = sign(p, br, bl), d4 = sign(p, bl, tl);
+  const neg = d1 < 0 || d2 < 0 || d3 < 0 || d4 < 0;
+  const pos = d1 > 0 || d2 > 0 || d3 > 0 || d4 > 0;
+  return !(neg && pos);
+}
+
 function CropModal({
   file,
   onConfirm,
@@ -906,49 +919,80 @@ function CropModal({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null);
-  // rect in image-pixel coordinates
-  const [rect, setRect] = useState({ x: 0, y: 0, w: 0, h: 0 });
-  const dragging = useRef<{ edge: string; startX: number; startY: number; origRect: typeof rect } | null>(null);
+  // 4 corners in image-pixel coords: [TL, TR, BR, BL]
+  const [corners, setCorners] = useState<Pt[]>([]);
+  const drag = useRef<{ idx: number | "quad"; startPt: Pt; origCorners: Pt[] } | null>(null);
+  const HANDLE_R = 22; // hit radius in screen px
 
-  // Load image and set default rect (middle 80% height, full width)
   useEffect(() => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       setImgEl(img);
-      setRect({ x: 0, y: Math.round(img.height * 0.1), w: img.width, h: Math.round(img.height * 0.8) });
+      const pad = 0.08;
+      const W = img.width, H = img.height;
+      setCorners([
+        { x: W * pad,       y: H * pad },
+        { x: W * (1 - pad), y: H * pad },
+        { x: W * (1 - pad), y: H * (1 - pad) },
+        { x: W * pad,       y: H * (1 - pad) },
+      ]);
       URL.revokeObjectURL(url);
     };
     img.src = url;
   }, [file]);
 
-  // Draw canvas whenever image or rect changes
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !imgEl) return;
+    if (!canvas || !imgEl || !corners.length) return;
     const MAX_W = Math.min(window.innerWidth - 32, 500);
     const scale = MAX_W / imgEl.width;
     canvas.width = MAX_W;
     canvas.height = imgEl.height * scale;
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-    const rx = rect.x * scale, ry = rect.y * scale, rw = rect.w * scale, rh = rect.h * scale;
-    // Dim outside
-    ctx.fillStyle = "rgba(0,0,0,0.45)";
-    ctx.fillRect(0, 0, canvas.width, ry);
-    ctx.fillRect(0, ry + rh, canvas.width, canvas.height - ry - rh);
-    // Bright border
-    ctx.strokeStyle = "#6366f1";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(rx, ry, rw, rh);
-    // Corner handles
-    const hs = 10;
-    ctx.fillStyle = "#6366f1";
-    [[rx, ry],[rx+rw-hs, ry],[rx, ry+rh-hs],[rx+rw-hs, ry+rh-hs]].forEach(([hx,hy]) =>
-      ctx.fillRect(hx, hy, hs, hs));
-  }, [imgEl, rect]);
 
-  function getPos(e: React.PointerEvent<HTMLCanvasElement>) {
+    const sc = corners.map(p => ({ x: p.x * scale, y: p.y * scale }));
+    const [tl, tr, br, bl] = sc;
+
+    // Dim outside quad using evenodd
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.beginPath();
+    ctx.rect(0, 0, canvas.width, canvas.height);
+    ctx.moveTo(tl.x, tl.y);
+    ctx.lineTo(tr.x, tr.y);
+    ctx.lineTo(br.x, br.y);
+    ctx.lineTo(bl.x, bl.y);
+    ctx.closePath();
+    ctx.fill("evenodd");
+    ctx.restore();
+
+    // Border
+    ctx.strokeStyle = "#6366f1";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(tl.x, tl.y);
+    ctx.lineTo(tr.x, tr.y);
+    ctx.lineTo(br.x, br.y);
+    ctx.lineTo(bl.x, bl.y);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Corner handles
+    sc.forEach(p => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 14, 0, Math.PI * 2);
+      ctx.fillStyle = "#6366f1";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fill();
+    });
+  }, [imgEl, corners]);
+
+  function screenToImg(e: React.PointerEvent<HTMLCanvasElement>): Pt {
     const canvas = canvasRef.current!;
     const b = canvas.getBoundingClientRect();
     const scale = imgEl!.width / canvas.width;
@@ -956,47 +1000,75 @@ function CropModal({
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!imgEl) return;
+    if (!imgEl || !corners.length) return;
     const canvas = canvasRef.current!;
-    const scale = imgEl.width / canvas.width;
     const b = canvas.getBoundingClientRect();
-    const cx = (e.clientX - b.left) * scale, cy = (e.clientY - b.top) * scale;
-    const tol = 20 * scale;
-    const { x, y, w, h } = rect;
-    let edge = "";
-    if (Math.abs(cy - y) < tol) edge = "top";
-    else if (Math.abs(cy - (y + h)) < tol) edge = "bottom";
-    else if (cy > y && cy < y + h) edge = "move";
-    if (!edge) return;
-    canvas.setPointerCapture(e.pointerId);
-    dragging.current = { edge, startX: cx, startY: cy, origRect: { ...rect } };
-  }
+    const scale = imgEl.width / canvas.width;
+    const sp = { x: e.clientX - b.left, y: e.clientY - b.top }; // screen px
 
-  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (!dragging.current || !imgEl) return;
-    const { edge, startY, origRect } = dragging.current;
-    const { y } = getPos(e);
-    const dy = y - startY;
-    const H = imgEl.height;
-    if (edge === "top") {
-      const newY = Math.max(0, Math.min(origRect.y + dy, origRect.y + origRect.h - 40));
-      setRect({ ...origRect, y: newY, h: origRect.h - (newY - origRect.y) });
-    } else if (edge === "bottom") {
-      setRect({ ...origRect, h: Math.max(40, Math.min(origRect.h + dy, H - origRect.y)) });
-    } else {
-      const newY = Math.max(0, Math.min(origRect.y + dy, H - origRect.h));
-      setRect({ ...origRect, y: newY });
+    // Check corner handles first (large touch target)
+    const ci = corners.findIndex(c =>
+      Math.hypot(c.x / scale - sp.x, c.y / scale - sp.y) < HANDLE_R
+    );
+    if (ci !== -1) {
+      canvas.setPointerCapture(e.pointerId);
+      drag.current = { idx: ci, startPt: screenToImg(e), origCorners: corners.map(c => ({ ...c })) };
+      return;
+    }
+    // Inside quad → move all
+    const imgPt = screenToImg(e);
+    if (ptInQuad(imgPt, corners as [Pt, Pt, Pt, Pt])) {
+      canvas.setPointerCapture(e.pointerId);
+      drag.current = { idx: "quad", startPt: imgPt, origCorners: corners.map(c => ({ ...c })) };
     }
   }
 
-  function onPointerUp() { dragging.current = null; }
+  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!drag.current || !imgEl) return;
+    const cur = screenToImg(e);
+    const dx = cur.x - drag.current.startPt.x;
+    const dy = cur.y - drag.current.startPt.y;
+    const W = imgEl.width, H = imgEl.height;
+    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+    if (drag.current.idx === "quad") {
+      setCorners(drag.current.origCorners.map(c => ({
+        x: clamp(c.x + dx, 0, W),
+        y: clamp(c.y + dy, 0, H),
+      })));
+    } else {
+      const next = drag.current.origCorners.map((c, i) =>
+        i === drag.current!.idx
+          ? { x: clamp(c.x + dx, 0, W), y: clamp(c.y + dy, 0, H) }
+          : { ...c }
+      );
+      setCorners(next);
+    }
+  }
+
+  function onPointerUp() { drag.current = null; }
 
   async function handleConfirm() {
-    if (!imgEl) { onSkip(); return; }
+    if (!imgEl || !corners.length) { onSkip(); return; }
+    const [tl, tr, br, bl] = corners;
+    const minX = Math.max(0, Math.min(tl.x, bl.x));
+    const minY = Math.max(0, Math.min(tl.y, tr.y));
+    const maxX = Math.min(imgEl.width,  Math.max(tr.x, br.x));
+    const maxY = Math.min(imgEl.height, Math.max(bl.y, br.y));
+    const W = Math.round(maxX - minX), H = Math.round(maxY - minY);
+    if (W < 10 || H < 10) { onSkip(); return; }
     const off = document.createElement("canvas");
-    off.width = rect.w; off.height = rect.h;
-    off.getContext("2d")!.drawImage(imgEl, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
-    off.toBlob((blob) => {
+    off.width = W; off.height = H;
+    const ctx = off.getContext("2d")!;
+    ctx.translate(-minX, -minY);
+    ctx.beginPath();
+    ctx.moveTo(tl.x, tl.y);
+    ctx.lineTo(tr.x, tr.y);
+    ctx.lineTo(br.x, br.y);
+    ctx.lineTo(bl.x, bl.y);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(imgEl, 0, 0);
+    off.toBlob(blob => {
       if (!blob) { onSkip(); return; }
       onConfirm(new File([blob], file.name, { type: "image/jpeg" }));
     }, "image/jpeg", 0.92);
@@ -1007,12 +1079,12 @@ function CropModal({
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
         <div className="px-4 pt-4 pb-2">
           <p className="font-semibold text-slate-800 text-sm">Selecciona la zona de items</p>
-          <p className="text-xs text-slate-500 mt-0.5">Arrastra los bordes para encuadrar solo los productos</p>
+          <p className="text-xs text-slate-500 mt-0.5">Arrastra las esquinas para encuadrar — incluso si la boleta está chueca</p>
         </div>
         <div className="overflow-auto max-h-[60vh] flex justify-center bg-slate-100 px-2 py-2">
           <canvas
             ref={canvasRef}
-            className="rounded touch-none cursor-row-resize"
+            className="rounded touch-none cursor-crosshair"
             style={{ maxWidth: "100%" }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
