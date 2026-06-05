@@ -128,6 +128,37 @@ class OpenAIProvider(LLMProvider):
             provider=self.name,
         )
 
+    def vision_transcribe(self, image_data_url: str, *, model=None, temperature=0.0) -> "LLMResponse":
+        """Image → plain text transcription only. No JSON, no structure.
+        Used as stage 1 of the two-stage pipeline for complex receipts.
+        """
+        from openai import OpenAI
+        vision_model = model or settings.openai_vision_model
+        client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
+        resp = client.chat.completions.create(
+            model=vision_model,
+            messages=[
+                {"role": "system", "content": (
+                    "You are a receipt transcriber. Read the image and output the exact text "
+                    "printed on it, line by line, in order. Preserve numbers, prices, product "
+                    "names and quantities exactly as they appear. Do not interpret or restructure."
+                )},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Transcribe this receipt exactly as printed, line by line, top to bottom."},
+                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
+                ]},
+            ],
+            temperature=temperature,
+        )
+        usage = getattr(resp, "usage", None)
+        return LLMResponse(
+            text=(resp.choices[0].message.content or "").strip(),
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            model=vision_model,
+            provider=self.name,
+        )
+
 
 # ---------- Anthropic (Claude) ----------
 class AnthropicProvider(LLMProvider):
@@ -282,10 +313,7 @@ def vision_json(
     user_id: Optional[int] = None,
     db=None,
 ) -> Optional[LLMResponse]:
-    """
-    Vision-in, strict JSON-out. Currently only OpenAI supports this shape
-    cleanly; returns None for other providers (caller should fall back).
-    """
+    """Vision-in, JSON-out. Returns None if provider unavailable."""
     prov = _pick_provider()
     if prov is None or not hasattr(prov, "vision_json"):
         return None
@@ -294,6 +322,28 @@ def vision_json(
                                 model=model, temperature=temperature)
     except Exception as e:  # noqa: BLE001
         print(f"[ai.provider] {prov.name} vision_json failed: {e}")
+        return None
+    _log_usage(db, user_id, resp, purpose)
+    return resp
+
+
+def vision_transcribe(
+    image_data_url: str,
+    *,
+    model: Optional[str] = None,
+    temperature: float = 0.0,
+    purpose: str = "transcribe",
+    user_id: Optional[int] = None,
+    db=None,
+) -> Optional[LLMResponse]:
+    """Vision-in, plain text-out. Stage 1 of the two-stage pipeline."""
+    prov = _pick_provider()
+    if prov is None or not hasattr(prov, "vision_transcribe"):
+        return None
+    try:
+        resp = prov.vision_transcribe(image_data_url, model=model, temperature=temperature)
+    except Exception as e:  # noqa: BLE001
+        print(f"[ai.provider] {prov.name} vision_transcribe failed: {e}")
         return None
     _log_usage(db, user_id, resp, purpose)
     return resp

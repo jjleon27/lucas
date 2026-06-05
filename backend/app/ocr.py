@@ -636,6 +636,13 @@ RULES:
    restaurants/cafes→Alimentación; bars/pubs/beer halls→Bares y Salidas.
 """
 
+# Stage-2 prompt: same rules but input is plain text, not image.
+# Used in the two-stage fallback pipeline (transcribe → parse).
+_RECEIPT_TEXT_PROMPT = _RECEIPT_PROMPT.replace(
+    "Read the image carefully. Return ONLY a JSON object — no markdown, no explanation.",
+    "Parse the receipt text below. Return ONLY a JSON object — no markdown, no explanation.",
+)
+
 
 def _detect_mime(image_bytes: bytes) -> str:
     if image_bytes[:3] == b"\xff\xd8\xff":
@@ -1287,7 +1294,43 @@ def vision_parse(
         if resp is None or not resp.text:
             return None
 
-        data = json.loads(resp.text)
+        # ── TWO-STAGE FALLBACK ────────────────────────────────────────────────
+        # If single-stage returned no items, retry: transcribe image → parse text.
+        # Separating concerns (read vs. structure) is more reliable for complex
+        # comandas where the model tries to read+structure simultaneously.
+        raw_json_text = resp.text
+        try:
+            _probe = json.loads(raw_json_text)
+            _txs_probe = _probe.get("transactions", [])
+            _has_items = any(_t.get("items") for _t in _txs_probe)
+        except Exception:
+            _has_items = True  # parse error handled below, don't retry
+
+        if not _has_items:
+            print("[ocr] single-stage gave no items — retrying with two-stage pipeline")
+            t1 = ai_provider.vision_transcribe(
+                data_url,
+                purpose="transcribe",
+                user_id=user_id,
+                db=db,
+            )
+            if t1 and t1.text:
+                t2 = ai_provider.chat_completion(
+                    messages=[
+                        {"role": "system", "content": _RECEIPT_TEXT_PROMPT},
+                        {"role": "user", "content": f"Receipt text:\n{t1.text}\n\nReturn JSON."},
+                    ],
+                    model=settings.openai_model,  # cheaper text model (gpt-4o-mini)
+                    temperature=0.0,
+                    purpose="parse_text",
+                    user_id=user_id,
+                    db=db,
+                )
+                if t2 and t2.text:
+                    raw_json_text = t2.text
+                    print("[ocr] two-stage: using text-parsed result")
+
+        data = json.loads(raw_json_text)
         txs = data.get("transactions", [])
         currency = data.get("currency") or "CLP"
         bank_hint = data.get("bank_hint") or ""

@@ -892,6 +892,146 @@ function ReviewItemRow({
   );
 }
 
+// ── CropModal ──────────────────────────────────────────────────────────────
+function CropModal({
+  file,
+  onConfirm,
+  onSkip,
+  onCancel,
+}: {
+  file: File;
+  onConfirm: (cropped: File) => void;
+  onSkip: () => void;
+  onCancel: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [imgEl, setImgEl] = useState<HTMLImageElement | null>(null);
+  // rect in image-pixel coordinates
+  const [rect, setRect] = useState({ x: 0, y: 0, w: 0, h: 0 });
+  const dragging = useRef<{ edge: string; startX: number; startY: number; origRect: typeof rect } | null>(null);
+
+  // Load image and set default rect (middle 80% height, full width)
+  useEffect(() => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      setImgEl(img);
+      setRect({ x: 0, y: Math.round(img.height * 0.1), w: img.width, h: Math.round(img.height * 0.8) });
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  }, [file]);
+
+  // Draw canvas whenever image or rect changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imgEl) return;
+    const MAX_W = Math.min(window.innerWidth - 32, 500);
+    const scale = MAX_W / imgEl.width;
+    canvas.width = MAX_W;
+    canvas.height = imgEl.height * scale;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+    const rx = rect.x * scale, ry = rect.y * scale, rw = rect.w * scale, rh = rect.h * scale;
+    // Dim outside
+    ctx.fillStyle = "rgba(0,0,0,0.45)";
+    ctx.fillRect(0, 0, canvas.width, ry);
+    ctx.fillRect(0, ry + rh, canvas.width, canvas.height - ry - rh);
+    // Bright border
+    ctx.strokeStyle = "#6366f1";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rx, ry, rw, rh);
+    // Corner handles
+    const hs = 10;
+    ctx.fillStyle = "#6366f1";
+    [[rx, ry],[rx+rw-hs, ry],[rx, ry+rh-hs],[rx+rw-hs, ry+rh-hs]].forEach(([hx,hy]) =>
+      ctx.fillRect(hx, hy, hs, hs));
+  }, [imgEl, rect]);
+
+  function getPos(e: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current!;
+    const b = canvas.getBoundingClientRect();
+    const scale = imgEl!.width / canvas.width;
+    return { x: (e.clientX - b.left) * scale, y: (e.clientY - b.top) * scale };
+  }
+
+  function onPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!imgEl) return;
+    const canvas = canvasRef.current!;
+    const scale = imgEl.width / canvas.width;
+    const b = canvas.getBoundingClientRect();
+    const cx = (e.clientX - b.left) * scale, cy = (e.clientY - b.top) * scale;
+    const tol = 20 * scale;
+    const { x, y, w, h } = rect;
+    let edge = "";
+    if (Math.abs(cy - y) < tol) edge = "top";
+    else if (Math.abs(cy - (y + h)) < tol) edge = "bottom";
+    else if (cy > y && cy < y + h) edge = "move";
+    if (!edge) return;
+    canvas.setPointerCapture(e.pointerId);
+    dragging.current = { edge, startX: cx, startY: cy, origRect: { ...rect } };
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!dragging.current || !imgEl) return;
+    const { edge, startY, origRect } = dragging.current;
+    const { y } = getPos(e);
+    const dy = y - startY;
+    const H = imgEl.height;
+    if (edge === "top") {
+      const newY = Math.max(0, Math.min(origRect.y + dy, origRect.y + origRect.h - 40));
+      setRect({ ...origRect, y: newY, h: origRect.h - (newY - origRect.y) });
+    } else if (edge === "bottom") {
+      setRect({ ...origRect, h: Math.max(40, Math.min(origRect.h + dy, H - origRect.y)) });
+    } else {
+      const newY = Math.max(0, Math.min(origRect.y + dy, H - origRect.h));
+      setRect({ ...origRect, y: newY });
+    }
+  }
+
+  function onPointerUp() { dragging.current = null; }
+
+  async function handleConfirm() {
+    if (!imgEl) { onSkip(); return; }
+    const off = document.createElement("canvas");
+    off.width = rect.w; off.height = rect.h;
+    off.getContext("2d")!.drawImage(imgEl, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+    off.toBlob((blob) => {
+      if (!blob) { onSkip(); return; }
+      onConfirm(new File([blob], file.name, { type: "image/jpeg" }));
+    }, "image/jpeg", 0.92);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/70 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
+        <div className="px-4 pt-4 pb-2">
+          <p className="font-semibold text-slate-800 text-sm">Selecciona la zona de items</p>
+          <p className="text-xs text-slate-500 mt-0.5">Arrastra los bordes para encuadrar solo los productos</p>
+        </div>
+        <div className="overflow-auto max-h-[60vh] flex justify-center bg-slate-100 px-2 py-2">
+          <canvas
+            ref={canvasRef}
+            className="rounded touch-none cursor-row-resize"
+            style={{ maxWidth: "100%" }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+          />
+        </div>
+        <div className="flex gap-2 p-4">
+          <button type="button" onClick={onCancel}
+            className="flex-1 btn-secondary py-2.5 text-sm">Cancelar</button>
+          <button type="button" onClick={onSkip}
+            className="flex-1 btn-secondary py-2.5 text-sm text-slate-500">Boleta completa</button>
+          <button type="button" onClick={handleConfirm}
+            className="flex-1 btn-primary py-2.5 text-sm">Analizar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SplitPage() {
   const router = useRouter();
   const { t, locale } = useT();
@@ -912,6 +1052,8 @@ export default function SplitPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadStage, setUploadStage] = useState("");
   const [uploadErr, setUploadErr] = useState("");
+  // Crop modal state
+  const [cropFile, setCropFile] = useState<File | null>(null);
   // Propina state
   const [propinaAmount, setPropinaAmount] = useState(0);
   const [propinaPct, setPropinaPct] = useState(10);
@@ -964,7 +1106,13 @@ export default function SplitPage() {
   }, []);
 
   // ── Upload receipt ─────────────────────────────────────────
-  async function handleFile(file: File) {
+  function handleFile(file: File) {
+    setCropFile(file);
+  }
+
+  async function handleCropConfirm(croppedFile: File) {
+    setCropFile(null);
+    const file = croppedFile;
     setUploadErr("");
     setUploading(true);
     // Show image immediately from local file — no waiting for backend
@@ -1442,6 +1590,16 @@ export default function SplitPage() {
     <div className="max-w-2xl mx-auto space-y-2 pb-24 md:pb-0">
       <h1 className="text-3xl font-semibold tracking-tight mb-1">{t("split.title")}</h1>
       <StepBar step={step} />
+
+      {/* ── Crop modal ─────────────────────────────────────────── */}
+      {cropFile && (
+        <CropModal
+          file={cropFile}
+          onConfirm={handleCropConfirm}
+          onSkip={() => { handleCropConfirm(cropFile); }}
+          onCancel={() => setCropFile(null)}
+        />
+      )}
 
       {/* ══ STEP 1: Setup ══════════════════════════════════════ */}
       {step === "setup" && (
