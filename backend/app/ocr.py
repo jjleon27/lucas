@@ -28,6 +28,12 @@ import numpy as np
 import pytesseract
 from PIL import Image
 
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass  # HEIC support unavailable; JPEG/PNG still work fine
+
 from .ai import provider as ai_provider
 from .config import settings
 from .schemas import ParsedItem, ParsedReceipt
