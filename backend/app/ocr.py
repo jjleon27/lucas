@@ -586,66 +586,121 @@ CRITICAL RULES:
 Return strict JSON — no markdown, no commentary.
 """
 
-# Shorter prompt for when grounding confirms a receipt/boleta (not a bank statement).
-# ~40% fewer tokens → faster LLM response for the common split-expense case.
-_RECEIPT_PROMPT = """Parser de boletas/comandas/facturas chilenas. Lee la imagen y devuelve SOLO el JSON, sin markdown.
+# Prompt simple y conversacional. La versión anterior tenía ~40 reglas técnicas
+# que confundían al modelo en comandas chilenas con cantidades tipo "6 Schop 26.400".
+# Esta versión es directa: explica el formato chileno y deja que GPT-4o haga lo suyo.
+_RECEIPT_PROMPT = """Eres un experto leyendo boletas, comandas y recibos chilenos. Analiza la imagen y extrae cada item con su cantidad y precio unitario.
 
-SCHEMA:
-{"currency":"CLP","total_neto":number|null,"iva_amount":number|null,"transactions":[{"amount":number,"date":"YYYY-MM-DD"|null,"merchant":string,"description":"","category":"Alimentación"|"Bares y Salidas"|"Supermercado"|"Transporte"|"Compras"|"Entretenimiento"|"Cuentas y Servicios"|"Salud"|"Belleza"|"Suscripciones"|"Otros","is_income":false,"is_cc_payment":false,"cuota_actual":int|null,"cuotas_total":int|null,"items":[{"name":string,"price":number,"quantity":int}]}]}
+IMPORTANTE: La imagen puede estar rotada (90, 180, o 270 grados). Antes de leer, mentalmente oriéntala bien: el texto debe leerse de izquierda a derecha y los precios siempre alineados a la derecha de cada línea de item.
 
-REGLAS:
+REGLAS CRÍTICAS sobre números en Chile:
+- Los puntos son separadores de miles. "9.000" son nueve mil pesos, NO nueve.
+- Cuando ves un número entero antes del nombre de un item (ej: "6 Schop", "3 Vienesa Italiana"), ese número es la CANTIDAD.
+- El número a la derecha de cada línea es el TOTAL de esa línea (cantidad × precio unitario).
+- El precio que debes guardar es el UNITARIO = total_de_la_línea ÷ cantidad.
+- Ejemplo: "6 Schop Escudo  26.400" → quantity=6, price=4400 (porque 26400/6=4400).
+- Ejemplo: "3 Vienesa Italiana  13.200" → quantity=3, price=4400.
+- Ejemplo: "2x4.990 Pechu Pollo 9.980" → quantity=2, price=4990 (el unitario va embebido tras la "x").
+- Si NO ves un número antes del nombre, la cantidad es 1.
+- Números embebidos en el nombre como "35°", "500cc", "12 años" NO son cantidad.
+- Modificadores que empiezan con "+" (ej: "+Sin hielo") son gratis: price=0, quantity=1.
 
-1) CLP: punto = miles, NUNCA decimal. 9.000=9000, 127.900=127900.
+VERIFICACIÓN OBLIGATORIA antes de devolver:
+- Para cada item: quantity × price DEBE ser igual al total que ves en esa línea.
+- La suma de todos los (quantity × price) debe coincidir con el TOTAL impreso (±100 CLP por redondeo).
+- Si no cuadra, vuelve a leer la cantidad — probablemente leíste mal un dígito.
 
-2) ITEMS — un item por fila impresa, en orden, sin fusionar duplicados.
-   price=precio UNITARIO, quantity=cantidad de esa fila.
-   Detecta cantidad en este orden:
-   a) "NxPRECIO_UNIT producto LINE_TOTAL" (ej "2x4.990 Pechu 9.980"): qty=N, price=PRECIO_UNIT.
-   b) "Nx producto LINE_TOTAL" (ej "2x Hamburguesa 10.000"): qty=N, price=LINE_TOTAL÷N.
-   c) "N producto LINE_TOTAL" (entero líder 1-50; ej "3 Vienesa 13.200"): qty=N, price=LINE_TOTAL÷N.
-      Si LINE_TOTAL÷N < 500 CLP → asumir que N es parte del nombre: qty=1, price=LINE_TOTAL.
-      Ej "6 Completo 24.000" → 24000/6=4000 ≥500 → qty=6, price=4000.
-      Ej "100 Años Vino 9.990" → 9990/100=99 <500 → qty=1, price=9990.
-   d) "producto xN LINE_TOTAL" o "producto N LINE_TOTAL" (sufijo; ej "Yogurt x2 1.980"): qty=N, price=LINE_TOTAL÷N.
-   e) "N nombre TOTAL" (variante explícita de c, ítems compartidos en restaurante; ej "6 Completos 24.000"):
-      qty=N, price=TOTAL÷N. Validar siempre price_unit ≥ 500 CLP; si no se cumple → qty=1, price=TOTAL.
-   f) Sin cantidad detectable: qty=1, price=LINE_TOTAL.
-   Números embebidos en nombre NO son cantidad: "35°", "500cc", "12 años", "1.2kg".
-   Modificadores "+": price=0, quantity=1.
-   Descuentos/DCTO/AHORRO/"-": price NEGATIVO, quantity=1.
-   Cargos extra (Propina, Delivery, Servicio): price positivo, quantity=1.
-   VALIDACIÓN ARITMÉTICA: Antes de finalizar, suma todos los line_totals de los items.
-   Si la suma difiere del TOTAL impreso en más de 5%, revisa los items con qty>1:
-   es posible que hayas dividido un precio unitario real. Ajusta qty y price para que
-   la suma se acerque al TOTAL.
+BOLETA FISCAL (SII) vs comanda/POS:
+- Si la imagen muestra líneas explícitas "TOTAL NETO" e "IVA" como filas separadas, llena total_neto e iva_amount con esos valores exactos impresos.
+- Si es una comanda de bar/restaurante o un ticket POS sin esas etiquetas, deja total_neto e iva_amount en null.
 
-3) AMOUNT — prioridad: a) línea "TOTAL" de boleta fiscal (neto+IVA). b) "Consumo Cliente" si existe,
-   si no "Total General Mesa". c) mayor número al final del documento. NUNCA un subtotal intermedio.
+AMOUNT (total de la transacción):
+- Si hay boleta fiscal: amount = TOTAL NETO + IVA.
+- Si hay "Consumo Cliente" (comanda por comensal): usa ese valor.
+- Si no, usa el total final impreso ("TOTAL", "A PAGAR", "TARJETA DE CRÉDITO", etc.).
+- Nunca uses un subtotal intermedio.
 
-4) TOTAL_NETO/IVA_AMOUNT — solo cuando el doc imprime AMBAS líneas "Total Neto" e "IVA"
-   (boleta SII). Comanda restaurante/bar o ticket POS sin esas etiquetas → null.
-   "SUBTOTAL" solo NO cuenta como total_neto.
+CATEGORÍA:
+- "Bares y Salidas" si hay schops, cervezas, piscos, fernet, tragos, o es un pub/bar.
+- "Alimentación" para restaurantes, delivery de comida, cafeterías.
+- "Supermercado" para Lider, Jumbo, Tottus, Unimarc, Santa Isabel, Ekono.
+- "Transporte" para Uber, Cabify, DiDi, Metro, Copec, Shell.
+- "Salud" para farmacias (Cruz Verde, Salcobrand, Ahumada), clínicas.
+- "Suscripciones" para Netflix, Spotify, Disney, Apple.
+- "Compras" para Falabella, Ripley, Paris, Sodimac, Easy.
+- "Cuentas y Servicios" para agua, luz, gas, internet, telefonía.
+- "Otros" si no encaja.
 
-5) CUOTAS — "CUOTAS: N" o "CUOTA M DE N" o "M/N": cuota_actual=M, cuotas_total=N. Sin mención → null.
-
-6) FECHA — solo si está impresa. Si no: date=null (no inventes).
-
-7) MERCHANT — nombre limpio. Delivery (PedidosYa/Rappi/UberEats) con sub-comercio:
-   "Sub-comercio (Aggregator)". "MERPAGO*LIDER" → "Lider".
-
-8) CATEGORÍA: Lider/Jumbo/Tottus/Unimarc/Santa Isabel→Supermercado; Uber/Cabify/DiDi/Metro/Copec→Transporte;
-   McDonald's/KFC/Starbucks/restaurantes/delivery comida→Alimentación;
-   bares/pubs/schoperías o comanda con ≥2 de {schop,pisco,cerveza,trago}→Bares y Salidas;
-   Cruz Verde/Salcobrand/clínicas→Salud; peluquerías/salones/spa→Belleza;
-   Netflix/Spotify/Disney→Suscripciones; Falabella/Ripley/Paris/Sodimac→Compras;
-   agua/luz/gas/internet→Cuentas y Servicios.
+DEVUELVE SOLO ESTE JSON (sin markdown, sin texto extra):
+{
+  "currency": "CLP",
+  "total_neto": número o null,
+  "iva_amount": número o null,
+  "transactions": [
+    {
+      "amount": número (total final pagado),
+      "date": "YYYY-MM-DD" o null si no aparece impresa,
+      "merchant": "nombre del local" o "",
+      "category": "una de las categorías de arriba",
+      "is_income": false,
+      "items": [
+        {"name": "nombre del item", "price": precio_unitario, "quantity": cantidad}
+      ]
+    }
+  ]
+}
 """
 
-# Stage-2 prompt (texto → JSON). Reemplaza la instrucción de imagen por texto.
-_RECEIPT_TEXT_PROMPT = _RECEIPT_PROMPT.replace(
-    "Lee la imagen y devuelve SOLO el JSON, sin markdown.",
-    "Parsea el texto de recibo abajo. Devuelve SOLO el JSON, sin markdown.",
-)
+# Stage-2 prompt (texto → JSON): mismo prompt pero adaptado para texto pre-transcrito.
+_RECEIPT_TEXT_PROMPT = """Eres un experto leyendo boletas, comandas y recibos chilenos. Te paso el texto transcrito de un recibo. Extrae cada item con su cantidad y precio unitario.
+
+REGLAS CRÍTICAS sobre números en Chile:
+- Los puntos son separadores de miles. "9.000" son nueve mil pesos, NO nueve.
+- Cuando hay un número entero antes del nombre de un item (ej: "6 Schop", "3 Vienesa Italiana"), ese número es la CANTIDAD.
+- El número a la derecha de cada línea es el TOTAL de esa línea (cantidad × precio unitario).
+- El precio que debes guardar es el UNITARIO = total_de_la_línea ÷ cantidad.
+- Ejemplo: "6 Schop Escudo  26.400" → quantity=6, price=4400 (porque 26400/6=4400).
+- Ejemplo: "2x4.990 Pechu Pollo 9.980" → quantity=2, price=4990 (el unitario va embebido tras la "x").
+- Si NO hay número antes del nombre, la cantidad es 1.
+- Números embebidos en el nombre como "35°", "500cc", "12 años" NO son cantidad.
+- Modificadores con "+" (ej: "+Sin hielo") son gratis: price=0, quantity=1.
+
+BOLETA FISCAL vs comanda/POS:
+- Si el texto muestra líneas "TOTAL NETO" e "IVA" explícitas, llena total_neto e iva_amount.
+- Si es comanda de bar/restaurante o ticket POS sin esas etiquetas, deja ambos en null.
+
+AMOUNT: total final impreso ("TOTAL", "A PAGAR", "TARJETA DE CRÉDITO", "Consumo Cliente" si existe). Nunca un subtotal intermedio.
+
+CATEGORÍA:
+- "Bares y Salidas": schops, cervezas, piscos, fernet, tragos.
+- "Alimentación": restaurantes, delivery comida, cafeterías.
+- "Supermercado": Lider, Jumbo, Tottus, Unimarc, Santa Isabel.
+- "Transporte": Uber, Cabify, DiDi, Metro, Copec.
+- "Salud": farmacias, clínicas.
+- "Suscripciones": Netflix, Spotify, Disney.
+- "Compras": Falabella, Ripley, Paris, Sodimac.
+- "Cuentas y Servicios": agua, luz, gas, internet.
+- "Otros" si no encaja.
+
+DEVUELVE SOLO ESTE JSON (sin markdown):
+{
+  "currency": "CLP",
+  "total_neto": número o null,
+  "iva_amount": número o null,
+  "transactions": [
+    {
+      "amount": número,
+      "date": "YYYY-MM-DD" o null,
+      "merchant": "nombre del local" o "",
+      "category": "una de las categorías de arriba",
+      "is_income": false,
+      "items": [
+        {"name": "nombre", "price": precio_unitario, "quantity": cantidad}
+      ]
+    }
+  ]
+}
+"""
 
 
 def _detect_mime(image_bytes: bytes) -> str:
@@ -663,23 +718,29 @@ def _detect_mime(image_bytes: bytes) -> str:
 def _shrink_for_vision(image_bytes: bytes, max_side: int = 2048) -> bytes:
     """Downscale large screenshots so the API call is cheap & fast.
 
-    Caps the longer side at 1500px (enough for gpt-4o-mini to read text
-    clearly) and limits total pixels to ~1.5M to prevent very tall receipts
-    from spawning too many vision tiles.
+    Caps the longer side at `max_side` px and total pixels at ~4M. Photos of
+    rotated paper receipts need this much detail to keep the quantity column
+    (often a single digit far from the price column) legible to the model.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img = img.convert("RGB")
+        # Honor EXIF orientation so the model sees the image upright when possible
+        try:
+            from PIL import ImageOps
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
         w, h = img.size
         # Cap longer side
         scale = min(1.0, max_side / max(w, h))
-        # Also cap total pixel area (1500×1500 = 2.25M)
-        area_scale = min(1.0, (1500 * 1500 / (w * h)) ** 0.5)
+        # Also cap total pixel area (~4M px = 2000×2000)
+        area_scale = min(1.0, (2000 * 2000 / (w * h)) ** 0.5)
         scale = min(scale, area_scale)
         if scale < 1.0:
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85, optimize=True)
+        img.save(buf, format="JPEG", quality=92, optimize=True)
         return buf.getvalue()
     except Exception:
         return image_bytes
