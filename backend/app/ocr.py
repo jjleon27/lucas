@@ -603,8 +603,13 @@ REGLAS:
    a) "NxPRECIO_UNIT producto LINE_TOTAL" (ej "2x4.990 Pechu 9.980"): qty=N, price=PRECIO_UNIT.
    b) "Nx producto LINE_TOTAL" (ej "2x Hamburguesa 10.000"): qty=N, price=LINE_TOTAL÷N.
    c) "N producto LINE_TOTAL" (entero líder 1-50; ej "3 Vienesa 13.200"): qty=N, price=LINE_TOTAL÷N.
+      Si LINE_TOTAL÷N < 500 CLP → asumir que N es parte del nombre: qty=1, price=LINE_TOTAL.
+      Ej "6 Completo 24.000" → 24000/6=4000 ≥500 → qty=6, price=4000.
+      Ej "100 Años Vino 9.990" → 9990/100=99 <500 → qty=1, price=9990.
    d) "producto xN LINE_TOTAL" o "producto N LINE_TOTAL" (sufijo; ej "Yogurt x2 1.980"): qty=N, price=LINE_TOTAL÷N.
-   e) Sin cantidad detectable: qty=1, price=LINE_TOTAL.
+   e) "N nombre TOTAL" (variante explícita de c, ítems compartidos en restaurante; ej "6 Completos 24.000"):
+      qty=N, price=TOTAL÷N. Validar siempre price_unit ≥ 500 CLP; si no se cumple → qty=1, price=TOTAL.
+   f) Sin cantidad detectable: qty=1, price=LINE_TOTAL.
    Números embebidos en nombre NO son cantidad: "35°", "500cc", "12 años", "1.2kg".
    Modificadores "+": price=0, quantity=1.
    Descuentos/DCTO/AHORRO/"-": price NEGATIVO, quantity=1.

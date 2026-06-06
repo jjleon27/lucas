@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Users, Hand, Eraser, GripHorizontal, Sparkles } from "lucide-react";
+import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Users, Hand, Eraser, Sparkles } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -126,17 +126,18 @@ export default function SplitPage() {
   const [chipChoice, setChipChoice] = useState<{ itemId: number; pid: number } | null>(null);
 
   // Step 4 — image panel (split-screen viewer + drawing canvas)
-  const [imgPanelH, setImgPanelH] = useState(220); // px
+  const [leftW, setLeftW] = useState(0.40); // fraction 0-1 for left image panel width
   const [imgScale, setImgScale] = useState(1);
   const [imgPan, setImgPan] = useState({ x: 0, y: 0 });
   const [drawMode, setDrawMode] = useState(false); // false = pan, true = draw
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
   const imgTransformRef = useRef({ scale: 1, x: 0, y: 0 });
   const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
   const panStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const drawingRef = useRef(false);
-  const dragHandleRef = useRef<{ startY: number; startH: number } | null>(null);
+  const vDivRef = useRef<{ startX: number; startW: number } | null>(null);
 
   // Step 5 — payers
   const [payerMode, setPayerMode] = useState<"me" | "other" | "split">("me");
@@ -435,6 +436,32 @@ export default function SplitPage() {
     });
   }
 
+  // Smart auto-distribution of units based on qty vs participants count.
+  // Rule A (qty == N): one unit per person, in order
+  // Rule B (qty % N == 0): qty/N units per person, in order
+  // Rule C (qty > 1, remainder): floor(qty/N) per person, leftovers to first persons
+  // Rule D (qty == 1): leave to equal-split (seedFromBill default handles it)
+  function smartDistribute(b: Bill): Map<number, (number | null)[]> {
+    const pids = b.participants.map((p) => p.id);
+    const N = pids.length;
+    const next = new Map<number, (number | null)[]>();
+    for (const item of b.items) {
+      if (item.qty <= 1 || N === 0) continue; // keep default seeding for qty=1
+      const slots: (number | null)[] = new Array(item.qty).fill(null);
+      const base = Math.floor(item.qty / N);
+      const rem = item.qty % N;
+      let idx = 0;
+      for (let i = 0; i < N; i++) {
+        const units = base + (i < rem ? 1 : 0);
+        for (let u = 0; u < units; u++) {
+          if (idx < slots.length) slots[idx++] = pids[i];
+        }
+      }
+      next.set(item.id, slots);
+    }
+    return next;
+  }
+
   // Auto-assign on entering step 4
   async function goToAssign() {
     if (!bill) return;
@@ -445,11 +472,28 @@ export default function SplitPage() {
       const b = await assignEqual(bill.id);
       setBill(b);
       seedFromBill(b);
+      // Apply smart distribution for qty>1 items AFTER seedFromBill
+      const smart = smartDistribute(b);
+      if (smart.size > 0) {
+        setAssignments((prev) => {
+          const merged = new Map(prev);
+          smart.forEach((slots, itemId) => merged.set(itemId, slots));
+          return merged;
+        });
+      }
       setAutoAssignBanner(true);
       setStep(4);
     } catch (e: unknown) {
       showError(e instanceof Error ? e.message : "Error");
       seedFromBill(bill);
+      const smart = smartDistribute(bill);
+      if (smart.size > 0) {
+        setAssignments((prev) => {
+          const merged = new Map(prev);
+          smart.forEach((slots, itemId) => merged.set(itemId, slots));
+          return merged;
+        });
+      }
       setStep(4);
     } finally { setBusy(false); }
   }
@@ -559,7 +603,7 @@ export default function SplitPage() {
     const ro = new ResizeObserver(sync);
     ro.observe(container);
     return () => ro.disconnect();
-  }, [step, imgPanelH, bill?.image_url]);
+  }, [step, leftW, bill?.image_url]);
 
   const applyTransform = (scale: number, x: number, y: number) => {
     imgTransformRef.current = { scale, x, y };
@@ -638,13 +682,14 @@ export default function SplitPage() {
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
-      if (!dragHandleRef.current) return;
-      const dy = e.clientY - dragHandleRef.current.startY;
-      const maxH = Math.round(window.innerHeight * 0.6);
-      const next = Math.min(maxH, Math.max(120, dragHandleRef.current.startH + dy));
-      requestAnimationFrame(() => setImgPanelH(next));
+      if (!vDivRef.current) return;
+      const container = splitContainerRef.current;
+      const containerW = container?.clientWidth || window.innerWidth;
+      const dx = e.clientX - vDivRef.current.startX;
+      const newW = Math.min(0.55, Math.max(0.25, vDivRef.current.startW + dx / containerW));
+      requestAnimationFrame(() => setLeftW(newW));
     };
-    const onUp = () => { dragHandleRef.current = null; };
+    const onUp = () => { vDivRef.current = null; };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
     return () => {
@@ -652,7 +697,7 @@ export default function SplitPage() {
       document.removeEventListener("pointerup", onUp);
     };
   }, []);
-  const onHandleDown = (e: React.PointerEvent) => { dragHandleRef.current = { startY: e.clientY, startH: imgPanelH }; };
+  const onVDividerDown = (e: React.PointerEvent) => { vDivRef.current = { startX: e.clientX, startW: leftW }; };
   const resetImgTransform = () => applyTransform(1, 0, 0);
 
   // ── Step 5 ────────────────────────────────────────────────────
@@ -722,7 +767,8 @@ export default function SplitPage() {
         <div className="max-w-lg mx-auto mt-2"><StepDots step={step} /></div>
       </div>
 
-      {/* Content */}
+      {/* Content (steps 1, 2, 3, 5, 6) */}
+      {step !== 4 && (
       <div className="flex-1 min-h-0 overflow-y-auto max-w-lg mx-auto w-full px-4 py-4 pb-10">
 
         {/* ── STEP 1: Capture ── */}
@@ -839,261 +885,6 @@ export default function SplitPage() {
               className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
             >
               {busy ? <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Preparando…</> : <>Asignar ítems <ChevronRight size={18} /></>}
-            </button>
-          </div>
-        )}
-
-        {/* ── STEP 4: Assign ── */}
-        {step === 4 && bill && (
-          <div className="space-y-2.5">
-            {/* Image viewer panel (only if bill has image) */}
-            {bill.image_url && (
-              <>
-                <div
-                  ref={imgContainerRef}
-                  className="relative w-full bg-slate-900 rounded-xl overflow-hidden select-none"
-                  style={{ height: imgPanelH, touchAction: "none" }}
-                  onTouchStart={onImgTouchStart}
-                  onTouchMove={onImgTouchMove}
-                  onTouchEnd={onImgTouchEnd}
-                  onMouseDown={onImgMouseDown}
-                  onMouseMove={onImgMouseMove}
-                  onMouseUp={onImgMouseUp}
-                  onMouseLeave={onImgMouseUp}
-                >
-                  <div
-                    className="absolute inset-0"
-                    style={{
-                      transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`,
-                      transformOrigin: "center center",
-                      willChange: "transform",
-                    }}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={resolveBackendUrl(bill.image_url)}
-                      alt="Boleta"
-                      className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-                      draggable={false}
-                    />
-                    <canvas
-                      ref={canvasRef}
-                      className="absolute inset-0 w-full h-full"
-                      style={{ pointerEvents: drawMode ? "auto" : "none", touchAction: "none" }}
-                      onPointerDown={onCanvasPointerDown}
-                      onPointerMove={onCanvasPointerMove}
-                      onPointerUp={onCanvasPointerUp}
-                      onPointerCancel={onCanvasPointerUp}
-                    />
-                  </div>
-
-                  <div className="absolute top-2 right-2 flex flex-col gap-2 z-10">
-                    <button
-                      type="button"
-                      onClick={() => setDrawMode((m) => !m)}
-                      className={`w-9 h-9 rounded-full flex items-center justify-center shadow-md transition-colors ${
-                        drawMode ? "bg-red-500 text-white" : "bg-white/95 text-slate-700"
-                      }`}
-                      aria-label={drawMode ? "Modo mover" : "Modo rallar"}
-                    >
-                      {drawMode ? <Hand size={16} /> : <Pencil size={16} />}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearCanvas}
-                      className="w-9 h-9 rounded-full bg-white/95 text-slate-700 flex items-center justify-center shadow-md"
-                      aria-label="Borrar dibujo"
-                    >
-                      <Eraser size={16} />
-                    </button>
-                    {imgScale > 1 && (
-                      <button
-                        type="button"
-                        onClick={resetImgTransform}
-                        className="px-2 h-7 rounded-full bg-white/95 text-slate-700 text-[10px] font-semibold flex items-center justify-center shadow-md"
-                        aria-label="Restablecer zoom"
-                      >
-                        {imgScale.toFixed(1)}x
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="absolute top-2 left-2 z-10 bg-black/40 text-white text-[10px] px-2 py-1 rounded-full backdrop-blur-sm">
-                    {drawMode ? "Rallar" : "Mover / Zoom"}
-                  </div>
-                </div>
-
-                <div
-                  onPointerDown={onHandleDown}
-                  className="w-full flex items-center justify-center py-1.5 cursor-row-resize touch-none"
-                  style={{ touchAction: "none" }}
-                >
-                  <div className="flex items-center gap-1 px-3 py-1 rounded-full bg-slate-200 hover:bg-slate-300 transition-colors">
-                    <GripHorizontal size={14} className="text-slate-500" />
-                    <span className="text-[10px] text-slate-500 font-medium">Arrastrar</span>
-                  </div>
-                </div>
-              </>
-            )}
-
-            {/* Auto-assign banner */}
-            {autoAssignBanner && (
-              <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-medium rounded-xl px-3 py-2">
-                <Sparkles size={14} className="shrink-0" />
-                <span>Asignado igual entre todos · Ajusta si necesitas</span>
-                <button className="ml-auto text-indigo-400 hover:text-indigo-600" onClick={() => setAutoAssignBanner(false)}>×</button>
-              </div>
-            )}
-
-            {/* Progress */}
-            {bill.items.length > 0 && (
-              <div className="bg-white rounded-xl px-3 py-2 shadow-sm">
-                <div className="flex items-center justify-between text-[11px] font-medium text-slate-500 mb-1">
-                  <span>{assignProgress.done} de {assignProgress.total} ítems asignados</span>
-                  {assignProgress.done === assignProgress.total && (
-                    <span className="text-emerald-600 flex items-center gap-1"><Check size={12} /> Listo</span>
-                  )}
-                </div>
-                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-300"
-                    style={{ width: `${assignProgress.total === 0 ? 0 : (assignProgress.done / assignProgress.total) * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Running totals per participant */}
-            <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-              {bill.participants.map((p) => {
-                const total = runningTotal(p.id);
-                return (
-                  <div key={p.id} className="flex-shrink-0 flex flex-col items-center gap-1 bg-white rounded-xl px-3 py-2 shadow-sm min-w-[64px]">
-                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background: p.color }}>{initials(p.name)}</div>
-                    <span className="text-[10px] text-slate-500 font-medium truncate max-w-[56px]">{p.name.split(" ")[0]}</span>
-                    <span className="text-xs font-semibold text-indigo-700">{clp(Math.round(total))}</span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* "Dividir todo igual" shortcut */}
-            <button
-              onClick={handleAssignEqual}
-              disabled={busy}
-              className="w-full bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-600 text-sm font-medium py-2 rounded-xl flex items-center justify-center gap-2"
-            >
-              <Check size={14} /> Dividir todo por igual
-            </button>
-
-            {/* Item cards — per-item chip selection */}
-            {bill.items.length === 0 ? (
-              <div className="bg-amber-50 border border-amber-200 text-amber-700 text-sm rounded-xl px-4 py-3">
-                La boleta no tiene ítems. Vuelve atrás para agregarlos.
-              </div>
-            ) : bill.items.map((item) => {
-              const assigned = itemFullyAssigned(item);
-              const partial = itemPartiallyAssigned(item) && !assigned;
-              const slots = slotsOf(item.id, item.qty);
-              return (
-                <div
-                  key={item.id}
-                  className={`bg-white rounded-xl shadow-sm px-4 py-3 transition-all border ${
-                    assigned ? "border-emerald-200" : partial ? "border-amber-200" : "border-slate-100"
-                  }`}
-                >
-                  {/* Item header */}
-                  <div className="flex items-center justify-between mb-2.5">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-slate-800 truncate">
-                        {item.qty > 1 ? <span className="text-indigo-500 mr-1">{item.qty}×</span> : null}{item.name}
-                      </p>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        {item.qty > 1 ? `${clp(item.unit_price)} c/u · ` : ""}{clp(item.line_total)}
-                      </p>
-                    </div>
-                    {assigned && <Check size={16} className="text-emerald-500 shrink-0 ml-2" />}
-                  </div>
-
-                  {/* Numbered slot chips (only for qty>1) */}
-                  {item.qty > 1 && (
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {slots.map((slot, idx) => {
-                        const pid = typeof slot === "number" && slot > 0 ? slot : null;
-                        const p = pid ? bill.participants.find((x) => x.id === pid) : null;
-                        const bg = p?.color ?? "#e2e8f0";
-                        const fg = p ? "white" : "#64748b";
-                        return (
-                          <button
-                            key={idx}
-                            onClick={() => cycleSlot(item.id, idx)}
-                            className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shadow-sm transition-transform active:scale-95"
-                            style={{ background: bg, color: fg }}
-                            title={p ? `Unidad ${idx + 1}: ${p.name}` : `Unidad ${idx + 1}: sin asignar`}
-                          >
-                            {circled(idx + 1)}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Participant chips */}
-                  <div className="flex flex-wrap gap-2">
-                    {bill.participants.map((p) => {
-                      const on = isPersonOn(item, p.id);
-                      const u = item.qty > 1 ? unitsFor(item, p.id) : 0;
-                      return (
-                        <button
-                          key={p.id}
-                          onClick={() => toggleChip(item, p.id)}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all border-2 ${
-                            on
-                              ? "text-white border-transparent shadow-sm"
-                              : "bg-white text-slate-400 border-slate-200"
-                          }`}
-                          style={on ? { background: p.color, borderColor: p.color } : {}}
-                        >
-                          <span>{p.name.split(" ")[0]}</span>
-                          {u > 0 && <span className="bg-white/30 rounded-full px-1">{u}</span>}
-                        </button>
-                      );
-                    })}
-                    <button
-                      onClick={() => selectAll(item)}
-                      className="px-2.5 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-500 hover:bg-slate-200 border-2 border-transparent"
-                    >Todos</button>
-                  </div>
-
-                  {/* Inline mini-selector for chip choice on qty>1 */}
-                  {chipChoice && chipChoice.itemId === item.id && (
-                    <div className="mt-3 bg-slate-50 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2">
-                      <span className="text-xs text-slate-600 flex-1">
-                        {(bill.participants.find((p) => p.id === chipChoice.pid)?.name.split(" ")[0]) ?? "?"} se lleva:
-                      </span>
-                      <button
-                        onClick={() => applyChipChoice("all")}
-                        className="px-2.5 py-1 rounded-full bg-indigo-600 text-white text-xs font-semibold"
-                      >Todos ({item.qty})</button>
-                      <button
-                        onClick={() => applyChipChoice("half")}
-                        className="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700 text-xs font-semibold"
-                      >Mitad ({Math.max(1, Math.floor(item.qty / 2))})</button>
-                      <button
-                        onClick={() => setChipChoice(null)}
-                        className="px-1.5 text-slate-400 text-xs"
-                      >×</button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <button
-              onClick={goToWhoPaid}
-              disabled={busy || bill.items.length === 0}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
-            >
-              {busy ? <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Guardando…</> : <>¿Quién pagó? <ChevronRight size={18} /></>}
             </button>
           </div>
         )}
@@ -1235,6 +1026,262 @@ export default function SplitPage() {
           </div>
         )}
       </div>
+      )}
+
+      {/* ── STEP 4: Assign items (split-screen image | items) ── */}
+      {step === 4 && bill && (
+        <div ref={splitContainerRef} className="flex-1 min-h-0 flex flex-row overflow-hidden">
+          {bill.image_url && (
+            <>
+              {/* LEFT: image viewer + draw canvas */}
+              <div
+                ref={imgContainerRef}
+                className="relative bg-slate-900 overflow-hidden select-none touch-none"
+                style={{ width: `${leftW * 100}%` }}
+                onTouchStart={onImgTouchStart}
+                onTouchMove={onImgTouchMove}
+                onTouchEnd={onImgTouchEnd}
+                onMouseDown={onImgMouseDown}
+                onMouseMove={onImgMouseMove}
+                onMouseUp={onImgMouseUp}
+                onMouseLeave={onImgMouseUp}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={resolveBackendUrl(bill.image_url)}
+                  alt="Boleta"
+                  className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+                  style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
+                  draggable={false}
+                />
+                <canvas
+                  ref={canvasRef}
+                  className="absolute inset-0 w-full h-full"
+                  style={{ touchAction: "none", pointerEvents: drawMode ? "auto" : "none" }}
+                  onPointerDown={onCanvasPointerDown}
+                  onPointerMove={onCanvasPointerMove}
+                  onPointerUp={onCanvasPointerUp}
+                  onPointerCancel={onCanvasPointerUp}
+                />
+                {/* Toolbar overlay */}
+                <div className="absolute top-2 left-2 right-2 flex items-center gap-1.5 z-10">
+                  <button
+                    onClick={() => setDrawMode(false)}
+                    className={`p-2 rounded-lg shadow ${!drawMode ? "bg-indigo-600 text-white" : "bg-white/90 text-slate-700"}`}
+                    title="Mover"
+                  >
+                    <Hand size={14} />
+                  </button>
+                  <button
+                    onClick={() => setDrawMode(true)}
+                    className={`p-2 rounded-lg shadow ${drawMode ? "bg-indigo-600 text-white" : "bg-white/90 text-slate-700"}`}
+                    title="Dibujar"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    onClick={clearCanvas}
+                    className="p-2 rounded-lg shadow bg-white/90 text-slate-700"
+                    title="Borrar trazos"
+                  >
+                    <Eraser size={14} />
+                  </button>
+                  {imgScale > 1 && (
+                    <button
+                      onClick={resetImgTransform}
+                      className="ml-auto px-2 py-1 rounded-lg shadow bg-white/90 text-[11px] text-slate-700 font-medium"
+                    >
+                      {Math.round(imgScale * 100)}% ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+              {/* Divider */}
+              <div
+                onPointerDown={onVDividerDown}
+                className="w-1 bg-slate-200 hover:bg-indigo-400 cursor-col-resize shrink-0 touch-none"
+                title="Arrastra para redimensionar"
+              />
+            </>
+          )}
+
+          {/* RIGHT: items list */}
+          <div className="flex-1 min-w-0 overflow-y-auto bg-slate-50">
+            <div className="max-w-lg mx-auto w-full px-4 py-4 pb-10 space-y-3">
+              {/* Auto-assign banner */}
+              {autoAssignBanner && (
+                <div className="bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl px-3 py-2 text-xs flex items-start gap-2">
+                  <Sparkles size={14} className="mt-0.5 shrink-0" />
+                  <span>Asignamos ítems automáticamente. Revisa y ajusta tocando los chips o números.</span>
+                </div>
+              )}
+
+              {/* Progress */}
+              <div className="bg-white rounded-xl px-4 py-3 shadow-sm">
+                <div className="flex items-center justify-between text-xs mb-1.5">
+                  <span className="text-slate-500 font-medium">
+                    {assignProgress.done} de {assignProgress.total} ítems
+                  </span>
+                  <button onClick={handleAssignEqual} className="text-indigo-600 font-medium">
+                    Dividir todo igual
+                  </button>
+                </div>
+                <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 transition-all"
+                    style={{ width: assignProgress.total > 0 ? `${(assignProgress.done / assignProgress.total) * 100}%` : "0%" }}
+                  />
+                </div>
+              </div>
+
+              {/* Running totals per participant */}
+              <div className="bg-white rounded-xl px-3 py-3 shadow-sm">
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {bill.participants.map((p) => (
+                    <div key={p.id} className="flex flex-col items-center gap-1 shrink-0 min-w-[56px]">
+                      <div
+                        className="w-8 h-8 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
+                        style={{ background: p.color }}
+                      >
+                        {initials(p.name)}
+                      </div>
+                      <span className="text-[10px] text-slate-500 max-w-[56px] truncate">{p.name.split(" ")[0]}</span>
+                      <span className="text-[10px] font-semibold text-slate-700">{clp(runningTotal(p.id))}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Item cards */}
+              {bill.items.map((item) => {
+                const slots = slotsOf(item.id, item.qty);
+                const full = itemFullyAssigned(item);
+                const partial = itemPartiallyAssigned(item);
+                return (
+                  <div
+                    key={item.id}
+                    className={`bg-white rounded-xl shadow-sm overflow-hidden border ${
+                      full ? "border-emerald-300" : partial ? "border-amber-200" : "border-slate-200"
+                    }`}
+                  >
+                    <div className="px-4 py-3">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-slate-800 truncate">
+                            {item.qty > 1 ? `${item.qty}× ` : ""}
+                            {item.name}
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            {clp(item.unit_price)} c/u · Total {clp(item.line_total)}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => selectAll(item)}
+                          className="text-[11px] text-indigo-600 font-medium shrink-0"
+                        >
+                          Todos
+                        </button>
+                      </div>
+
+                      {/* Numbered slots for qty>1 */}
+                      {item.qty > 1 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {slots.map((slot, idx) => {
+                            const owner = slot != null && slot !== -1 ? bill.participants.find((p) => p.id === slot) : null;
+                            return (
+                              <button
+                                key={idx}
+                                onClick={() => cycleSlot(item.id, idx)}
+                                className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border ${
+                                  owner
+                                    ? "border-transparent text-white"
+                                    : "border-dashed border-slate-300 text-slate-400 bg-white"
+                                }`}
+                                style={owner ? { background: owner.color } : undefined}
+                              >
+                                <span>{circled(idx + 1)}</span>
+                                <span>{owner ? owner.name.split(" ")[0] : "—"}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Participant chips */}
+                      <div className="flex flex-wrap gap-1.5">
+                        {bill.participants.map((p) => {
+                          const on = isPersonOn(item, p.id);
+                          const u = unitsFor(item, p.id);
+                          return (
+                            <button
+                              key={p.id}
+                              onClick={() => toggleChip(item, p.id)}
+                              className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border transition-colors ${
+                                on
+                                  ? "text-white border-transparent"
+                                  : "bg-slate-50 text-slate-600 border-slate-200"
+                              }`}
+                              style={on ? { background: p.color } : undefined}
+                            >
+                              <span>{p.name.split(" ")[0]}</span>
+                              {item.qty > 1 && u > 0 && <span className="opacity-80">×{u}</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Inline qty>1 choice popover */}
+                      {chipChoice && chipChoice.itemId === item.id && (
+                        <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 flex items-center gap-2">
+                          <span className="text-[11px] text-slate-600 flex-1">
+                            ¿Cuántos para {bill.participants.find((p) => p.id === chipChoice.pid)?.name.split(" ")[0]}?
+                          </span>
+                          <button
+                            onClick={() => applyChipChoice("half")}
+                            className="px-2 py-1 rounded-md bg-white border border-slate-200 text-[11px] text-slate-700"
+                          >
+                            Mitad
+                          </button>
+                          <button
+                            onClick={() => applyChipChoice("all")}
+                            className="px-2 py-1 rounded-md bg-indigo-600 text-white text-[11px] font-medium"
+                          >
+                            Todos
+                          </button>
+                          <button
+                            onClick={() => setChipChoice(null)}
+                            className="text-slate-400 text-[11px]"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* CTA */}
+              <button
+                onClick={goToWhoPaid}
+                disabled={busy || assignProgress.done === 0}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+              >
+                {busy ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    Guardando…
+                  </>
+                ) : (
+                  <>
+                    ¿Quién pagó? <ChevronRight size={18} />
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Celebration on full assignment */}
       {celebrate && step === 4 && (
