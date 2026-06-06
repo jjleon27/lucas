@@ -1264,6 +1264,18 @@ def _fix_line_total_items(items: list[ParsedItem], ref_total: float) -> list[Par
         print("[ocr] fix(global): divided all multi-qty prices by quantity")
         return fixed
 
+    # Pass 4 — reduce quantity of a single item by exact integer k where k*price == excess.
+    # Handles: LLM reads "3 Vienesa" as "5 Vienesa" → excess = (5-3)*4400 = 8800 = 2*4400.
+    for i, it in multi:
+        if it.price > 0:
+            k = excess / it.price
+            k_int = round(k)
+            if abs(k - k_int) < 0.01 and 0 < k_int < it.quantity:
+                fixed = list(items)
+                fixed[i] = ParsedItem(name=it.name, price=it.price, quantity=it.quantity - k_int)
+                print(f"[ocr] fix(4-qty): {it.name} qty {it.quantity} → {it.quantity - k_int}")
+                return fixed
+
     return items  # couldn't determine a clean fix
 
 
@@ -1535,9 +1547,9 @@ def vision_parse(
                         # Big gap AND items not plausible (garbage prices/too few) → drop items
                         print(f"[ocr] reconcile: implausible items dropped (ratio={ratio:.2f}, sum={items_sum})")
                         items = []
-                    elif ratio > 1.25:
-                        # Items sum exceeds total — LLM likely stored line_total as unit price.
-                        # Try algebraic fix before giving up.
+                    elif ratio > 1.02:
+                        # Items sum exceeds total — LLM misread a quantity or stored line_total
+                        # as unit price. Try algebraic fix before giving up.
                         fixed = _fix_line_total_items(items, raw_amount)
                         fixed_sum = sum(it.price * it.quantity for it in fixed)
                         if fixed_sum > 0 and abs(fixed_sum / raw_amount - 1.0) < 0.15:
