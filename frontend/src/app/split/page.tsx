@@ -68,6 +68,7 @@ const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 const CIRCLED = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳"];
 const circled = (n: number) => CIRCLED[n - 1] ?? `(${n})`;
+const ITEM_COLORS = ["#fef3c7","#dbeafe","#dcfce7","#fce7f3","#ede9fe","#ffedd5","#f0fdf4","#fdf4ff"];
 
 function StepDots({ step }: { step: number }) {
   return (
@@ -501,7 +502,15 @@ export default function SplitPage() {
     const unit_price = Math.round(item.line_total / n);
     setBusy(true);
     try {
-      const b = await patchItem(bill.id, item.id, { qty: n, unit_price });
+      // Borra el ítem original y crea N ítems separados — uno por unidad.
+      // El usuario quiere ver "Completo $4.000" repetido N veces, no qty=N.
+      await deleteItem(bill.id, item.id);
+      const results = await Promise.all(
+        Array.from({ length: n }, () =>
+          addItem(bill.id, { name: item.name, qty: 1, unit_price })
+        )
+      );
+      const b = results[results.length - 1];
       setBill(b);
       seedFromBill(b);
       const smart = smartDistribute(b);
@@ -762,7 +771,7 @@ export default function SplitPage() {
     c.setPointerCapture(e.pointerId);
     const { x, y } = canvasPoint(e.clientX, e.clientY);
     ctx.strokeStyle = "rgba(220, 38, 38, 0.75)";
-    ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.lineWidth = 1.5; ctx.lineCap = "round"; ctx.lineJoin = "round";
     ctx.beginPath(); ctx.moveTo(x, y);
     drawingRef.current = true;
   };
@@ -880,6 +889,59 @@ export default function SplitPage() {
     return Math.round(total);
   }, [bill]);
 
+  // Renders the people row (avatars with running totals + "Add new").
+  // Shown above the split-screen as a horizontal sticky bar.
+  function renderStep2PeopleBar() {
+    if (!bill) return null;
+    const hasParticipants = bill.participants.length > 0;
+    if (!hasParticipants) return null;
+    return (
+      <div className="bg-white border-b border-slate-200 px-3 py-2">
+        <div className="max-w-lg mx-auto">
+          <div className="flex items-center justify-between text-[11px] mb-1.5">
+            <span className="text-slate-500 font-medium">
+              {assignProgress.done} de {assignProgress.total} ítems asignados
+            </span>
+            <button onClick={handleAssignEqual} className="text-indigo-600 font-medium">
+              Dividir todo igual
+            </button>
+          </div>
+          <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden mb-2">
+            <div
+              className="h-full bg-emerald-500 transition-all"
+              style={{ width: assignProgress.total > 0 ? `${(assignProgress.done / assignProgress.total) * 100}%` : "0%" }}
+            />
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1 items-start">
+            {bill.participants.map((p) => (
+              <div key={p.id} className="flex flex-col items-center gap-0.5 shrink-0 min-w-[52px]">
+                <div
+                  className="w-9 h-9 rounded-full flex items-center justify-center text-white text-[11px] font-bold"
+                  style={{ background: p.color }}
+                >
+                  {initials(p.name)}
+                </div>
+                <span className="text-[10px] text-slate-500 max-w-[52px] truncate">{p.name.split(" ")[0]}</span>
+                <span className="text-[10px] font-semibold text-slate-700">{clp(runningTotal(p.id))}</span>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setStep(3)}
+              className="flex flex-col items-center gap-0.5 shrink-0 min-w-[52px] opacity-70 hover:opacity-100"
+              title="Agregar persona"
+            >
+              <div className="w-9 h-9 rounded-full border-2 border-dashed border-slate-300 flex items-center justify-center text-slate-400">
+                <Plus size={16} />
+              </div>
+              <span className="text-[10px] text-slate-500">Agregar</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Renders the right-side content of step 2 (revisar + asignar).
   // Used both in split-screen (with image) and column layout (no image).
   function renderStep2RightPanel() {
@@ -890,7 +952,7 @@ export default function SplitPage() {
     const allAssigned = bill.items.length > 0 && bill.items.every((i) => itemFullyAssigned(i));
 
     return (
-      <div className="space-y-3">
+      <div className="space-y-3 pb-6">
         {/* Auto-assign banner */}
         {autoAssignBanner && hasParticipants && (
           <div className="bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl px-3 py-2 text-xs flex items-start gap-2">
@@ -919,53 +981,21 @@ export default function SplitPage() {
           )}
         </div>
 
-        {/* Running totals per participant (when there are participants) */}
-        {hasParticipants && (
-          <div className="bg-white rounded-xl px-3 py-3 shadow-sm">
-            <div className="flex items-center justify-between text-[11px] mb-2">
-              <span className="text-slate-500 font-medium">
-                {assignProgress.done} de {assignProgress.total} ítems asignados
-              </span>
-              <button onClick={handleAssignEqual} className="text-indigo-600 font-medium">
-                Dividir todo igual
-              </button>
-            </div>
-            <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
-              <div
-                className="h-full bg-emerald-500 transition-all"
-                style={{ width: assignProgress.total > 0 ? `${(assignProgress.done / assignProgress.total) * 100}%` : "0%" }}
-              />
-            </div>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {bill.participants.map((p) => (
-                <div key={p.id} className="flex flex-col items-center gap-1 shrink-0 min-w-[56px]">
-                  <div
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
-                    style={{ background: p.color }}
-                  >
-                    {initials(p.name)}
-                  </div>
-                  <span className="text-[10px] text-slate-500 max-w-[56px] truncate">{p.name.split(" ")[0]}</span>
-                  <span className="text-[10px] font-semibold text-slate-700">{clp(runningTotal(p.id))}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* Items list */}
-        {bill.items.map((item) => {
+        {bill.items.map((item, idx) => {
           const slots = slotsOf(item.id, item.qty);
           const full = itemFullyAssigned(item);
           const partial = itemPartiallyAssigned(item);
+          const itemBg = ITEM_COLORS[idx % ITEM_COLORS.length];
           return (
             <div
               key={item.id}
-              className={`bg-white rounded-xl shadow-sm overflow-hidden border ${
+              className={`rounded-xl shadow-sm overflow-hidden border ${
                 hasParticipants
                   ? full ? "border-emerald-300" : partial ? "border-amber-200" : "border-slate-200"
                   : "border-slate-200"
               }`}
+              style={{ background: itemBg }}
             >
               {editItemId === item.id ? (
                 <div className="p-3 space-y-2">
@@ -984,7 +1014,7 @@ export default function SplitPage() {
                 <div className="px-4 py-3">
                   <div className="flex items-center gap-2 mb-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-800 truncate">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
+                      <p className="text-sm font-medium text-slate-800 break-words leading-snug">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
                       <p className="text-[11px] text-slate-400">{clp(item.unit_price)} c/u · Total {clp(item.line_total)}</p>
                     </div>
                     {hasParticipants && (
@@ -1491,11 +1521,16 @@ export default function SplitPage() {
       {/* ── STEP 2: Revisar + Asignar (split-screen with image | column without) ── */}
       {step === 2 && bill && (
         !bill.image_url ? (
-          <div className="flex-1 min-h-0 overflow-y-auto max-w-lg mx-auto w-full px-4 py-4 pb-10">
-            {renderStep2RightPanel()}
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {renderStep2PeopleBar()}
+            <div className="flex-1 min-h-0 overflow-y-auto max-w-lg mx-auto w-full px-4 py-4 pb-10">
+              {renderStep2RightPanel()}
+            </div>
           </div>
         ) : (
-          <div ref={splitContainerRef} className="flex-1 min-h-0 flex flex-row overflow-hidden">
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {renderStep2PeopleBar()}
+            <div ref={splitContainerRef} className="flex-1 min-h-0 flex flex-row overflow-hidden">
             {/* LEFT: image viewer + draw canvas */}
             <div
               ref={imgContainerRef}
@@ -1566,8 +1601,9 @@ export default function SplitPage() {
               title="Arrastra para redimensionar"
             />
             {/* RIGHT: items + assign content */}
-            <div className="flex-1 min-w-0 min-h-0 overflow-y-auto bg-slate-50 px-3 py-3">
+            <div className="flex-1 min-w-0 min-h-0 overflow-y-auto bg-slate-50 px-3 py-3 pb-6">
               {renderStep2RightPanel()}
+            </div>
             </div>
           </div>
         )

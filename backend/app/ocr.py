@@ -1333,93 +1333,94 @@ def vision_parse(
                 currency="CLP", items=items_fp,
             )])
 
-        # ── TWO-STAGE: transcribe image → parse text (same as ChatGPT) ──────────
-        # Stage 1: GPT-4o reads image → plain text
-        # Stage 2: gpt-4o-mini (or gpt-4o for complex receipts) → JSON
+        # ── VISION-FIRST: send image directly to the model (one pass) ──────────
+        # The two-stage pipeline (transcribe→parse-text) used to be the default
+        # but it actively HURTS accuracy: column alignment / right-side prices /
+        # spatial layout are all lost in the intermediate text transcription,
+        # which is why "ChatGPT con la misma imagen" used to read items Lucas
+        # could not. Single-pass vision_json with the receipt prompt is what
+        # ChatGPT itself does behind the scenes, so we match that.
         compact = _shrink_for_vision(image_bytes)
         mime = _detect_mime(compact)
         b64 = base64.b64encode(compact).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
 
-        # Detect image dimensions for adaptive detail level
+        raw_json_text = ""
         try:
-            import struct as _struct
-            _img_long = 0
-            if mime == "image/jpeg":
-                # Quick JPEG dimension sniff (SOF0/SOF2 markers)
-                i = 2
-                while i < len(compact) - 8:
-                    if compact[i] == 0xFF and compact[i+1] in (0xC0, 0xC2):
-                        _h, _w = _struct.unpack_from(">HH", compact, i+5)
-                        _img_long = max(_h, _w)
-                        break
-                    seg_len = _struct.unpack_from(">H", compact, i+2)[0]
-                    i += 2 + seg_len
-            elif mime == "image/png":
-                _w, _h = _struct.unpack_from(">II", compact, 16)
-                _img_long = max(_w, _h)
-        except Exception:
-            _img_long = 0
-
-        t1 = ai_provider.vision_transcribe(
-            data_url,
-            purpose="transcribe",
-            user_id=user_id,
-            db=db,
-            image_long_side=_img_long,
-        )
-        if t1 and t1.text:
-            # Scale to gpt-4o for complex receipts: multi-client POS, many discounts, >15 items
-            _needs_full = (
-                "Total General Mesa" in t1.text
-                or t1.text.upper().count("DCTO") + t1.text.upper().count("PROMO") > 1
-                or t1.text.count("\n") > 25
-            )
-            _stage2_model = settings.openai_vision_model if _needs_full else settings.openai_model
-            if _needs_full:
-                print(f"[ocr] complex receipt → using {_stage2_model} for stage-2")
-            else:
-                print(f"[ocr] stage-1 transcript ({len(t1.text)} chars) → stage-2 parse")
-            t2 = ai_provider.chat_completion(
-                messages=[
-                    {"role": "system", "content": _RECEIPT_TEXT_PROMPT},
-                    {"role": "user", "content": f"Texto del recibo:\n{t1.text}"},
-                ],
-                model=_stage2_model,
-                temperature=0.0,
-                purpose="parse_text",
-                user_id=user_id,
-                db=db,
-            )
-            raw_json_text = ""
-            if t2 and t2.text:
-                _raw = t2.text.strip()
-                _m = re.search(r'```json\s*([\s\S]+?)\s*```', _raw)
-                if _m:
-                    raw_json_text = _m.group(1)
-                elif _raw.startswith("{"):
-                    raw_json_text = _raw
-                else:
-                    _s, _e = _raw.find("{"), _raw.rfind("}") + 1
-                    raw_json_text = _raw[_s:_e] if _s != -1 and _e > _s else ""
-        else:
-            raw_json_text = ""
-
-        # Fallback: single-stage vision_json if transcription failed
-        if not raw_json_text:
-            print("[ocr] two-stage failed, falling back to single-stage vision_json")
             resp = ai_provider.vision_json(
                 system_prompt=_RECEIPT_PROMPT,
-                user_text="Parse this receipt and return the JSON.",
+                user_text="Parsea esta boleta/recibo y devuelve SOLO el JSON.",
                 image_data_url=data_url,
                 temperature=0.0,
                 purpose="parse",
                 user_id=user_id,
                 db=db,
             )
-            if resp is None or not resp.text:
-                return None
-            raw_json_text = resp.text
+            if resp and resp.text:
+                raw_json_text = resp.text
+        except Exception as _exc:  # noqa: BLE001
+            print(f"[ocr] vision_json failed: {_exc}")
+            raw_json_text = ""
+
+        # Fallback: two-stage transcribe→parse-text only if direct vision failed
+        if not raw_json_text:
+            print("[ocr] vision_json empty, falling back to two-stage transcribe→parse")
+            try:
+                import struct as _struct
+                _img_long = 0
+                if mime == "image/jpeg":
+                    i = 2
+                    while i < len(compact) - 8:
+                        if compact[i] == 0xFF and compact[i+1] in (0xC0, 0xC2):
+                            _h, _w = _struct.unpack_from(">HH", compact, i+5)
+                            _img_long = max(_h, _w)
+                            break
+                        seg_len = _struct.unpack_from(">H", compact, i+2)[0]
+                        i += 2 + seg_len
+                elif mime == "image/png":
+                    _w, _h = _struct.unpack_from(">II", compact, 16)
+                    _img_long = max(_w, _h)
+            except Exception:
+                _img_long = 0
+
+            t1 = ai_provider.vision_transcribe(
+                data_url,
+                purpose="transcribe",
+                user_id=user_id,
+                db=db,
+                image_long_side=_img_long,
+            )
+            if t1 and t1.text:
+                _needs_full = (
+                    "Total General Mesa" in t1.text
+                    or t1.text.upper().count("DCTO") + t1.text.upper().count("PROMO") > 1
+                    or t1.text.count("\n") > 25
+                )
+                _stage2_model = settings.openai_vision_model if _needs_full else settings.openai_model
+                t2 = ai_provider.chat_completion(
+                    messages=[
+                        {"role": "system", "content": _RECEIPT_TEXT_PROMPT},
+                        {"role": "user", "content": f"Texto del recibo:\n{t1.text}"},
+                    ],
+                    model=_stage2_model,
+                    temperature=0.0,
+                    purpose="parse_text",
+                    user_id=user_id,
+                    db=db,
+                )
+                if t2 and t2.text:
+                    _raw = t2.text.strip()
+                    _m = re.search(r'```json\s*([\s\S]+?)\s*```', _raw)
+                    if _m:
+                        raw_json_text = _m.group(1)
+                    elif _raw.startswith("{"):
+                        raw_json_text = _raw
+                    else:
+                        _s, _e = _raw.find("{"), _raw.rfind("}") + 1
+                        raw_json_text = _raw[_s:_e] if _s != -1 and _e > _s else ""
+
+        if not raw_json_text:
+            return None
 
         data = json.loads(raw_json_text)
         txs = data.get("transactions", [])
