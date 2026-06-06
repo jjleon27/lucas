@@ -1,12 +1,12 @@
 "use client";
 /**
  * Split — 5-step bill-splitting flow
- * 1 Capture → 2 Revisar + Asignar → 3 Participantes → 4 ¿Quién pagó? → 5 Resumen
+ * 1 Capture → 2 Revisar → 3 Asignar → 4 ¿Quién pagó? → 5 Resumen
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, createPerson, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Users, Hand, Eraser, Sparkles, X } from "lucide-react";
+import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -176,23 +176,6 @@ export default function SplitPage() {
       const today = new Date().toISOString().split("T")[0];
       let b = await createBill({ date: today });
       b = await ocrBill(b.id, file);
-      // If participants already loaded (e.g. "Yo"), auto-assign + smart distribute
-      if (b.participants.length > 0) {
-        try {
-          const assigned = await assignEqual(b.id);
-          b = assigned;
-        } catch { /* non-fatal */ }
-        seedFromBill(b);
-        const smart = smartDistribute(b);
-        if (smart.size > 0) {
-          setAssignments((prev) => {
-            const merged = new Map(prev);
-            smart.forEach((slots, itemId) => merged.set(itemId, slots));
-            return merged;
-          });
-        }
-        setAutoAssignBanner(true);
-      }
       setBill(b);
       setStep(2);
     } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error al leer boleta"); }
@@ -592,8 +575,6 @@ export default function SplitPage() {
     return next;
   }
 
-  // Triggered when navigating from step 3 (Participants) back into step 2,
-  // or when the user wants to "Dividir todo igual" from inside step 2.
   async function handleAssignEqual() {
     if (!bill) return;
     setBusy(true);
@@ -611,6 +592,30 @@ export default function SplitPage() {
       }
     } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
     finally { setBusy(false); }
+  }
+
+  async function goToAssign() {
+    if (!bill) return;
+    if (bill.items.length === 0) { showError("Agrega al menos un ítem"); return; }
+    if (bill.participants.length > 0) {
+      setBusy(true);
+      try {
+        const b = await assignEqual(bill.id);
+        setBill(b);
+        seedFromBill(b);
+        const smart = smartDistribute(b);
+        if (smart.size > 0) {
+          setAssignments((prev) => {
+            const merged = new Map(prev);
+            smart.forEach((slots, itemId) => merged.set(itemId, slots));
+            return merged;
+          });
+        }
+        setAutoAssignBanner(true);
+      } catch { /* non-fatal */ }
+      finally { setBusy(false); }
+    }
+    setStep(3);
   }
 
   function sharesForItem(item: BillItem): { participant_id: number; weight: number; units?: number }[] {
@@ -676,9 +681,9 @@ export default function SplitPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bill, assignments]);
 
-  // Celebrate when all items are fully assigned (only inside step 2 when participants exist)
+  // Celebrate when all items are fully assigned (only inside step 3 when participants exist)
   useEffect(() => {
-    if (step !== 2 || !bill || bill.items.length === 0 || bill.participants.length === 0) return;
+    if (step !== 3 || !bill || bill.items.length === 0 || bill.participants.length === 0) return;
     if (assignProgress.done === assignProgress.total) {
       setCelebrate(true);
       const t = setTimeout(() => setCelebrate(false), 1400);
@@ -686,9 +691,10 @@ export default function SplitPage() {
     }
   }, [step, bill, assignProgress.done, assignProgress.total]);
 
-  // Close inline popovers if user leaves step 2
+  // Close inline popovers when leaving their steps
   useEffect(() => {
-    if (step !== 2) { setSplitChoice(null); setChipChoice(null); }
+    if (step !== 2) setSplitChoice(null);
+    if (step !== 3) setChipChoice(null);
   }, [step]);
 
   // ── Image viewer (zoom + pan + draw) ─────────────────────────
@@ -855,7 +861,7 @@ export default function SplitPage() {
   const stepLabels: Record<number, string> = {
     1: "Dividir cuenta",
     2: bill?.merchant || "Revisar",
-    3: "Participantes",
+    3: "Asignar",
     4: "¿Quién pagó?",
     5: "Resumen",
   };
@@ -942,32 +948,14 @@ export default function SplitPage() {
     );
   }
 
-  // Renders the right-side content of step 2 (revisar + asignar).
-  // Used both in split-screen (with image) and column layout (no image).
+  // Step 2 right panel: review items only (no assignment chips)
   function renderStep2RightPanel() {
     if (!bill) return null;
     const diff = Math.abs(subtotal - bill.total_amount);
     const match = diff < 2 || bill.total_amount === 0;
-    const hasParticipants = bill.participants.length > 0;
-    const allAssigned = bill.items.length > 0 && bill.items.every((i) => itemFullyAssigned(i));
 
     return (
       <div className="space-y-3 pb-6">
-        {/* Auto-assign banner */}
-        {autoAssignBanner && hasParticipants && (
-          <div className="bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl px-3 py-2 text-xs flex items-start gap-2">
-            <Sparkles size={14} className="mt-0.5 shrink-0" />
-            <span className="flex-1">Asignamos ítems automáticamente. Revisa y ajusta tocando los chips.</span>
-            <button
-              onClick={() => setAutoAssignBanner(false)}
-              className="text-indigo-400 hover:text-indigo-700 shrink-0"
-              aria-label="Cerrar aviso"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
         {/* Total banner */}
         <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${match ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
           <div className="flex items-center justify-between">
@@ -983,18 +971,11 @@ export default function SplitPage() {
 
         {/* Items list */}
         {bill.items.map((item, idx) => {
-          const slots = slotsOf(item.id, item.qty);
-          const full = itemFullyAssigned(item);
-          const partial = itemPartiallyAssigned(item);
           const itemBg = ITEM_COLORS[idx % ITEM_COLORS.length];
           return (
             <div
               key={item.id}
-              className={`rounded-xl shadow-sm overflow-hidden border ${
-                hasParticipants
-                  ? full ? "border-emerald-300" : partial ? "border-amber-200" : "border-slate-200"
-                  : "border-slate-200"
-              }`}
+              className="rounded-xl shadow-sm overflow-hidden border border-slate-200"
               style={{ background: itemBg }}
             >
               {editItemId === item.id ? (
@@ -1012,144 +993,29 @@ export default function SplitPage() {
                 </div>
               ) : (
                 <div className="px-4 py-3">
-                  <div className="flex items-center gap-2 mb-2">
+                  <div className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
                       <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
                     </div>
-                    {hasParticipants && (
-                      <button
-                        onClick={() =>
-                          setSplitChoice(
-                            splitChoice?.itemId === item.id
-                              ? null
-                              : { itemId: item.id, n: String(Math.max(2, bill.participants.length || 2)) }
-                          )
-                        }
-                        className="px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-500 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
-                        title={item.qty === 1 ? "Dividir ítem en varios" : "Re-dividir ítem"}
-                      >
-                        ÷
-                      </button>
-                    )}
-                    {hasParticipants && (
-                      <button
-                        onClick={() => selectAll(item)}
-                        className="text-[11px] text-indigo-600 font-medium"
-                      >
-                        Todos
-                      </button>
-                    )}
+                    <button
+                      onClick={() => setSplitChoice(splitChoice?.itemId === item.id ? null : { itemId: item.id, n: "2" })}
+                      className="px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-500 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
+                      title="Dividir ítem en varios"
+                    >
+                      ÷
+                    </button>
                     <button onClick={() => { setEditItemId(item.id); setEditDraft({ name: item.name, qty: item.qty, unit_price: item.unit_price }); }} className="text-slate-400 hover:text-indigo-600 p-1"><Pencil size={15} /></button>
                     <button onClick={() => handleDeleteItem(item.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={15} /></button>
                   </div>
-
-                  {/* Numbered slots for qty>1 (only if there are participants) */}
-                  {hasParticipants && item.qty > 1 && (
-                    item.qty >= 4 ? (
-                      <div className="space-y-1 mb-2">
-                        {slots.map((slot, idx) => {
-                          const pid = typeof slot === "number" && slot > 0 ? slot : null;
-                          const p = pid ? bill.participants.find((x) => x.id === pid) : null;
-                          return (
-                            <button
-                              key={idx}
-                              onClick={() => cycleSlot(item.id, idx)}
-                              className="w-full flex items-center gap-2 px-2 py-1 rounded-lg text-xs transition-colors hover:bg-slate-50 active:scale-[0.98]"
-                              style={{ borderLeft: `3px solid ${p?.color ?? "#fbbf24"}` }}
-                            >
-                              <span className="font-bold text-slate-400 w-5 text-center">{idx + 1}</span>
-                              <span className="flex-1 text-left" style={{ color: p?.color ?? "#b45309" }}>
-                                {p ? p.name.split(" ")[0] : "Sin asignar"}
-                              </span>
-                              <span className="text-slate-400">{clp(item.unit_price)}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap gap-1.5 mb-2">
-                        {slots.map((slot, idx) => {
-                          const owner = slot != null && slot !== -1 ? bill.participants.find((p) => p.id === slot) : null;
-                          return (
-                            <button
-                              key={idx}
-                              onClick={() => cycleSlot(item.id, idx)}
-                              className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border ${
-                                owner
-                                  ? "border-transparent text-white"
-                                  : "border-dashed border-slate-300 text-slate-400 bg-white"
-                              }`}
-                              style={owner ? { background: owner.color } : undefined}
-                            >
-                              <span>{circled(idx + 1)}</span>
-                              <span>{owner ? owner.name.split(" ")[0] : "—"}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )
-                  )}
-
-                  {/* Participant chips */}
-                  {hasParticipants && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {bill.participants.map((p) => {
-                        const on = isPersonOn(item, p.id);
-                        const u = unitsFor(item, p.id);
-                        return (
-                          <button
-                            key={p.id}
-                            onClick={() => toggleChip(item, p.id)}
-                            className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border transition-colors ${
-                              on
-                                ? "text-white border-transparent"
-                                : "bg-slate-50 text-slate-600 border-slate-200"
-                            }`}
-                            style={on ? { background: p.color } : undefined}
-                          >
-                            <span>{p.name.split(" ")[0]}</span>
-                            {item.qty > 1 && u > 0 && <span className="opacity-80">×{u}</span>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Inline qty>1 choice popover */}
-                  {chipChoice && chipChoice.itemId === item.id && (
-                    <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 flex items-center gap-2">
-                      <span className="text-[11px] text-slate-600 flex-1">
-                        ¿Cuántos para {bill.participants.find((p) => p.id === chipChoice.pid)?.name.split(" ")[0]}?
-                      </span>
-                      <button
-                        onClick={() => applyChipChoice("half")}
-                        className="px-2 py-1 rounded-md bg-white border border-slate-200 text-[11px] text-slate-700"
-                      >
-                        Mitad
-                      </button>
-                      <button
-                        onClick={() => applyChipChoice("all")}
-                        className="px-2 py-1 rounded-md bg-indigo-600 text-white text-[11px] font-medium"
-                      >
-                        Todos
-                      </button>
-                      <button
-                        onClick={() => setChipChoice(null)}
-                        className="text-slate-400 text-[11px]"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  )}
 
                   {/* Inline "÷ split into N" popover */}
                   {splitChoice && splitChoice.itemId === item.id && (
                     <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded-xl p-3 space-y-2">
                       <p className="text-xs text-indigo-700 font-medium">¿En cuántas unidades dividir?</p>
                       <div className="flex gap-2">
-                        {[bill.participants.length, 2, 3, 4]
-                          .filter((v, i, a) => v >= 2 && a.indexOf(v) === i)
+                        {[2, 3, 4, 6]
+                          .filter((v, i, a) => a.indexOf(v) === i)
                           .slice(0, 4)
                           .map((n) => (
                             <button
@@ -1179,19 +1045,8 @@ export default function SplitPage() {
                         </p>
                       )}
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => applySplit(item)}
-                          disabled={busy}
-                          className="flex-1 bg-indigo-600 text-white text-xs font-semibold py-2 rounded-lg disabled:opacity-50"
-                        >
-                          Dividir
-                        </button>
-                        <button
-                          onClick={() => setSplitChoice(null)}
-                          className="px-3 text-slate-400 text-xs"
-                        >
-                          ×
-                        </button>
+                        <button onClick={() => applySplit(item)} disabled={busy} className="flex-1 bg-indigo-600 text-white text-xs font-semibold py-2 rounded-lg disabled:opacity-50">Dividir</button>
+                        <button onClick={() => setSplitChoice(null)} className="px-3 text-slate-400 text-xs">×</button>
                       </div>
                     </div>
                   )}
@@ -1220,34 +1075,18 @@ export default function SplitPage() {
           </button>
         )}
 
-        {/* Primary CTA */}
-        {!hasParticipants ? (
-          <button
-            onClick={() => setStep(3)}
-            disabled={bill.items.length === 0}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
-          >
-            Participantes <ChevronRight size={18} />
-          </button>
-        ) : (
-          <button
-            onClick={goToWhoPaid}
-            disabled={busy || !allAssigned}
-            title={!allAssigned ? "Asigna todos los ítems primero" : undefined}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
-          >
-            {busy ? (
-              <>
-                <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                Guardando…
-              </>
-            ) : !allAssigned ? (
-              <>Asigna todos los ítems ({assignProgress.done}/{assignProgress.total})</>
-            ) : (
-              <>¿Quién pagó? <ChevronRight size={18} /></>
-            )}
-          </button>
-        )}
+        {/* CTA */}
+        <button
+          onClick={goToAssign}
+          disabled={busy || bill.items.length === 0}
+          className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+        >
+          {busy ? (
+            <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Preparando…</>
+          ) : (
+            <>Asignar <ChevronRight size={18} /></>
+          )}
+        </button>
       </div>
     );
   }
@@ -1294,90 +1133,172 @@ export default function SplitPage() {
           </div>
         )}
 
-        {/* ── STEP 3: Participants ── */}
-        {step === 3 && bill && (
-          <div className="space-y-5">
-            <p className="text-sm text-slate-500">Toca para agregar o quitar personas de la cuenta.</p>
-            <div className="flex flex-wrap gap-4 items-start">
-              {people.map((p) => {
-                const inBill = bill.participants.some((bp) => bp.person_id === p.id);
-                return (
-                  <div key={p.id} className="relative">
-                    <Avatar name={p.name} color={p.color} selected={inBill} locked={!!p.is_me} onClick={() => toggleParticipant(p.id)} />
-                    {p.is_me && <span className="absolute -top-1 -right-1 bg-indigo-600 text-white text-[8px] font-bold px-1 rounded-full">Yo</span>}
-                  </div>
-                );
-              })}
-              {!newPersonForm && (
-                <button
-                  type="button"
-                  onClick={() => setNewPersonForm(true)}
-                  className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity"
-                >
-                  <div className="w-11 h-11 rounded-full border-2 border-dashed border-slate-300 flex items-center justify-center text-slate-400">
-                    <Plus size={18} />
-                  </div>
-                  <span className="text-[10px] text-slate-500">Nueva</span>
-                </button>
-              )}
-            </div>
-            {newPersonForm && (
-              <div className="flex items-center gap-2 p-3 bg-white rounded-xl shadow-sm w-full flex-wrap">
-                <input
-                  autoFocus
-                  className="flex-1 min-w-[120px] border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                  placeholder="Nombre"
-                  value={newPersonName}
-                  onChange={(e) => setNewPersonName(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleCreatePerson(); }}
-                />
-                <div className="flex gap-1">
-                  {["#6366f1","#ec4899","#f59e0b","#10b981","#3b82f6","#ef4444"].map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => setNewPersonColor(c)}
-                      className={`w-6 h-6 rounded-full border-2 ${newPersonColor === c ? "border-slate-800" : "border-transparent"}`}
-                      style={{ background: c }}
-                      aria-label={`Color ${c}`}
-                    />
-                  ))}
+        {/* ── STEP 3: Asignar ── */}
+        {step === 3 && bill && (() => {
+          const allAssigned = bill.items.length > 0 && bill.items.every((i) => itemFullyAssigned(i));
+          return (
+            <div className="space-y-4">
+              {/* People management */}
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Participantes</p>
+                <div className="flex flex-wrap gap-4 items-start">
+                  {people.map((p) => {
+                    const inBill = bill.participants.some((bp) => bp.person_id === p.id);
+                    return (
+                      <div key={p.id} className="relative">
+                        <Avatar name={p.name} color={p.color} selected={inBill} locked={!!p.is_me} onClick={() => toggleParticipant(p.id)} />
+                        {p.is_me && <span className="absolute -top-1 -right-1 bg-indigo-600 text-white text-[8px] font-bold px-1 rounded-full">Yo</span>}
+                      </div>
+                    );
+                  })}
+                  {!newPersonForm && (
+                    <button type="button" onClick={() => setNewPersonForm(true)} className="flex flex-col items-center gap-1 opacity-60 hover:opacity-100 transition-opacity">
+                      <div className="w-11 h-11 rounded-full border-2 border-dashed border-slate-300 flex items-center justify-center text-slate-400"><Plus size={18} /></div>
+                      <span className="text-[10px] text-slate-500">Nueva</span>
+                    </button>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={handleCreatePerson}
-                  className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg"
-                >
-                  OK
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setNewPersonForm(false); setNewPersonName(""); }}
-                  className="text-slate-400 text-sm px-2"
-                  aria-label="Cancelar"
-                >
-                  ×
-                </button>
+                {newPersonForm && (
+                  <div className="flex items-center gap-2 mt-3 p-3 bg-white rounded-xl shadow-sm w-full flex-wrap">
+                    <input autoFocus className="flex-1 min-w-[120px] border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Nombre" value={newPersonName} onChange={(e) => setNewPersonName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleCreatePerson(); }} />
+                    <div className="flex gap-1">
+                      {["#6366f1","#ec4899","#f59e0b","#10b981","#3b82f6","#ef4444"].map((c) => (
+                        <button key={c} type="button" onClick={() => setNewPersonColor(c)} className={`w-6 h-6 rounded-full border-2 ${newPersonColor === c ? "border-slate-800" : "border-transparent"}`} style={{ background: c }} aria-label={`Color ${c}`} />
+                      ))}
+                    </div>
+                    <button type="button" onClick={handleCreatePerson} className="bg-indigo-600 text-white text-sm px-3 py-2 rounded-lg">OK</button>
+                    <button type="button" onClick={() => { setNewPersonForm(false); setNewPersonName(""); }} className="text-slate-400 text-sm px-2" aria-label="Cancelar">×</button>
+                  </div>
+                )}
               </div>
-            )}
-            <div className="bg-slate-100 rounded-xl px-4 py-3 text-sm text-slate-600">
-              <Users size={14} className="inline mr-1.5 mb-0.5" />
-              {bill.participants.length} participante{bill.participants.length !== 1 ? "s" : ""}:&nbsp;
-              {bill.participants.map((p) => p.name.split(" ")[0]).join(", ")}
+
+              {/* Assignment section — only if participants exist */}
+              {bill.participants.length > 0 && (
+                <>
+                  {/* Auto-assign banner */}
+                  {autoAssignBanner && (
+                    <div className="bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl px-3 py-2 text-xs flex items-start gap-2">
+                      <Sparkles size={14} className="mt-0.5 shrink-0" />
+                      <span className="flex-1">Asignamos ítems automáticamente. Revisa y ajusta tocando los chips.</span>
+                      <button onClick={() => setAutoAssignBanner(false)} className="text-indigo-400 hover:text-indigo-700 shrink-0" aria-label="Cerrar aviso"><X size={14} /></button>
+                    </div>
+                  )}
+
+                  {/* Progress + Dividir todo igual */}
+                  <div>
+                    <div className="flex items-center justify-between text-[11px] mb-1.5">
+                      <span className="text-slate-500 font-medium">{assignProgress.done} de {assignProgress.total} ítems asignados</span>
+                      <button onClick={handleAssignEqual} className="text-indigo-600 font-medium">Dividir todo igual</button>
+                    </div>
+                    <div className="w-full h-1 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-emerald-500 transition-all" style={{ width: assignProgress.total > 0 ? `${(assignProgress.done / assignProgress.total) * 100}%` : "0%" }} />
+                    </div>
+                  </div>
+
+                  {/* Items with chips */}
+                  <div className="space-y-3">
+                    {bill.items.map((item, idx) => {
+                      const slots = slotsOf(item.id, item.qty);
+                      const full = itemFullyAssigned(item);
+                      const partial = itemPartiallyAssigned(item);
+                      const itemBg = ITEM_COLORS[idx % ITEM_COLORS.length];
+                      return (
+                        <div key={item.id} className={`rounded-xl shadow-sm overflow-hidden border ${full ? "border-emerald-300" : partial ? "border-amber-200" : "border-slate-200"}`} style={{ background: itemBg }}>
+                          <div className="px-4 py-3">
+                            <div className="flex items-center gap-2 mb-2">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
+                                <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
+                              </div>
+                              <button onClick={() => selectAll(item)} className="text-[11px] text-indigo-600 font-medium shrink-0">Todos</button>
+                            </div>
+
+                            {/* Numbered slots for qty>1 */}
+                            {item.qty > 1 && (
+                              item.qty >= 4 ? (
+                                <div className="space-y-1 mb-2">
+                                  {slots.map((slot, si) => {
+                                    const pid = typeof slot === "number" && slot > 0 ? slot : null;
+                                    const p = pid ? bill.participants.find((x) => x.id === pid) : null;
+                                    return (
+                                      <button key={si} onClick={() => cycleSlot(item.id, si)} className="w-full flex items-center gap-2 px-2 py-1 rounded-lg text-xs transition-colors hover:bg-slate-50 active:scale-[0.98]" style={{ borderLeft: `3px solid ${p?.color ?? "#fbbf24"}` }}>
+                                        <span className="font-bold text-slate-400 w-5 text-center">{si + 1}</span>
+                                        <span className="flex-1 text-left" style={{ color: p?.color ?? "#b45309" }}>{p ? p.name.split(" ")[0] : "Sin asignar"}</span>
+                                        <span className="text-slate-400">{clp(item.unit_price)}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="flex flex-wrap gap-1.5 mb-2">
+                                  {slots.map((slot, si) => {
+                                    const owner = slot != null && slot !== -1 ? bill.participants.find((p) => p.id === slot) : null;
+                                    return (
+                                      <button key={si} onClick={() => cycleSlot(item.id, si)} className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border ${owner ? "border-transparent text-white" : "border-dashed border-slate-300 text-slate-400 bg-white"}`} style={owner ? { background: owner.color } : undefined}>
+                                        <span>{circled(si + 1)}</span>
+                                        <span>{owner ? owner.name.split(" ")[0] : "—"}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )
+                            )}
+
+                            {/* Participant chips */}
+                            <div className="flex flex-wrap gap-1.5">
+                              {bill.participants.map((p) => {
+                                const on = isPersonOn(item, p.id);
+                                const u = unitsFor(item, p.id);
+                                return (
+                                  <button key={p.id} onClick={() => toggleChip(item, p.id)} className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border transition-colors ${on ? "text-white border-transparent" : "bg-slate-50 text-slate-600 border-slate-200"}`} style={on ? { background: p.color } : undefined}>
+                                    <span>{p.name.split(" ")[0]}</span>
+                                    {item.qty > 1 && u > 0 && <span className="opacity-80">×{u}</span>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {/* Inline qty>1 choice popover */}
+                            {chipChoice && chipChoice.itemId === item.id && (
+                              <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 flex items-center gap-2">
+                                <span className="text-[11px] text-slate-600 flex-1">¿Cuántos para {bill.participants.find((p) => p.id === chipChoice.pid)?.name.split(" ")[0]}?</span>
+                                <button onClick={() => applyChipChoice("half")} className="px-2 py-1 rounded-md bg-white border border-slate-200 text-[11px] text-slate-700">Mitad</button>
+                                <button onClick={() => applyChipChoice("all")} className="px-2 py-1 rounded-md bg-indigo-600 text-white text-[11px] font-medium">Todos</button>
+                                <button onClick={() => setChipChoice(null)} className="text-slate-400 text-[11px]">✕</button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              {bill.participants.length === 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-700">
+                  Agrega al menos una persona para asignar ítems.
+                </div>
+              )}
+
+              {/* CTA */}
+              <button
+                onClick={goToWhoPaid}
+                disabled={busy || bill.participants.length === 0 || !allAssigned}
+                title={!allAssigned ? "Asigna todos los ítems primero" : undefined}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+              >
+                {busy ? (
+                  <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Guardando…</>
+                ) : !allAssigned ? (
+                  <>Asigna todos ({assignProgress.done}/{assignProgress.total})</>
+                ) : (
+                  <>¿Quién pagó? <ChevronRight size={18} /></>
+                )}
+              </button>
             </div>
-            <button
-              onClick={() => {
-                if (bill.participants.length === 0) { showError("Agrega al menos un participante"); return; }
-                setAutoAssignBanner(true);
-                setStep(2);
-              }}
-              disabled={busy || bill.participants.length === 0}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
-            >
-              {busy ? <><div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Preparando…</> : <>Volver a asignar <ChevronRight size={18} /></>}
-            </button>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ── STEP 4: Who paid ── */}
         {step === 4 && bill && (
@@ -1518,18 +1439,16 @@ export default function SplitPage() {
       </div>
       )}
 
-      {/* ── STEP 2: Revisar + Asignar (split-screen with image | column without) ── */}
+      {/* ── STEP 2: Revisar (split-screen with image | column without) ── */}
       {step === 2 && bill && (
         !bill.image_url ? (
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-            {renderStep2PeopleBar()}
             <div className="flex-1 min-h-0 overflow-y-auto max-w-lg mx-auto w-full px-4 py-4 pb-10">
               {renderStep2RightPanel()}
             </div>
           </div>
         ) : (
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-            {renderStep2PeopleBar()}
             <div ref={splitContainerRef} className="flex-1 min-h-0 flex flex-row overflow-hidden">
             {/* LEFT: image viewer + draw canvas */}
             <div
@@ -1610,7 +1529,7 @@ export default function SplitPage() {
       )}
 
       {/* Celebration on full assignment */}
-      {celebrate && step === 2 && (
+      {celebrate && step === 3 && (
         <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center">
           <div className="bg-emerald-500 text-white rounded-full p-6 shadow-2xl animate-ping-once">
             <Check size={42} strokeWidth={3} />
