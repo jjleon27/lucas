@@ -614,6 +614,10 @@ REGLAS:
    Modificadores "+": price=0, quantity=1.
    Descuentos/DCTO/AHORRO/"-": price NEGATIVO, quantity=1.
    Cargos extra (Propina, Delivery, Servicio): price positivo, quantity=1.
+   VALIDACIÓN ARITMÉTICA: Antes de finalizar, suma todos los line_totals de los items.
+   Si la suma difiere del TOTAL impreso en más de 5%, revisa los items con qty>1:
+   es posible que hayas dividido un precio unitario real. Ajusta qty y price para que
+   la suma se acerque al TOTAL.
 
 3) AMOUNT — prioridad: a) línea "TOTAL" de boleta fiscal (neto+IVA). b) "Consumo Cliente" si existe,
    si no "Total General Mesa". c) mayor número al final del documento. NUNCA un subtotal intermedio.
@@ -1196,6 +1200,63 @@ def _fix_line_total_items(items: list[ParsedItem], ref_total: float) -> list[Par
     return items  # couldn't determine a clean fix
 
 
+def _fix_unit_as_total_items(
+    items: list[ParsedItem],
+    ref_total: float,
+    *,
+    tolerance: float = 0.03,
+) -> list[ParsedItem]:
+    """
+    Caso simétrico a _fix_line_total_items: el LLM interpretó 'N producto TOTAL'
+    como qty=N, price=TOTAL/N cuando en realidad era qty=N, price=TOTAL (unitario).
+
+    Se activa cuando: items_sum < ref_total * (1 - tolerance)
+    Y hay al menos un item con qty > 1.
+
+    Para cada item con qty > 1, prueba 'flip': line_total_real = price_actual * qty * qty
+    (es decir, el LLM dividió por qty cuando no debía).
+    Si al flipear solo ese item la suma se acerca a ref_total dentro de tolerance, aplicar.
+
+    Solo se aplica cuando ref_total > 0 y está anclado (total_neto o total explícito).
+    """
+    if ref_total <= 0:
+        return items
+
+    items_sum = sum(i.price * i.quantity for i in items)
+    deficit = ref_total - items_sum
+
+    # Solo activar cuando hay déficit significativo (>3%)
+    if deficit < ref_total * tolerance:
+        return items
+
+    # Intentar flipear items con qty > 1 uno a uno
+    multi_items = [i for i in items if i.quantity > 1]
+    if not multi_items:
+        return items
+
+    result = list(items)
+    for target in multi_items:
+        # El precio "real" si el LLM dividió incorrectamente = price_actual * qty
+        flipped_unit_price = target.price * target.quantity
+        # El nuevo line_total si se usa qty como-es pero precio como unitario real
+        gain = flipped_unit_price * target.quantity - target.price * target.quantity
+        new_sum = items_sum + gain
+
+        if abs(new_sum - ref_total) / ref_total <= tolerance:
+            # Aplicar el flip: mantener qty, actualizar price
+            idx = result.index(target)
+            result[idx] = ParsedItem(
+                name=target.name,
+                price=flipped_unit_price,
+                quantity=target.quantity,
+            )
+            print(f"[ocr] fix(unit-as-total): {target.name} {target.price}×{target.quantity} → {flipped_unit_price}×{target.quantity}")
+            items_sum = new_sum
+            break  # aplicar solo un flip por pasada
+
+    return result
+
+
 
 def _items_look_plausible(items: list, items_sum: float) -> bool:
     """True when items appear to have real CLP restaurant prices (not scaled garbage).
@@ -1417,6 +1478,11 @@ def vision_parse(
                         else:
                             print(f"[ocr] reconcile: items_sum > total (ratio={ratio:.2f}), dropping items")
                             items = []
+
+                # Symmetric fix: items_sum < ref_total because LLM divided a unit price
+                # by qty when it shouldn't have ('N producto TOTAL' parsed as N×TOTAL/N).
+                if items and raw_amount > 0:
+                    items = _fix_unit_as_total_items(items, raw_amount)
 
             ca = t.get("cuota_actual")
             ct = t.get("cuotas_total")

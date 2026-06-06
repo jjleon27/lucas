@@ -125,6 +125,9 @@ export default function SplitPage() {
   // Mini-selector inline for qty>1 chip taps
   const [chipChoice, setChipChoice] = useState<{ itemId: number; pid: number } | null>(null);
 
+  // Mini-selector inline for "÷ split into N" button (qty=1 items only)
+  const [splitChoice, setSplitChoice] = useState<{ itemId: number; n: string } | null>(null);
+
   // Step 4 — image panel (split-screen viewer + drawing canvas)
   const [leftW, setLeftW] = useState(0.40); // fraction 0-1 for left image panel width
   const [imgScale, setImgScale] = useState(1);
@@ -396,6 +399,35 @@ export default function SplitPage() {
       return next;
     });
     setChipChoice(null);
+  }
+
+  // Split a qty=1 item into N units (e.g. "1 pizza" → "4 pizza"), preserving line_total
+  async function applySplit(item: BillItem) {
+    if (!bill || !splitChoice) return;
+    const n = parseInt(splitChoice.n) || 2;
+    if (n < 2 || n > 50) return;
+    const unit_price = Math.round(item.line_total / n);
+    setBusy(true);
+    try {
+      const b = await patchItem(bill.id, item.id, { qty: n, unit_price });
+      setBill(b);
+      // Re-seed assignments with the new qty (smart distribution among participants)
+      seedFromBill(b);
+      const smart = smartDistribute(b);
+      if (smart.size > 0) {
+        setAssignments((prev) => {
+          const merged = new Map(prev);
+          smart.forEach((slots, itemId) => merged.set(itemId, slots));
+          return merged;
+        });
+      }
+      setSplitChoice(null);
+      showError(`Dividido en ${n} × ${clp(unit_price)}`);
+    } catch (e: unknown) {
+      showError(e instanceof Error ? e.message : "Error");
+    } finally {
+      setBusy(false);
+    }
   }
 
   // Cycle a numbered slot through participants (and back to null)
@@ -1175,36 +1207,76 @@ export default function SplitPage() {
                             {clp(item.unit_price)} c/u · Total {clp(item.line_total)}
                           </p>
                         </div>
-                        <button
-                          onClick={() => selectAll(item)}
-                          className="text-[11px] text-indigo-600 font-medium shrink-0"
-                        >
-                          Todos
-                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {item.qty === 1 && (
+                            <button
+                              onClick={() =>
+                                setSplitChoice(
+                                  splitChoice?.itemId === item.id
+                                    ? null
+                                    : { itemId: item.id, n: String(bill.participants.length) }
+                                )
+                              }
+                              className="px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-500 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
+                              title="Dividir ítem en varios"
+                            >
+                              ÷
+                            </button>
+                          )}
+                          <button
+                            onClick={() => selectAll(item)}
+                            className="text-[11px] text-indigo-600 font-medium"
+                          >
+                            Todos
+                          </button>
+                        </div>
                       </div>
 
                       {/* Numbered slots for qty>1 */}
                       {item.qty > 1 && (
-                        <div className="flex flex-wrap gap-1.5 mb-2">
-                          {slots.map((slot, idx) => {
-                            const owner = slot != null && slot !== -1 ? bill.participants.find((p) => p.id === slot) : null;
-                            return (
-                              <button
-                                key={idx}
-                                onClick={() => cycleSlot(item.id, idx)}
-                                className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border ${
-                                  owner
-                                    ? "border-transparent text-white"
-                                    : "border-dashed border-slate-300 text-slate-400 bg-white"
-                                }`}
-                                style={owner ? { background: owner.color } : undefined}
-                              >
-                                <span>{circled(idx + 1)}</span>
-                                <span>{owner ? owner.name.split(" ")[0] : "—"}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
+                        item.qty >= 4 ? (
+                          <div className="space-y-1 mb-2">
+                            {slots.map((slot, idx) => {
+                              const pid = typeof slot === "number" && slot > 0 ? slot : null;
+                              const p = pid ? bill.participants.find((x) => x.id === pid) : null;
+                              return (
+                                <button
+                                  key={idx}
+                                  onClick={() => cycleSlot(item.id, idx)}
+                                  className="w-full flex items-center gap-2 px-2 py-1 rounded-lg text-xs transition-colors hover:bg-slate-50 active:scale-[0.98]"
+                                  style={{ borderLeft: `3px solid ${p?.color ?? "#fbbf24"}` }}
+                                >
+                                  <span className="font-bold text-slate-400 w-5 text-center">{idx + 1}</span>
+                                  <span className="flex-1 text-left" style={{ color: p?.color ?? "#b45309" }}>
+                                    {p ? p.name.split(" ")[0] : "Sin asignar"}
+                                  </span>
+                                  <span className="text-slate-400">{clp(item.unit_price)}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {slots.map((slot, idx) => {
+                              const owner = slot != null && slot !== -1 ? bill.participants.find((p) => p.id === slot) : null;
+                              return (
+                                <button
+                                  key={idx}
+                                  onClick={() => cycleSlot(item.id, idx)}
+                                  className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border ${
+                                    owner
+                                      ? "border-transparent text-white"
+                                      : "border-dashed border-slate-300 text-slate-400 bg-white"
+                                  }`}
+                                  style={owner ? { background: owner.color } : undefined}
+                                >
+                                  <span>{circled(idx + 1)}</span>
+                                  <span>{owner ? owner.name.split(" ")[0] : "—"}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )
                       )}
 
                       {/* Participant chips */}
@@ -1254,6 +1326,59 @@ export default function SplitPage() {
                           >
                             ✕
                           </button>
+                        </div>
+                      )}
+
+                      {/* Inline "÷ split into N" popover for qty=1 items */}
+                      {splitChoice && splitChoice.itemId === item.id && (
+                        <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded-xl p-3 space-y-2">
+                          <p className="text-xs text-indigo-700 font-medium">¿En cuántas unidades dividir?</p>
+                          <div className="flex gap-2">
+                            {[bill.participants.length, 2, 3, 4]
+                              .filter((v, i, a) => v >= 2 && a.indexOf(v) === i)
+                              .slice(0, 4)
+                              .map((n) => (
+                                <button
+                                  key={n}
+                                  onClick={() => setSplitChoice({ itemId: item.id, n: String(n) })}
+                                  className={`px-3 py-1.5 rounded-full text-xs font-semibold border-2 transition-colors ${
+                                    splitChoice.n === String(n)
+                                      ? "bg-indigo-600 text-white border-indigo-600"
+                                      : "bg-white text-indigo-600 border-indigo-300"
+                                  }`}
+                                >
+                                  {n}
+                                </button>
+                              ))}
+                            <input
+                              type="number"
+                              min={2}
+                              max={50}
+                              value={splitChoice.n}
+                              onChange={(e) => setSplitChoice({ itemId: item.id, n: e.target.value })}
+                              className="w-14 border border-slate-200 rounded-lg px-2 py-1 text-xs text-center"
+                            />
+                          </div>
+                          {parseInt(splitChoice.n) >= 2 && (
+                            <p className="text-[11px] text-slate-500">
+                              {parseInt(splitChoice.n)} × {clp(Math.round(item.line_total / parseInt(splitChoice.n)))} c/u
+                            </p>
+                          )}
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => applySplit(item)}
+                              disabled={busy}
+                              className="flex-1 bg-indigo-600 text-white text-xs font-semibold py-2 rounded-lg disabled:opacity-50"
+                            >
+                              Dividir
+                            </button>
+                            <button
+                              onClick={() => setSplitChoice(null)}
+                              className="px-3 text-slate-400 text-xs"
+                            >
+                              ×
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
