@@ -149,6 +149,7 @@ export default function SplitPage() {
   const panStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const drawingRef = useRef(false);
   const vDivRef = useRef<{ startX: number; startW: number } | null>(null);
+  const [isDraggingDiv, setIsDraggingDiv] = useState(false);
 
   // Step 4 — payers
   const [payerMode, setPayerMode] = useState<"me" | "other" | "split">("me");
@@ -800,10 +801,10 @@ export default function SplitPage() {
       const container = splitContainerRef.current;
       const containerW = container?.clientWidth || window.innerWidth;
       const dx = e.clientX - vDivRef.current.startX;
-      const newW = Math.min(0.55, Math.max(0.25, vDivRef.current.startW + dx / containerW));
+      const newW = Math.min(0.80, Math.max(0.15, vDivRef.current.startW + dx / containerW));
       requestAnimationFrame(() => setLeftW(newW));
     };
-    const onUp = () => { vDivRef.current = null; };
+    const onUp = () => { vDivRef.current = null; setIsDraggingDiv(false); };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
     return () => {
@@ -811,7 +812,11 @@ export default function SplitPage() {
       document.removeEventListener("pointerup", onUp);
     };
   }, []);
-  const onVDividerDown = (e: React.PointerEvent) => { vDivRef.current = { startX: e.clientX, startW: leftW }; };
+  const onVDividerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    vDivRef.current = { startX: e.clientX, startW: leftW };
+    setIsDraggingDiv(true);
+  };
   const resetImgTransform = () => applyTransform(1, 0, 0);
 
   // ── Step 4 ────────────────────────────────────────────────────
@@ -1513,12 +1518,22 @@ export default function SplitPage() {
                 )}
               </div>
             </div>
-            {/* Divider */}
+            {/* Divider — 6px line + wide invisible touch target centered on it */}
             <div
               onPointerDown={onVDividerDown}
-              className="w-1 bg-slate-200 hover:bg-indigo-400 cursor-col-resize shrink-0 touch-none transition-colors"
-              title="Arrastra para redimensionar"
-            />
+              className={`relative w-6 shrink-0 touch-none cursor-col-resize flex items-center justify-center select-none ${isDraggingDiv ? "z-20" : ""}`}
+            >
+              {/* The visible 2px line */}
+              <div className={`absolute inset-y-0 w-0.5 transition-colors ${isDraggingDiv ? "bg-indigo-500" : "bg-slate-300"}`} />
+              {/* Grab handle pill */}
+              <div className={`relative z-10 rounded-full px-0.5 py-3 flex flex-col items-center gap-[3px] shadow-sm transition-colors ${isDraggingDiv ? "bg-indigo-500" : "bg-slate-400 hover:bg-indigo-400"}`}>
+                <div className="w-[3px] h-[3px] rounded-full bg-white" />
+                <div className="w-[3px] h-[3px] rounded-full bg-white" />
+                <div className="w-[3px] h-[3px] rounded-full bg-white" />
+                <div className="w-[3px] h-[3px] rounded-full bg-white" />
+                <div className="w-[3px] h-[3px] rounded-full bg-white" />
+              </div>
+            </div>
             {/* RIGHT: items + assign content */}
             <div className="flex-1 min-w-0 min-h-0 overflow-y-auto bg-slate-50 px-3 py-3 pb-6">
               {renderStep2RightPanel()}
