@@ -1547,9 +1547,9 @@ def vision_parse(
                         # Big gap AND items not plausible (garbage prices/too few) → drop items
                         print(f"[ocr] reconcile: implausible items dropped (ratio={ratio:.2f}, sum={items_sum})")
                         items = []
-                    elif ratio > 1.02:
-                        # Items sum exceeds total — LLM misread a quantity or stored line_total
-                        # as unit price. Try algebraic fix before giving up.
+                    elif ratio > 1.25:
+                        # Items sum exceeds total — LLM likely stored line_total as unit price.
+                        # Try algebraic fix before giving up.
                         fixed = _fix_line_total_items(items, raw_amount)
                         fixed_sum = sum(it.price * it.quantity for it in fixed)
                         if fixed_sum > 0 and abs(fixed_sum / raw_amount - 1.0) < 0.15:
