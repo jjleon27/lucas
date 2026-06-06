@@ -552,6 +552,28 @@ export default function SplitPage() {
     return next;
   }
 
+  function adjustUnits(itemId: number, pid: number, delta: number) {
+    if (!bill) return;
+    const item = bill.items.find((i) => i.id === itemId);
+    if (!item) return;
+    setAssignments((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(itemId) ?? new Array(item.qty).fill(null);
+      const slots = cloneSlots(cur);
+      const current = slots.filter((s) => s === pid).length;
+      const target = Math.max(0, Math.min(item.qty, current + delta));
+      // Remove all slots for this person
+      for (let i = 0; i < slots.length; i++) { if (slots[i] === pid) slots[i] = null; }
+      // Fill target empty slots
+      let placed = 0;
+      for (let i = 0; i < slots.length && placed < target; i++) {
+        if (slots[i] === null) { slots[i] = pid; placed++; }
+      }
+      next.set(itemId, slots);
+      return next;
+    });
+  }
+
   async function handleAssignEqual() {
     if (!bill) return;
     setBusy(true);
@@ -1245,27 +1267,44 @@ export default function SplitPage() {
                               <button onClick={() => selectAll(item)} className="text-[11px] text-indigo-600 font-medium shrink-0">Todos</button>
                             </div>
 
-                            {/* Chips: tap to toggle. qty>1 shows ×N and redistributes equally. */}
-                            <div className="flex flex-wrap gap-2">
-                              {bill.participants.map((p) => {
-                                const on = isPersonOn(item, p.id);
-                                const u = unitsFor(item, p.id);
-                                return (
-                                  <button
-                                    key={p.id}
-                                    onClick={() => toggleChip(item, p.id)}
-                                    className={`flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full text-xs font-semibold border transition-all active:scale-95 ${on ? "text-white border-transparent shadow-sm" : "bg-white text-slate-500 border-slate-200"}`}
-                                    style={on ? { background: p.color } : undefined}
-                                  >
-                                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${on ? "bg-white/25" : "bg-slate-100"}`} style={on ? undefined : { color: p.color }}>
-                                      {initials(p.name)}
-                                    </span>
-                                    <span>{p.name.split(" ")[0]}</span>
-                                    {item.qty > 1 && u > 0 && <span className="opacity-75">×{u}</span>}
-                                  </button>
-                                );
-                              })}
-                            </div>
+                            {item.qty > 1 ? (
+                              /* Steppers for multi-unit items */
+                              <div className="space-y-1.5">
+                                {bill.participants.map((p) => {
+                                  const u = unitsFor(item, p.id);
+                                  const assigned = slots.filter((s) => s !== null && s !== -1).length;
+                                  return (
+                                    <div key={p.id} className="flex items-center gap-2">
+                                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0" style={{ background: p.color }}>{initials(p.name)}</div>
+                                      <span className="flex-1 text-sm text-slate-700">{p.name.split(" ")[0]}</span>
+                                      <div className="flex items-center gap-1.5">
+                                        <button onClick={() => adjustUnits(item.id, p.id, -1)} disabled={u === 0} className="w-7 h-7 rounded-full bg-slate-100 text-slate-600 font-bold text-sm disabled:opacity-30 flex items-center justify-center active:scale-95">−</button>
+                                        <span className="w-5 text-center text-sm font-semibold">{u}</span>
+                                        <button onClick={() => adjustUnits(item.id, p.id, +1)} disabled={assigned >= item.qty} className={`w-7 h-7 rounded-full font-bold text-sm disabled:opacity-30 flex items-center justify-center active:scale-95 ${u > 0 ? "text-white" : "bg-slate-100 text-slate-600"}`} style={u > 0 ? { background: p.color } : undefined}>+</button>
+                                      </div>
+                                      <span className="text-[11px] text-slate-400 w-14 text-right">{u > 0 ? clp(u * item.unit_price) : "—"}</span>
+                                    </div>
+                                  );
+                                })}
+                                <div className="flex justify-between text-[11px] pt-1.5 border-t border-slate-200/60 mt-0.5">
+                                  <span className="text-slate-400">{slots.filter((s) => s !== null && s !== -1).length}/{item.qty} asignados</span>
+                                  <button onClick={() => selectAll(item)} className="text-indigo-600 font-medium">÷ igual</button>
+                                </div>
+                              </div>
+                            ) : (
+                              /* Chips for single items */
+                              <div className="flex flex-wrap gap-2">
+                                {bill.participants.map((p) => {
+                                  const on = isPersonOn(item, p.id);
+                                  return (
+                                    <button key={p.id} onClick={() => toggleChip(item, p.id)} className={`flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full text-xs font-semibold border transition-all active:scale-95 ${on ? "text-white border-transparent shadow-sm" : "bg-white text-slate-500 border-slate-200"}`} style={on ? { background: p.color } : undefined}>
+                                      <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${on ? "bg-white/25" : "bg-slate-100"}`} style={on ? undefined : { color: p.color }}>{initials(p.name)}</span>
+                                      <span>{p.name.split(" ")[0]}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
