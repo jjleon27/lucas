@@ -595,28 +595,25 @@ Return strict JSON — no markdown, no commentary.
 # Prompt chain-of-thought de 3 pasos. La clave: pedir qty, unit_price y
 # line_total como campos separados por item, forzando al modelo a exponer
 # la relación en vez de calcularla en silencio (que es donde se confunde).
-_RECEIPT_PROMPT = """Eres un experto en recibos y boletas chilenas. Analiza la imagen en 3 pasos:
+_RECEIPT_PROMPT = """Eres un experto en recibos y boletas chilenas. Lee la imagen y extrae cada item.
 
-PASO 1 — ORIENTACIÓN: La imagen puede estar rotada. Identifica la orientación correcta (el texto debe leerse de izquierda a derecha, precios alineados a la derecha).
+ORIENTACIÓN: La imagen puede estar rotada. El texto se lee de izquierda a derecha, precios a la derecha.
 
-PASO 2 — EXTRACCIÓN POR LÍNEA: Para cada línea de item extrae los tres valores que aparecen en el recibo:
-- qty: el número antes del nombre (si no hay número, es 1)
-- unit_price: precio unitario = line_total ÷ qty
-- line_total: el número al final de la línea (total de esa línea)
+REGLAS CHILENAS:
+- Los puntos son separadores de miles: "9.000" = nueve mil pesos.
+- El número entero ANTES del nombre es la CANTIDAD. Si no hay número, qty=1.
+- El número al final de cada línea es el TOTAL DE ESA LÍNEA (no el precio unitario).
+- Ejemplos: "6 Schop Escudo 26.400" → qty=6, line_total=26400
+             "5 Fernet Branca 27.500" → qty=5, line_total=27500
+             "1 Churrasco Italiano 8.500" → qty=1, line_total=8500
 
-REGLAS CHILENAS CRÍTICAS:
-- Los puntos son separadores de miles ("9.000" = nueve mil pesos)
-- El número ANTES del nombre es la CANTIDAD (ej: "5 Fernet Branca  27.500" → qty=5, unit_price=5500, line_total=27500)
-- Si ves "6 Schop Escudo  26.400" → qty=6, unit_price=4400, line_total=26400
-- Nunca confundas line_total con unit_price
-
-PASO 3 — VERIFICACIÓN: Suma todos los line_total. ¿Coincide con el TOTAL impreso (±200 CLP)? Si no coincide, vuelve a leer los items donde el math no cierra (qty × unit_price ≠ line_total).
+VERIFICACIÓN: Suma todos los line_total. Debe coincidir con el TOTAL impreso (±200 CLP).
 
 BOLETA FISCAL (SII) vs comanda:
-- Si hay "TOTAL NETO" e "IVA" como filas separadas → llena total_neto e iva_amount
-- Si es comanda de bar/restaurante sin esas etiquetas → deja total_neto e iva_amount en null
+- Si hay líneas "TOTAL NETO" e "IVA" explícitas → llena total_neto e iva_amount.
+- Si es comanda de bar/restaurante sin esas etiquetas → deja ambos en null.
 
-AMOUNT: usa el total final ("TOTAL", "A PAGAR", "TARJETA", "CONSUMO CLIENTE"). Nunca un subtotal.
+AMOUNT: el total final ("TOTAL", "A PAGAR", "TARJETA", "CONSUMO CLIENTE"). Nunca un subtotal.
 
 CATEGORÍA:
 - "Bares y Salidas": schops, cervezas, fernet, tragos, pub/bar
@@ -642,7 +639,7 @@ DEVUELVE SOLO ESTE JSON (sin markdown):
       "category": "categoría",
       "is_income": false,
       "items": [
-        {"name": "nombre", "price": unit_price, "quantity": qty, "line_total": line_total}
+        {"name": "nombre", "quantity": qty, "line_total": line_total}
       ]
     }
   ]
@@ -1304,9 +1301,19 @@ def vision_parse(
         # which is why "ChatGPT con la misma imagen" used to read items Lucas
         # could not. Single-pass vision_json with the receipt prompt is what
         # ChatGPT itself does behind the scenes, so we match that.
-        compact = _shrink_for_vision(image_bytes)
-        mime = _detect_mime(compact)
-        b64 = base64.b64encode(compact).decode("ascii")
+        # Send image without pre-shrinking — OpenAI scales to 2048px internally
+        # for detail:high regardless, so shrinking just loses quality for no gain.
+        # Only convert to JPEG if the format is not web-safe (e.g. HEIC/TIFF).
+        mime = _detect_mime(image_bytes)
+        if mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            img_pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            buf = io.BytesIO()
+            img_pil.save(buf, format="JPEG", quality=92)
+            send_bytes = buf.getvalue()
+            mime = "image/jpeg"
+        else:
+            send_bytes = image_bytes
+        b64 = base64.b64encode(send_bytes).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
 
         def _call_vision(user_msg: str) -> str:
@@ -1390,8 +1397,8 @@ def vision_parse(
             return None
 
         def _parse_items_from_tx(tx: dict) -> list[ParsedItem]:
-            """Convert the JSON items list into ParsedItem, using `line_total`
-            (when present) to sanity-check and recover unit `price` if needed.
+            """Convert JSON items to ParsedItem. Primary source: line_total ÷ qty.
+            Falls back to price field for backwards-compat with old schema.
             """
             out_items: list[ParsedItem] = []
             for it in tx.get("items", []) or []:
@@ -1405,21 +1412,21 @@ def vision_parse(
                 if qty < 1:
                     qty = 1
                 try:
-                    price = float(it.get("price") or 0)
+                    line_total = float(it.get("line_total") or 0)
                 except (TypeError, ValueError):
+                    line_total = 0.0
+                try:
+                    price_raw = float(it.get("price") or 0)
+                except (TypeError, ValueError):
+                    price_raw = 0.0
+
+                if line_total > 0:
+                    price = round(line_total / qty)
+                elif price_raw > 0:
+                    price = price_raw
+                else:
                     price = 0.0
-                line_total_raw = it.get("line_total")
-                line_total = None
-                if line_total_raw is not None:
-                    try:
-                        line_total = float(line_total_raw)
-                    except (TypeError, ValueError):
-                        line_total = None
-                # If line_total is present and qty>1, verify price*qty ≈ line_total.
-                # If they disagree and line_total looks right, derive price from it.
-                if line_total is not None and qty > 1 and line_total > 0:
-                    if abs(price * qty - line_total) > 100:
-                        price = round(line_total / qty)
+
                 out_items.append(ParsedItem(name=str(name), price=price, quantity=qty))
             return out_items
 
