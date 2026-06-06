@@ -55,6 +55,8 @@ const deleteItem = (billId: number, iid: number) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "DELETE" });
 const postShares = (billId: number, itemId: number, shares: { participant_id: number; weight: number; units?: number }[]) =>
   billReq<Bill>(`/bills/${billId}/shares`, { method: "POST", body: JSON.stringify({ item_id: itemId, shares }) });
+const patchBill = (billId: number, patch: { tip_amount?: number }) =>
+  billReq<Bill>(`/bills/${billId}`, { method: "PATCH", body: JSON.stringify(patch) });
 const assignEqual = (billId: number) =>
   billReq<Bill>(`/bills/${billId}/assign-equal`, { method: "POST" });
 const setPayers = (billId: number, payers: { participant_id: number; paid_amount: number }[]) =>
@@ -66,8 +68,6 @@ const finalizeBill = (billId: number, opts: { account_id?: number; category?: st
 
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-const CIRCLED = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮","⑯","⑰","⑱","⑲","⑳"];
-const circled = (n: number) => CIRCLED[n - 1] ?? `(${n})`;
 const ITEM_COLORS = ["#fef3c7","#dbeafe","#dcfce7","#fce7f3","#ede9fe","#ffedd5","#f0fdf4","#fdf4ff"];
 
 function StepDots({ step }: { step: number }) {
@@ -117,6 +117,8 @@ export default function SplitPage() {
   const [editItemId, setEditItemId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState({ name: "", qty: 1, total: 0 });
   const [newItem, setNewItem] = useState<{ name: string; qty: number; unit_price: number } | null>(null);
+  const [tipMode, setTipMode] = useState<"hidden" | "pct" | "manual">("hidden");
+  const [tipDraft, setTipDraft] = useState("");
 
   // Step 3 — new person inline form
   const [newPersonForm, setNewPersonForm] = useState(false);
@@ -129,9 +131,6 @@ export default function SplitPage() {
   //   adds/removes them across all slots (equal-split semantics).
   //   For qty>1 items, individual slots can be cycled.
   const [assignments, setAssignments] = useState<Map<number, (number | null)[]>>(new Map());
-
-  // Mini-selector inline for qty>1 chip taps
-  const [chipChoice, setChipChoice] = useState<{ itemId: number; pid: number } | null>(null);
 
   // Mini-selector inline for "÷ split into N" button (qty=1 items only)
   const [splitChoice, setSplitChoice] = useState<{ itemId: number; n: string } | null>(null);
@@ -199,8 +198,9 @@ export default function SplitPage() {
   async function saveEditItem() {
     if (!bill || editItemId === null) return;
     try {
-      const unit_price = editDraft.qty > 0 ? editDraft.total / editDraft.qty : 0;
-      const b = await patchItem(bill.id, editItemId, { name: editDraft.name, qty: editDraft.qty, unit_price });
+      const qty = Math.max(1, editDraft.qty || 1);
+      const unit_price = editDraft.total / qty;
+      const b = await patchItem(bill.id, editItemId, { name: editDraft.name, qty, unit_price });
       setBill(b);
       setEditItemId(null);
       // Re-seed assignments and re-apply smart distribution after item edit
@@ -216,6 +216,17 @@ export default function SplitPage() {
     }
     catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
   }
+  async function saveTip() {
+    if (!bill) return;
+    const raw = parseFloat(tipDraft) || 0;
+    const tip_amount = tipMode === "pct" ? Math.round(subtotal * raw / 100) : Math.round(raw);
+    try {
+      setBill(await patchBill(bill.id, { tip_amount }));
+      setTipMode("hidden");
+      setTipDraft("");
+    } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+  }
+
   async function handleDeleteItem(iid: number) {
     if (!bill) return;
     try { setBill(await deleteItem(bill.id, iid)); }
@@ -409,19 +420,27 @@ export default function SplitPage() {
   function toggleChip(item: BillItem, pid: number) {
     if (!bill) return;
     if (item.qty > 1) {
-      const currentUnits = unitsFor(item, pid);
-      if (currentUnits > 0) {
-        setAssignments((prev) => {
-          const next = new Map(prev);
-          const cur = next.get(item.id) ?? new Array(item.qty).fill(null);
-          const slots = cloneSlots(cur);
-          for (let i = 0; i < slots.length; i++) if (slots[i] === pid) slots[i] = null;
-          next.set(item.id, slots);
-          return next;
-        });
-        return;
-      }
-      setChipChoice({ itemId: item.id, pid });
+      // Build current selected set, toggle pid, then redistribute equally
+      const slots = slotsOf(item.id, item.qty);
+      const selected = new Set<number>();
+      for (const s of slots) { if (s !== null && s !== -1) selected.add(s); }
+      if (selected.has(pid)) { selected.delete(pid); } else { selected.add(pid); }
+      const pids = Array.from(selected);
+      const N = pids.length;
+      setAssignments((prev) => {
+        const next = new Map(prev);
+        if (N === 0) { next.set(item.id, new Array(item.qty).fill(null)); return next; }
+        const newSlots: (number | null)[] = new Array(item.qty).fill(null);
+        const base = Math.floor(item.qty / N);
+        const rem = item.qty % N;
+        let idx = 0;
+        for (let i = 0; i < N; i++) {
+          const units = base + (i < rem ? 1 : 0);
+          for (let u = 0; u < units; u++) { if (idx < newSlots.length) newSlots[idx++] = pids[i]; }
+        }
+        next.set(item.id, newSlots);
+        return next;
+      });
       return;
     }
     setAssignments((prev) => {
@@ -449,28 +468,6 @@ export default function SplitPage() {
       next.set(item.id, slots);
       return next;
     });
-  }
-
-  function applyChipChoice(mode: "all" | "half") {
-    if (!chipChoice || !bill) return;
-    const item = bill.items.find((i) => i.id === chipChoice.itemId);
-    if (!item) { setChipChoice(null); return; }
-    setAssignments((prev) => {
-      const next = new Map(prev);
-      const cur = next.get(item.id) ?? new Array(item.qty).fill(null);
-      const slots = cloneSlots(cur);
-      const target = mode === "all" ? item.qty : Math.max(1, Math.floor(item.qty / 2));
-      let placed = 0;
-      for (let i = 0; i < slots.length && placed < target; i++) {
-        if (slots[i] === null) { slots[i] = chipChoice.pid; placed++; }
-      }
-      for (let i = 0; i < slots.length && placed < target; i++) {
-        if (slots[i] !== chipChoice.pid) { slots[i] = chipChoice.pid; placed++; }
-      }
-      next.set(item.id, slots);
-      return next;
-    });
-    setChipChoice(null);
   }
 
   async function applySplit(item: BillItem) {
@@ -513,28 +510,6 @@ export default function SplitPage() {
     } finally {
       setBusy(false);
     }
-  }
-
-  function cycleSlot(itemId: number, slotIdx: number) {
-    if (!bill) return;
-    setAssignments((prev) => {
-      const next = new Map(prev);
-      const item = bill.items.find((i) => i.id === itemId);
-      if (!item) return prev;
-      const curArr = next.get(itemId) ?? new Array(item.qty).fill(null);
-      const slots = cloneSlots(curArr);
-      const sortedPids = [...bill.participants].sort((a, b) => a.id - b.id).map((p) => p.id);
-      const order: (number | null)[] = [...sortedPids, null];
-      const curVal = slots[slotIdx];
-      const idx = order.findIndex((v) => v === curVal);
-      const nxt = order[(idx + 1) % order.length];
-      slots[slotIdx] = nxt;
-      if (item.qty === 1 && curVal === -1) {
-        delete (slots as unknown as { sharers?: number[] }).sharers;
-      }
-      next.set(itemId, slots);
-      return next;
-    });
   }
 
   function selectAll(item: BillItem) {
@@ -693,10 +668,9 @@ export default function SplitPage() {
     }
   }, [step, bill, assignProgress.done, assignProgress.total]);
 
-  // Close inline popovers when leaving their steps
+  // Close splitChoice popover when leaving step 2
   useEffect(() => {
     if (step !== 2) setSplitChoice(null);
-    if (step !== 3) setChipChoice(null);
   }, [step]);
 
   // ── Image viewer (zoom + pan + draw) ─────────────────────────
@@ -962,19 +936,6 @@ export default function SplitPage() {
 
     return (
       <div className="space-y-3 pb-6">
-        {/* Total banner */}
-        <div className={`rounded-xl px-4 py-2.5 text-sm font-medium ${match ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
-          <div className="flex items-center justify-between">
-            <span>{bill.items.length} ítems</span>
-            <span>Total {clp(bill.total_amount || subtotal)}</span>
-          </div>
-          {!match && (
-            <p className="text-[11px] font-normal mt-0.5">
-              Suma de ítems: {clp(subtotal)} · Boleta: {clp(bill.total_amount)}
-            </p>
-          )}
-        </div>
-
         {/* Items list */}
         {bill.items.map((item, idx) => {
           const itemBg = ITEM_COLORS[idx % ITEM_COLORS.length];
@@ -994,10 +955,10 @@ export default function SplitPage() {
                     </div>
                     <div className="flex-1">
                       <label className="text-[10px] text-slate-400 mb-0.5 block">÷ unidades</label>
-                      <input type="number" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.qty} min={1} onChange={(e) => setEditDraft((d) => ({ ...d, qty: parseInt(e.target.value) || 1 }))} placeholder="1" />
+                      <input type="number" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.qty || ""} min={1} onChange={(e) => setEditDraft((d) => ({ ...d, qty: parseInt(e.target.value) || 0 }))} placeholder="1" />
                     </div>
                   </div>
-                  <p className="text-xs text-slate-400 text-right">{clp(editDraft.total || 0)} ÷ {editDraft.qty} = {clp(Math.round((editDraft.total || 0) / (editDraft.qty || 1)))} c/u</p>
+                  <p className="text-xs text-slate-400 text-right">{clp(editDraft.total || 0)} ÷ {Math.max(1, editDraft.qty)} = {clp(Math.round((editDraft.total || 0) / Math.max(1, editDraft.qty)))} c/u</p>
                   <div className="flex gap-2">
                     <button className="flex-1 bg-indigo-600 text-white rounded-lg py-2 text-sm font-medium" onClick={saveEditItem}>Guardar</button>
                     <button className="px-4 py-2 text-slate-500 text-sm" onClick={() => setEditItemId(null)}>Cancelar</button>
@@ -1086,6 +1047,65 @@ export default function SplitPage() {
             <Plus size={16} /> Agregar ítem
           </button>
         )}
+
+        {/* Total + propina */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 text-sm">
+            <span className="text-slate-500">{bill.items.length} ítem{bill.items.length !== 1 ? "s" : ""}</span>
+            <span className="font-semibold text-slate-800">Subtotal {clp(subtotal)}</span>
+          </div>
+          {!match && bill.total_amount > 0 && (
+            <div className="px-4 pb-2 text-[11px] text-amber-600 bg-amber-50 border-t border-amber-100 py-1.5">
+              Boleta original: {clp(bill.total_amount)} · diferencia con ítems: {clp(Math.abs(bill.total_amount - subtotal))}
+            </div>
+          )}
+          {/* Propina row */}
+          <div className="border-t border-slate-100 px-4 py-2.5">
+            {tipMode === "hidden" ? (
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-slate-500">
+                  Propina{bill.tip_amount > 0 ? `: ${clp(bill.tip_amount)}` : ""}
+                </span>
+                <button
+                  onClick={() => { setTipMode("pct"); setTipDraft(bill.tip_amount > 0 ? String(Math.round(bill.tip_amount / subtotal * 100)) : "10"); }}
+                  className="text-xs text-indigo-600 font-medium"
+                >
+                  {bill.tip_amount > 0 ? "Editar" : "+ Agregar"}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex gap-1.5">
+                  {["5","10","15","20"].map((p) => (
+                    <button key={p} onClick={() => { setTipMode("pct"); setTipDraft(p); }} className={`flex-1 py-1 rounded-lg text-xs font-semibold border ${tipMode === "pct" && tipDraft === p ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-600 border-slate-200"}`}>{p}%</button>
+                  ))}
+                  <button onClick={() => { setTipMode("manual"); setTipDraft(""); }} className={`flex-1 py-1 rounded-lg text-xs font-semibold border ${tipMode === "manual" ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-600 border-slate-200"}`}>$</button>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="number"
+                    autoFocus
+                    className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+                    placeholder={tipMode === "pct" ? "%" : "$"}
+                    value={tipDraft}
+                    onChange={(e) => setTipDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveTip(); }}
+                  />
+                  {tipMode === "pct" && tipDraft && (
+                    <span className="text-xs text-slate-400 shrink-0">{clp(Math.round(subtotal * (parseFloat(tipDraft) || 0) / 100))}</span>
+                  )}
+                  <button onClick={saveTip} className="bg-indigo-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shrink-0">OK</button>
+                  <button onClick={() => { setTipMode("hidden"); setTipDraft(""); }} className="text-slate-400 text-xs px-1">✕</button>
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Gran total */}
+          <div className="border-t border-slate-200 px-4 py-2.5 flex items-center justify-between bg-slate-50">
+            <span className="text-sm font-semibold text-slate-700">Total</span>
+            <span className="text-base font-bold text-slate-900">{clp(bill.total_amount || subtotal)}</span>
+          </div>
+        </div>
 
         {/* CTA */}
         <button
@@ -1225,60 +1245,27 @@ export default function SplitPage() {
                               <button onClick={() => selectAll(item)} className="text-[11px] text-indigo-600 font-medium shrink-0">Todos</button>
                             </div>
 
-                            {/* Numbered slots for qty>1 */}
-                            {item.qty > 1 && (
-                              item.qty >= 4 ? (
-                                <div className="space-y-1 mb-2">
-                                  {slots.map((slot, si) => {
-                                    const pid = typeof slot === "number" && slot > 0 ? slot : null;
-                                    const p = pid ? bill.participants.find((x) => x.id === pid) : null;
-                                    return (
-                                      <button key={si} onClick={() => cycleSlot(item.id, si)} className="w-full flex items-center gap-2 px-2 py-1 rounded-lg text-xs transition-colors hover:bg-slate-50 active:scale-[0.98]" style={{ borderLeft: `3px solid ${p?.color ?? "#fbbf24"}` }}>
-                                        <span className="font-bold text-slate-400 w-5 text-center">{si + 1}</span>
-                                        <span className="flex-1 text-left" style={{ color: p?.color ?? "#b45309" }}>{p ? p.name.split(" ")[0] : "Sin asignar"}</span>
-                                        <span className="text-slate-400">{clp(item.unit_price)}</span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              ) : (
-                                <div className="flex flex-wrap gap-1.5 mb-2">
-                                  {slots.map((slot, si) => {
-                                    const owner = slot != null && slot !== -1 ? bill.participants.find((p) => p.id === slot) : null;
-                                    return (
-                                      <button key={si} onClick={() => cycleSlot(item.id, si)} className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border ${owner ? "border-transparent text-white" : "border-dashed border-slate-300 text-slate-400 bg-white"}`} style={owner ? { background: owner.color } : undefined}>
-                                        <span>{circled(si + 1)}</span>
-                                        <span>{owner ? owner.name.split(" ")[0] : "—"}</span>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )
-                            )}
-
-                            {/* Participant chips */}
-                            <div className="flex flex-wrap gap-1.5">
+                            {/* Chips: tap to toggle. qty>1 shows ×N and redistributes equally. */}
+                            <div className="flex flex-wrap gap-2">
                               {bill.participants.map((p) => {
                                 const on = isPersonOn(item, p.id);
                                 const u = unitsFor(item, p.id);
                                 return (
-                                  <button key={p.id} onClick={() => toggleChip(item, p.id)} className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border transition-colors ${on ? "text-white border-transparent" : "bg-slate-50 text-slate-600 border-slate-200"}`} style={on ? { background: p.color } : undefined}>
+                                  <button
+                                    key={p.id}
+                                    onClick={() => toggleChip(item, p.id)}
+                                    className={`flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full text-xs font-semibold border transition-all active:scale-95 ${on ? "text-white border-transparent shadow-sm" : "bg-white text-slate-500 border-slate-200"}`}
+                                    style={on ? { background: p.color } : undefined}
+                                  >
+                                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${on ? "bg-white/25" : "bg-slate-100"}`} style={on ? undefined : { color: p.color }}>
+                                      {initials(p.name)}
+                                    </span>
                                     <span>{p.name.split(" ")[0]}</span>
-                                    {item.qty > 1 && u > 0 && <span className="opacity-80">×{u}</span>}
+                                    {item.qty > 1 && u > 0 && <span className="opacity-75">×{u}</span>}
                                   </button>
                                 );
                               })}
                             </div>
-
-                            {/* Inline qty>1 choice popover */}
-                            {chipChoice && chipChoice.itemId === item.id && (
-                              <div className="mt-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 flex items-center gap-2">
-                                <span className="text-[11px] text-slate-600 flex-1">¿Cuántos para {bill.participants.find((p) => p.id === chipChoice.pid)?.name.split(" ")[0]}?</span>
-                                <button onClick={() => applyChipChoice("half")} className="px-2 py-1 rounded-md bg-white border border-slate-200 text-[11px] text-slate-700">Mitad</button>
-                                <button onClick={() => applyChipChoice("all")} className="px-2 py-1 rounded-md bg-indigo-600 text-white text-[11px] font-medium">Todos</button>
-                                <button onClick={() => setChipChoice(null)} className="text-slate-400 text-[11px]">✕</button>
-                              </div>
-                            )}
                           </div>
                         </div>
                       );
