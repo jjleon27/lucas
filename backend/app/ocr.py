@@ -1301,18 +1301,17 @@ def vision_parse(
         # which is why "ChatGPT con la misma imagen" used to read items Lucas
         # could not. Single-pass vision_json with the receipt prompt is what
         # ChatGPT itself does behind the scenes, so we match that.
-        # Send image without pre-shrinking — OpenAI scales to 2048px internally
-        # for detail:high regardless, so shrinking just loses quality for no gain.
-        # Only convert to JPEG if the format is not web-safe (e.g. HEIC/TIFF).
-        mime = _detect_mime(image_bytes)
-        if mime not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+        # Always normalise to JPEG before sending: pillow can open any format
+        # (HEIC/TIFF/BMP/…) and JPEG is what OpenAI accepts reliably.
+        # Sending the raw HEIC bytes — even with correct mime — triggers a 400.
+        try:
             img_pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
             buf = io.BytesIO()
             img_pil.save(buf, format="JPEG", quality=92)
             send_bytes = buf.getvalue()
-            mime = "image/jpeg"
-        else:
-            send_bytes = image_bytes
+        except Exception:
+            send_bytes = image_bytes  # already JPEG/PNG, send as-is
+        mime = "image/jpeg"
         b64 = base64.b64encode(send_bytes).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
 
