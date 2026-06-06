@@ -1445,7 +1445,7 @@ def vision_parse(
                 _items_sum_preview = sum(i.price * i.quantity for i in _items_preview)
                 if _items_sum_preview > 0:
                     _diff = abs(_items_sum_preview - _amount_preview)
-                    if _diff / _amount_preview > 0.15:
+                    if _diff / _amount_preview > 0.10:
                         print(
                             f"[ocr] retry: items sum {int(_items_sum_preview)} vs total "
                             f"{int(_amount_preview)} (diff={int(_diff)})"
