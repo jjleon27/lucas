@@ -1301,11 +1301,13 @@ def vision_parse(
         # which is why "ChatGPT con la misma imagen" used to read items Lucas
         # could not. Single-pass vision_json with the receipt prompt is what
         # ChatGPT itself does behind the scenes, so we match that.
-        # Normalise to JPEG + boost contrast/sharpness so digit quantities
-        # (e.g. "3" before "Vienesa") are legible to the vision model.
+        # Normalise to JPEG: apply EXIF rotation (iPhone uploads arrive sideways
+        # otherwise), then boost contrast/sharpness so digit quantities are legible.
         try:
-            from PIL import ImageEnhance
-            img_pil = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            from PIL import ImageEnhance, ImageOps
+            img_pil = Image.open(io.BytesIO(image_bytes))
+            img_pil = ImageOps.exif_transpose(img_pil)  # fix iPhone rotation
+            img_pil = img_pil.convert("RGB")
             img_pil = ImageEnhance.Contrast(img_pil).enhance(1.8)
             img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
             buf = io.BytesIO()
