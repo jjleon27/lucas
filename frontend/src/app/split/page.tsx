@@ -137,7 +137,7 @@ export default function SplitPage() {
   const [splitChoice, setSplitChoice] = useState<{ itemId: number; n: string } | null>(null);
 
   // Step 2 — image panel (split-screen viewer + drawing canvas)
-  const [leftW, setLeftW] = useState(0.40); // fraction 0-1 for left image panel width
+  const [leftW, setLeftW] = useState(0.30); // fraction 0-1 for left image panel width
   const [imgScale, setImgScale] = useState(1);
   const [imgPan, setImgPan] = useState({ x: 0, y: 0 });
   const [drawMode, setDrawMode] = useState(false); // false = pan, true = draw
@@ -1014,8 +1014,8 @@ export default function SplitPage() {
                 <div className="px-4 py-3">
                   <div className="flex items-center gap-2 mb-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-slate-800 break-words leading-snug">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
-                      <p className="text-[11px] text-slate-400">{clp(item.unit_price)} c/u · Total {clp(item.line_total)}</p>
+                      <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
+                      <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
                     </div>
                     {hasParticipants && (
                       <button
