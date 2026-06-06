@@ -115,7 +115,7 @@ export default function SplitPage() {
 
   // Step 2 — items
   const [editItemId, setEditItemId] = useState<number | null>(null);
-  const [editDraft, setEditDraft] = useState({ name: "", qty: 1, unit_price: 0 });
+  const [editDraft, setEditDraft] = useState({ name: "", qty: 1, total: 0 });
   const [newItem, setNewItem] = useState<{ name: string; qty: number; unit_price: number } | null>(null);
 
   // Step 3 — new person inline form
@@ -199,7 +199,8 @@ export default function SplitPage() {
   async function saveEditItem() {
     if (!bill || editItemId === null) return;
     try {
-      const b = await patchItem(bill.id, editItemId, editDraft);
+      const unit_price = editDraft.qty > 0 ? editDraft.total / editDraft.qty : 0;
+      const b = await patchItem(bill.id, editItemId, { name: editDraft.name, qty: editDraft.qty, unit_price });
       setBill(b);
       setEditItemId(null);
       // Re-seed assignments and re-apply smart distribution after item edit
@@ -987,10 +988,16 @@ export default function SplitPage() {
                 <div className="p-3 space-y-2">
                   <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.name} onChange={(e) => setEditDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Nombre" />
                   <div className="flex gap-2">
-                    <input type="number" className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.qty} min={1} onChange={(e) => setEditDraft((d) => ({ ...d, qty: parseInt(e.target.value) || 1 }))} placeholder="Cant." />
-                    <input type="number" className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.unit_price} min={0} onChange={(e) => setEditDraft((d) => ({ ...d, unit_price: parseFloat(e.target.value) || 0 }))} placeholder="Precio unit." />
+                    <div className="flex-1">
+                      <label className="text-[10px] text-slate-400 mb-0.5 block">Total</label>
+                      <input type="number" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.total || ""} min={0} onChange={(e) => setEditDraft((d) => ({ ...d, total: parseFloat(e.target.value) || 0 }))} placeholder="0" />
+                    </div>
+                    <div className="flex-1">
+                      <label className="text-[10px] text-slate-400 mb-0.5 block">÷ unidades</label>
+                      <input type="number" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.qty} min={1} onChange={(e) => setEditDraft((d) => ({ ...d, qty: parseInt(e.target.value) || 1 }))} placeholder="1" />
+                    </div>
                   </div>
-                  <p className="text-xs text-slate-400 text-right">Total: {clp((editDraft.qty || 1) * (editDraft.unit_price || 0))}</p>
+                  <p className="text-xs text-slate-400 text-right">{clp(editDraft.total || 0)} ÷ {editDraft.qty} = {clp(Math.round((editDraft.total || 0) / (editDraft.qty || 1)))} c/u</p>
                   <div className="flex gap-2">
                     <button className="flex-1 bg-indigo-600 text-white rounded-lg py-2 text-sm font-medium" onClick={saveEditItem}>Guardar</button>
                     <button className="px-4 py-2 text-slate-500 text-sm" onClick={() => setEditItemId(null)}>Cancelar</button>
@@ -1010,7 +1017,7 @@ export default function SplitPage() {
                     >
                       ÷
                     </button>
-                    <button onClick={() => { setEditItemId(item.id); setEditDraft({ name: item.name, qty: item.qty, unit_price: item.unit_price }); }} className="text-slate-400 hover:text-indigo-600 p-1"><Pencil size={15} /></button>
+                    <button onClick={() => { setEditItemId(item.id); setEditDraft({ name: item.name, qty: item.qty, total: item.line_total }); }} className="text-slate-400 hover:text-indigo-600 p-1"><Pencil size={15} /></button>
                     <button onClick={() => handleDeleteItem(item.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={15} /></button>
                   </div>
 
