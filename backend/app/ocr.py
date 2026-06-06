@@ -592,65 +592,57 @@ CRITICAL RULES:
 Return strict JSON — no markdown, no commentary.
 """
 
-# Prompt simple y conversacional. La versión anterior tenía ~40 reglas técnicas
-# que confundían al modelo en comandas chilenas con cantidades tipo "6 Schop 26.400".
-# Esta versión es directa: explica el formato chileno y deja que GPT-4o haga lo suyo.
-_RECEIPT_PROMPT = """Eres un experto leyendo boletas, comandas y recibos chilenos. Analiza la imagen y extrae cada item con su cantidad y precio unitario.
+# Prompt chain-of-thought de 3 pasos. La clave: pedir qty, unit_price y
+# line_total como campos separados por item, forzando al modelo a exponer
+# la relación en vez de calcularla en silencio (que es donde se confunde).
+_RECEIPT_PROMPT = """Eres un experto en recibos y boletas chilenas. Analiza la imagen en 3 pasos:
 
-IMPORTANTE: La imagen puede estar rotada (90, 180, o 270 grados). Antes de leer, mentalmente oriéntala bien: el texto debe leerse de izquierda a derecha y los precios siempre alineados a la derecha de cada línea de item.
+PASO 1 — ORIENTACIÓN: La imagen puede estar rotada. Identifica la orientación correcta (el texto debe leerse de izquierda a derecha, precios alineados a la derecha).
 
-REGLAS CRÍTICAS sobre números en Chile:
-- Los puntos son separadores de miles. "9.000" son nueve mil pesos, NO nueve.
-- Cuando ves un número entero antes del nombre de un item (ej: "6 Schop", "3 Vienesa Italiana"), ese número es la CANTIDAD.
-- El número a la derecha de cada línea es el TOTAL de esa línea (cantidad × precio unitario).
-- El precio que debes guardar es el UNITARIO = total_de_la_línea ÷ cantidad.
-- Ejemplo: "6 Schop Escudo  26.400" → quantity=6, price=4400 (porque 26400/6=4400).
-- Ejemplo: "3 Vienesa Italiana  13.200" → quantity=3, price=4400.
-- Ejemplo: "2x4.990 Pechu Pollo 9.980" → quantity=2, price=4990 (el unitario va embebido tras la "x").
-- Si NO ves un número antes del nombre, la cantidad es 1.
-- Números embebidos en el nombre como "35°", "500cc", "12 años" NO son cantidad.
-- Modificadores que empiezan con "+" (ej: "+Sin hielo") son gratis: price=0, quantity=1.
+PASO 2 — EXTRACCIÓN POR LÍNEA: Para cada línea de item extrae los tres valores que aparecen en el recibo:
+- qty: el número antes del nombre (si no hay número, es 1)
+- unit_price: precio unitario = line_total ÷ qty
+- line_total: el número al final de la línea (total de esa línea)
 
-VERIFICACIÓN OBLIGATORIA antes de devolver:
-- Para cada item: quantity × price DEBE ser igual al total que ves en esa línea.
-- La suma de todos los (quantity × price) debe coincidir con el TOTAL impreso (±100 CLP por redondeo).
-- Si no cuadra, vuelve a leer la cantidad — probablemente leíste mal un dígito.
+REGLAS CHILENAS CRÍTICAS:
+- Los puntos son separadores de miles ("9.000" = nueve mil pesos)
+- El número ANTES del nombre es la CANTIDAD (ej: "5 Fernet Branca  27.500" → qty=5, unit_price=5500, line_total=27500)
+- Si ves "6 Schop Escudo  26.400" → qty=6, unit_price=4400, line_total=26400
+- Nunca confundas line_total con unit_price
 
-BOLETA FISCAL (SII) vs comanda/POS:
-- Si la imagen muestra líneas explícitas "TOTAL NETO" e "IVA" como filas separadas, llena total_neto e iva_amount con esos valores exactos impresos.
-- Si es una comanda de bar/restaurante o un ticket POS sin esas etiquetas, deja total_neto e iva_amount en null.
+PASO 3 — VERIFICACIÓN: Suma todos los line_total. ¿Coincide con el TOTAL impreso (±200 CLP)? Si no coincide, vuelve a leer los items donde el math no cierra (qty × unit_price ≠ line_total).
 
-AMOUNT (total de la transacción):
-- Si hay boleta fiscal: amount = TOTAL NETO + IVA.
-- Si hay "Consumo Cliente" (comanda por comensal): usa ese valor.
-- Si no, usa el total final impreso ("TOTAL", "A PAGAR", "TARJETA DE CRÉDITO", etc.).
-- Nunca uses un subtotal intermedio.
+BOLETA FISCAL (SII) vs comanda:
+- Si hay "TOTAL NETO" e "IVA" como filas separadas → llena total_neto e iva_amount
+- Si es comanda de bar/restaurante sin esas etiquetas → deja total_neto e iva_amount en null
+
+AMOUNT: usa el total final ("TOTAL", "A PAGAR", "TARJETA", "CONSUMO CLIENTE"). Nunca un subtotal.
 
 CATEGORÍA:
-- "Bares y Salidas" si hay schops, cervezas, piscos, fernet, tragos, o es un pub/bar.
-- "Alimentación" para restaurantes, delivery de comida, cafeterías.
-- "Supermercado" para Lider, Jumbo, Tottus, Unimarc, Santa Isabel, Ekono.
-- "Transporte" para Uber, Cabify, DiDi, Metro, Copec, Shell.
-- "Salud" para farmacias (Cruz Verde, Salcobrand, Ahumada), clínicas.
-- "Suscripciones" para Netflix, Spotify, Disney, Apple.
-- "Compras" para Falabella, Ripley, Paris, Sodimac, Easy.
-- "Cuentas y Servicios" para agua, luz, gas, internet, telefonía.
-- "Otros" si no encaja.
+- "Bares y Salidas": schops, cervezas, fernet, tragos, pub/bar
+- "Alimentación": restaurantes, delivery, cafeterías
+- "Supermercado": Lider, Jumbo, Tottus, Unimarc
+- "Transporte": Uber, Cabify, DiDi, Copec
+- "Salud": farmacias, clínicas
+- "Suscripciones": Netflix, Spotify, Apple
+- "Compras": Falabella, Ripley, Sodimac
+- "Cuentas y Servicios": agua, luz, gas, internet
+- "Otros": si no encaja
 
-DEVUELVE SOLO ESTE JSON (sin markdown, sin texto extra):
+DEVUELVE SOLO ESTE JSON (sin markdown):
 {
   "currency": "CLP",
   "total_neto": número o null,
   "iva_amount": número o null,
   "transactions": [
     {
-      "amount": número (total final pagado),
-      "date": "YYYY-MM-DD" o null si no aparece impresa,
-      "merchant": "nombre del local" o "",
-      "category": "una de las categorías de arriba",
+      "amount": número,
+      "date": "YYYY-MM-DD" o null,
+      "merchant": "nombre del local",
+      "category": "categoría",
       "is_income": false,
       "items": [
-        {"name": "nombre del item", "price": precio_unitario, "quantity": cantidad}
+        {"name": "nombre", "price": unit_price, "quantity": qty, "line_total": line_total}
       ]
     }
   ]
@@ -721,12 +713,12 @@ def _detect_mime(image_bytes: bytes) -> str:
     return "image/png"
 
 
-def _shrink_for_vision(image_bytes: bytes, max_side: int = 2048) -> bytes:
+def _shrink_for_vision(image_bytes: bytes, max_side: int = 2800) -> bytes:
     """Downscale large screenshots so the API call is cheap & fast.
 
-    Caps the longer side at `max_side` px and total pixels at ~4M. Photos of
-    rotated paper receipts need this much detail to keep the quantity column
-    (often a single digit far from the price column) legible to the model.
+    Caps the longer side at `max_side` px and total pixels at ~8M. Phone photos
+    of rotated paper receipts have fine-print qty digits ~30px tall that get
+    mangled at lower resolutions — 2800px keeps them legible to the model.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
@@ -740,8 +732,8 @@ def _shrink_for_vision(image_bytes: bytes, max_side: int = 2048) -> bytes:
         w, h = img.size
         # Cap longer side
         scale = min(1.0, max_side / max(w, h))
-        # Also cap total pixel area (~4M px = 2000×2000)
-        area_scale = min(1.0, (2000 * 2000 / (w * h)) ** 0.5)
+        # Also cap total pixel area (~8M px ≈ 2828×2828)
+        area_scale = min(1.0, (8_000_000 / (w * h)) ** 0.5)
         scale = min(scale, area_scale)
         if scale < 1.0:
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
@@ -1212,71 +1204,11 @@ def _normalize_boleta_items(
 
 
 def _fix_line_total_items(items: list[ParsedItem], ref_total: float) -> list[ParsedItem]:
+    """No-op: kept for backwards compat. The new prompt asks the model for
+    qty/unit_price/line_total explicitly, so algebraic guessing is no longer
+    needed (and was causing regressions).
     """
-    Fix items where the LLM stored LINE_TOTAL as unit price instead of dividing.
-
-    Three passes (cheapest first):
-      1. Single-item algebraic: excess == price×(qty−1) for exactly one item
-      2. Pair algebraic: two items whose combined excess matches
-      3. Global: every multi-qty item is wrong (sum_flat ≈ ref_total)
-    """
-    if not items or ref_total <= 0:
-        return items
-
-    def _sum(its: list[ParsedItem]) -> float:
-        return sum(it.price * it.quantity for it in its)
-
-    excess = _sum(items) - ref_total
-    if excess <= ref_total * 0.02:
-        return items  # already correct
-
-    multi = [(i, it) for i, it in enumerate(items) if it.quantity > 1]
-
-    # Pass 1 — single item
-    for i, it in multi:
-        if abs(it.price * (it.quantity - 1) - excess) / ref_total < 0.02:
-            fixed = list(items)
-            fixed[i] = ParsedItem(name=it.name, price=round(it.price / it.quantity), quantity=it.quantity)
-            print(f"[ocr] fix(1-item): {it.name} {it.price}×{it.quantity} → {fixed[i].price}×{it.quantity}")
-            return fixed
-
-    # Pass 2 — pairs
-    for a, (i, ita) in enumerate(multi):
-        for (j, itb) in multi[a + 1:]:
-            ra = ita.price * (ita.quantity - 1)
-            rb = itb.price * (itb.quantity - 1)
-            if abs(ra + rb - excess) / ref_total < 0.02:
-                fixed = list(items)
-                fixed[i] = ParsedItem(name=ita.name, price=round(ita.price / ita.quantity), quantity=ita.quantity)
-                fixed[j] = ParsedItem(name=itb.name, price=round(itb.price / itb.quantity), quantity=itb.quantity)
-                print(f"[ocr] fix(pair): {ita.name}, {itb.name}")
-                return fixed
-
-    # Pass 3 — global (every item stores line total as unit price)
-    sum_flat = sum(it.price for it in items)
-    if _sum(items) / ref_total > 1.5 and abs(sum_flat / ref_total - 1.0) < 0.15:
-        fixed = [
-            ParsedItem(name=it.name,
-                       price=round(it.price / it.quantity) if it.quantity > 1 else it.price,
-                       quantity=it.quantity)
-            for it in items
-        ]
-        print("[ocr] fix(global): divided all multi-qty prices by quantity")
-        return fixed
-
-    # Pass 4 — reduce quantity of a single item by exact integer k where k*price == excess.
-    # Handles: LLM reads "3 Vienesa" as "5 Vienesa" → excess = (5-3)*4400 = 8800 = 2*4400.
-    for i, it in multi:
-        if it.price > 0:
-            k = excess / it.price
-            k_int = round(k)
-            if abs(k - k_int) < 0.01 and 0 < k_int < it.quantity:
-                fixed = list(items)
-                fixed[i] = ParsedItem(name=it.name, price=it.price, quantity=it.quantity - k_int)
-                print(f"[ocr] fix(4-qty): {it.name} qty {it.quantity} → {it.quantity - k_int}")
-                return fixed
-
-    return items  # couldn't determine a clean fix
+    return items
 
 
 def _fix_unit_as_total_items(
@@ -1285,55 +1217,8 @@ def _fix_unit_as_total_items(
     *,
     tolerance: float = 0.03,
 ) -> list[ParsedItem]:
-    """
-    Caso simétrico a _fix_line_total_items: el LLM interpretó 'N producto TOTAL'
-    como qty=N, price=TOTAL/N cuando en realidad era qty=N, price=TOTAL (unitario).
-
-    Se activa cuando: items_sum < ref_total * (1 - tolerance)
-    Y hay al menos un item con qty > 1.
-
-    Para cada item con qty > 1, prueba 'flip': line_total_real = price_actual * qty * qty
-    (es decir, el LLM dividió por qty cuando no debía).
-    Si al flipear solo ese item la suma se acerca a ref_total dentro de tolerance, aplicar.
-
-    Solo se aplica cuando ref_total > 0 y está anclado (total_neto o total explícito).
-    """
-    if ref_total <= 0:
-        return items
-
-    items_sum = sum(i.price * i.quantity for i in items)
-    deficit = ref_total - items_sum
-
-    # Solo activar cuando hay déficit significativo (>3%)
-    if deficit < ref_total * tolerance:
-        return items
-
-    # Intentar flipear items con qty > 1 uno a uno
-    multi_items = [i for i in items if i.quantity > 1]
-    if not multi_items:
-        return items
-
-    result = list(items)
-    for target in multi_items:
-        # El precio "real" si el LLM dividió incorrectamente = price_actual * qty
-        flipped_unit_price = target.price * target.quantity
-        # El nuevo line_total si se usa qty como-es pero precio como unitario real
-        gain = flipped_unit_price * target.quantity - target.price * target.quantity
-        new_sum = items_sum + gain
-
-        if abs(new_sum - ref_total) / ref_total <= tolerance:
-            # Aplicar el flip: mantener qty, actualizar price
-            idx = result.index(target)
-            result[idx] = ParsedItem(
-                name=target.name,
-                price=flipped_unit_price,
-                quantity=target.quantity,
-            )
-            print(f"[ocr] fix(unit-as-total): {target.name} {target.price}×{target.quantity} → {flipped_unit_price}×{target.quantity}")
-            items_sum = new_sum
-            break  # aplicar solo un flip por pasada
-
-    return result
+    """No-op: see _fix_line_total_items. Kept as no-op to preserve signature."""
+    return items
 
 
 
@@ -1424,22 +1309,25 @@ def vision_parse(
         b64 = base64.b64encode(compact).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
 
-        raw_json_text = ""
-        try:
-            resp = ai_provider.vision_json(
-                system_prompt=_RECEIPT_PROMPT,
-                user_text="Parsea esta boleta/recibo y devuelve SOLO el JSON.",
-                image_data_url=data_url,
-                temperature=0.0,
-                purpose="parse",
-                user_id=user_id,
-                db=db,
-            )
-            if resp and resp.text:
-                raw_json_text = resp.text
-        except Exception as _exc:  # noqa: BLE001
-            print(f"[ocr] vision_json failed: {_exc}")
-            raw_json_text = ""
+        def _call_vision(user_msg: str) -> str:
+            """Send the image + a user message to the vision model and return raw text."""
+            try:
+                _resp = ai_provider.vision_json(
+                    system_prompt=_RECEIPT_PROMPT,
+                    user_text=user_msg,
+                    image_data_url=data_url,
+                    temperature=0.0,
+                    purpose="parse",
+                    user_id=user_id,
+                    db=db,
+                )
+                if _resp and _resp.text:
+                    return _resp.text
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[ocr] vision_json failed: {_exc}")
+            return ""
+
+        raw_json_text = _call_vision("Parsea esta boleta/recibo y devuelve SOLO el JSON.")
 
         # Fallback: two-stage transcribe→parse-text only if direct vision failed
         if not raw_json_text:
@@ -1501,8 +1389,79 @@ def vision_parse(
         if not raw_json_text:
             return None
 
-        data = json.loads(raw_json_text)
-        txs = data.get("transactions", [])
+        def _parse_items_from_tx(tx: dict) -> list[ParsedItem]:
+            """Convert the JSON items list into ParsedItem, using `line_total`
+            (when present) to sanity-check and recover unit `price` if needed.
+            """
+            out_items: list[ParsedItem] = []
+            for it in tx.get("items", []) or []:
+                name = it.get("name")
+                if not name:
+                    continue
+                try:
+                    qty = int(it.get("quantity") or 1)
+                except (TypeError, ValueError):
+                    qty = 1
+                if qty < 1:
+                    qty = 1
+                try:
+                    price = float(it.get("price") or 0)
+                except (TypeError, ValueError):
+                    price = 0.0
+                line_total_raw = it.get("line_total")
+                line_total = None
+                if line_total_raw is not None:
+                    try:
+                        line_total = float(line_total_raw)
+                    except (TypeError, ValueError):
+                        line_total = None
+                # If line_total is present and qty>1, verify price*qty ≈ line_total.
+                # If they disagree and line_total looks right, derive price from it.
+                if line_total is not None and qty > 1 and line_total > 0:
+                    if abs(price * qty - line_total) > 100:
+                        price = round(line_total / qty)
+                out_items.append(ParsedItem(name=str(name), price=price, quantity=qty))
+            return out_items
+
+        def _parse_payload(raw_text: str):
+            """Parse the model's JSON envelope. Returns (data, txs) or (None, [])."""
+            try:
+                _data = json.loads(raw_text)
+            except Exception:
+                return None, []
+            return _data, _data.get("transactions", []) or []
+
+        data, txs = _parse_payload(raw_json_text)
+        if data is None:
+            return None
+
+        # One retry on mismatch: if items exist but their sum is off by >15%
+        # from the printed total, ask the model to re-read with a corrective msg.
+        if txs:
+            _first = txs[0]
+            _items_preview = _parse_items_from_tx(_first)
+            _amount_preview = abs(float(_first.get("amount") or 0))
+            if _items_preview and _amount_preview > 0:
+                _items_sum_preview = sum(i.price * i.quantity for i in _items_preview)
+                if _items_sum_preview > 0:
+                    _diff = abs(_items_sum_preview - _amount_preview)
+                    if _diff / _amount_preview > 0.15:
+                        print(
+                            f"[ocr] retry: items sum {int(_items_sum_preview)} vs total "
+                            f"{int(_amount_preview)} (diff={int(_diff)})"
+                        )
+                        _retry_msg = (
+                            f"Tu extracción anterior no cuadra: items suman {int(_items_sum_preview)} "
+                            f"pero el total impreso es {int(_amount_preview)}. "
+                            f"Diferencia: {int(_diff)}. Vuelve a leer la imagen enfocándote en las "
+                            "cantidades y precios unitarios de cada línea. Devuelve el mismo JSON corregido."
+                        )
+                        _retry_text = _call_vision(_retry_msg)
+                        if _retry_text:
+                            _retry_data, _retry_txs = _parse_payload(_retry_text)
+                            if _retry_data is not None and _retry_txs:
+                                data, txs = _retry_data, _retry_txs
+
         currency = data.get("currency") or "CLP"
         bank_hint = data.get("bank_hint") or ""
         account_type_hint = data.get("account_type_hint") or ""
@@ -1514,7 +1473,7 @@ def vision_parse(
         out: list[ParsedReceipt] = []
         for t in txs:
             raw_amount = abs(float(t.get("amount") or 0))
-            items = [ParsedItem(**it) for it in t.get("items", []) if it.get("name")]
+            items = _parse_items_from_tx(t)
 
             # Accept neto/iva from per-transaction field (some models put it there) or top level
             llm_neto = float(t.get("total_neto") or 0) or top_neto
@@ -1525,44 +1484,19 @@ def vision_parse(
                     items, raw_amount = _normalize_boleta_items(items, llm_neto, llm_iva)
                 else:
                     raw_amount = float(round(llm_neto + llm_iva))
-            elif items and raw_amount > 0:
+            else:
+                # Simple validation: if items exist and sum is wildly off, drop them.
+                # Don't try to algebraically "fix" — that path caused regressions.
                 items_sum = sum(it.price * it.quantity for it in items)
-                if items_sum == 0:
-                    print(f"[ocr] warning: all item prices=0 but amount={raw_amount}")
-                if items_sum > 0:
-                    ratio = items_sum / raw_amount
-                    if ratio < 1.0 and _items_look_plausible(items, items_sum):
-                        # LLM picked a wrong subtotal (e.g. multi-customer comanda showing
-                        # table running total). Find the real labeled total in OCR text.
-                        better = _find_plausible_total(raw_ocr_text, items_sum)
-                        if better:
-                            print(f"[ocr] reconcile: fixed total {better} (was {int(raw_amount)}, ratio={ratio:.2f})")
-                            raw_amount = float(better)
-                        elif ratio < 0.5:
-                            # LLM total is wildly off and OCR can't find better → use items_sum
-                            print(f"[ocr] reconcile: using items_sum={items_sum} (ratio={ratio:.2f})")
-                            raw_amount = float(items_sum)
-                        # else: small gap (ratio 0.5–1.0), keep LLM total as-is
-                    elif ratio < 0.5:
-                        # Big gap AND items not plausible (garbage prices/too few) → drop items
-                        print(f"[ocr] reconcile: implausible items dropped (ratio={ratio:.2f}, sum={items_sum})")
-                        items = []
-                    elif ratio > 1.25:
-                        # Items sum exceeds total — LLM likely stored line_total as unit price.
-                        # Try algebraic fix before giving up.
-                        fixed = _fix_line_total_items(items, raw_amount)
-                        fixed_sum = sum(it.price * it.quantity for it in fixed)
-                        if fixed_sum > 0 and abs(fixed_sum / raw_amount - 1.0) < 0.15:
-                            print(f"[ocr] reconcile: fixed line-total prices (ratio={ratio:.2f})")
-                            items = fixed
-                        else:
-                            print(f"[ocr] reconcile: items_sum > total (ratio={ratio:.2f}), dropping items")
-                            items = []
-
-                # Symmetric fix: items_sum < ref_total because LLM divided a unit price
-                # by qty when it shouldn't have ('N producto TOTAL' parsed as N×TOTAL/N).
                 if items and raw_amount > 0:
-                    items = _fix_unit_as_total_items(items, raw_amount)
+                    ratio = items_sum / raw_amount
+                    if ratio < 0.5 or ratio > 2.0:
+                        print(
+                            f"[ocr] reconcile: items_sum={int(items_sum)} vs total={int(raw_amount)} "
+                            f"(ratio={ratio:.2f}) — dropping items"
+                        )
+                        items = []
+                    # else: trust the model, minor discrepancies are normal
 
             ca = t.get("cuota_actual")
             ct = t.get("cuotas_total")
