@@ -474,9 +474,8 @@ def set_shares(
     if not item:
         raise HTTPException(404, "Item not found")
 
-    total_weight = sum(s.weight for s in payload.shares)
-    if abs(total_weight - 1.0) > 0.01:
-        raise HTTPException(400, f"Weights must sum to 1.0, got {total_weight:.3f}")
+    if not payload.shares:
+        raise HTTPException(400, "No shares provided")
 
     # Validate participants belong to this bill
     valid_pids = {p.id for p in bill.participants}
@@ -484,8 +483,8 @@ def set_shares(
         if s.participant_id not in valid_pids:
             raise HTTPException(400, f"Participant {s.participant_id} not in bill")
 
-    # Derive weights from units if provided
-    resolved = []
+    # Derive weights from units if provided (units takes precedence over weight)
+    resolved: list[tuple[int, float, Optional[float]]] = []
     for s in payload.shares:
         if s.units is not None:
             w = s.units / item.qty if item.qty > 0 else 0.0

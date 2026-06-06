@@ -3,10 +3,10 @@
  * Split — 6-step bill-splitting flow
  * 1 Capture → 2 Items review → 3 Participants → 4 Assign → 5 Who paid → 6 Summary
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Users, Hand, Eraser, Sparkles } from "lucide-react";
+import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Users, Hand, Eraser, Sparkles, X } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,9 +79,10 @@ function StepDots({ step }: { step: number }) {
   );
 }
 
-function Toast({ msg, onClose }: { msg: string; onClose: () => void }) {
+function Toast({ msg, onClose, kind = "error" }: { msg: string; onClose: () => void; kind?: "error" | "success" }) {
   useEffect(() => { const t = setTimeout(onClose, 3000); return () => clearTimeout(t); }, [msg, onClose]);
-  return <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-red-600 text-white text-sm px-4 py-2 rounded-xl shadow-lg max-w-xs text-center">{msg}</div>;
+  const bg = kind === "success" ? "bg-emerald-600" : "bg-red-600";
+  return <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 ${bg} text-white text-sm px-4 py-2 rounded-xl shadow-lg max-w-xs text-center`}>{msg}</div>;
 }
 
 function Avatar({ name, color, selected, onClick, locked }: { name: string; color: string; selected: boolean; onClick?: () => void; locked?: boolean; }) {
@@ -107,6 +108,7 @@ export default function SplitPage() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [autoAssignBanner, setAutoAssignBanner] = useState(false);
   const [celebrate, setCelebrate] = useState(false);
 
@@ -152,7 +154,8 @@ export default function SplitPage() {
   const [finalized, setFinalized] = useState(false);
   const [myShare, setMyShare] = useState(0);
 
-  const showError = (msg: string) => setError(msg);
+  const showError = useCallback((msg: string) => setError(msg), []);
+  const showSuccess = useCallback((msg: string) => setSuccessMsg(msg), []);
 
   useEffect(() => {
     listPeople().then(setPeople).catch(() => {});
@@ -263,6 +266,16 @@ export default function SplitPage() {
     return new Array(Math.max(qty, 1)).fill(null);
   };
 
+  // Shallow-copy a slots array preserving the sidecar `.sharers` property.
+  // Plain `[...slots]` drops non-index properties, which silently corrupts
+  // qty=1 multi-sharer state. Always use this when mutating slots.
+  function cloneSlots(slots: (number | null)[]): (number | null)[] {
+    const copy = [...slots];
+    const sharers = (slots as unknown as { sharers?: number[] }).sharers;
+    if (sharers) (copy as unknown as { sharers: number[] }).sharers = sharers.slice();
+    return copy;
+  }
+
   // For qty=1, the "selected set" is derived from the slot:
   //  - if slot is a pid → only that person
   //  - if slot is -1 (shared marker) → use sidecar sharers
@@ -310,10 +323,21 @@ export default function SplitPage() {
     return myUnits * item.unit_price;
   }
 
-  const runningTotal = (pid: number) => {
-    if (!bill) return 0;
-    return bill.items.reduce((s, item) => s + itemCostFor(item, pid), 0);
-  };
+  // Per-participant running total, memoized so the chip strip doesn't recompute
+  // O(items × participants) on every render.
+  const runningTotals = useMemo<Map<number, number>>(() => {
+    const m = new Map<number, number>();
+    if (!bill) return m;
+    for (const p of bill.participants) {
+      let s = 0;
+      for (const item of bill.items) s += itemCostFor(item, p.id);
+      m.set(p.id, s);
+    }
+    return m;
+    // itemCostFor closes over `assignments`, so re-run when assignments change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bill, assignments]);
+  const runningTotal = (pid: number) => runningTotals.get(pid) ?? 0;
 
   function itemFullyAssigned(item: BillItem): boolean {
     const slots = slotsOf(item.id, item.qty);
@@ -339,7 +363,8 @@ export default function SplitPage() {
         // already has some → remove all of theirs
         setAssignments((prev) => {
           const next = new Map(prev);
-          const slots = [...(next.get(item.id) ?? new Array(item.qty).fill(null))];
+          const cur = next.get(item.id) ?? new Array(item.qty).fill(null);
+          const slots = cloneSlots(cur);
           for (let i = 0; i < slots.length; i++) if (slots[i] === pid) slots[i] = null;
           next.set(item.id, slots);
           return next;
@@ -353,7 +378,8 @@ export default function SplitPage() {
     // qty=1: toggle in shared set
     setAssignments((prev) => {
       const next = new Map(prev);
-      const slots = [...(next.get(item.id) ?? [null])] as (number | null)[];
+      const cur = next.get(item.id) ?? [null];
+      const slots = cloneSlots(cur);
       const sharers = ((slots as unknown as { sharers?: number[] }).sharers ?? []).slice();
       let nextSharers: number[] = [];
       const first = slots[0];
@@ -383,7 +409,8 @@ export default function SplitPage() {
     if (!item) { setChipChoice(null); return; }
     setAssignments((prev) => {
       const next = new Map(prev);
-      const slots = [...(next.get(item.id) ?? new Array(item.qty).fill(null))];
+      const cur = next.get(item.id) ?? new Array(item.qty).fill(null);
+      const slots = cloneSlots(cur);
       const target = mode === "all" ? item.qty : Math.max(1, Math.floor(item.qty / 2));
       // Place chipChoice.pid in first `target` empty (or any) slots
       let placed = 0;
@@ -401,11 +428,19 @@ export default function SplitPage() {
     setChipChoice(null);
   }
 
-  // Split a qty=1 item into N units (e.g. "1 pizza" → "4 pizza"), preserving line_total
+  // Split an item into N units (works for qty=1 and for re-splitting qty>1).
+  // Preserves total line cost by setting unit_price = line_total / N.
   async function applySplit(item: BillItem) {
     if (!bill || !splitChoice) return;
-    const n = parseInt(splitChoice.n) || 2;
-    if (n < 2 || n > 50) return;
+    const n = parseInt(splitChoice.n, 10);
+    if (!Number.isFinite(n) || n < 2 || n > 50) {
+      showError("Elige un número entre 2 y 50");
+      return;
+    }
+    if (item.line_total <= 0) {
+      showError("El ítem no tiene precio");
+      return;
+    }
     const unit_price = Math.round(item.line_total / n);
     setBusy(true);
     try {
@@ -422,7 +457,7 @@ export default function SplitPage() {
         });
       }
       setSplitChoice(null);
-      showError(`Dividido en ${n} × ${clp(unit_price)}`);
+      showSuccess(`Dividido en ${n} × ${clp(unit_price)}`);
     } catch (e: unknown) {
       showError(e instanceof Error ? e.message : "Error");
     } finally {
@@ -430,19 +465,27 @@ export default function SplitPage() {
     }
   }
 
-  // Cycle a numbered slot through participants (and back to null)
+  // Cycle a numbered slot through participants (and back to null).
+  // Order is deterministic (by participant.id ascending) so successive taps
+  // always rotate through the same sequence.
   function cycleSlot(itemId: number, slotIdx: number) {
     if (!bill) return;
     setAssignments((prev) => {
       const next = new Map(prev);
       const item = bill.items.find((i) => i.id === itemId);
       if (!item) return prev;
-      const slots = [...(next.get(itemId) ?? new Array(item.qty).fill(null))];
-      const order: (number | null)[] = [...bill.participants.map((p) => p.id), null];
-      const cur = slots[slotIdx];
-      const idx = order.findIndex((v) => v === cur);
+      const curArr = next.get(itemId) ?? new Array(item.qty).fill(null);
+      const slots = cloneSlots(curArr);
+      const sortedPids = [...bill.participants].sort((a, b) => a.id - b.id).map((p) => p.id);
+      const order: (number | null)[] = [...sortedPids, null];
+      const curVal = slots[slotIdx];
+      const idx = order.findIndex((v) => v === curVal);
       const nxt = order[(idx + 1) % order.length];
       slots[slotIdx] = nxt;
+      // If we cycled away from the qty=1 "shared" marker, drop the sharers sidecar.
+      if (item.qty === 1 && curVal === -1) {
+        delete (slots as unknown as { sharers?: number[] }).sharers;
+      }
       next.set(itemId, slots);
       return next;
     });
@@ -574,17 +617,30 @@ export default function SplitPage() {
 
   async function goToWhoPaid() {
     if (!bill) return;
+    // Safety: also enforced by the button's disabled state.
+    const allAssigned = bill.items.length > 0 && bill.items.every((i) => itemFullyAssigned(i));
+    if (!allAssigned) { showError("Asigna todos los ítems primero"); return; }
     setBusy(true);
     let b = bill;
+    const items = bill.items;
     try {
-      for (const item of bill.items) {
+      for (const item of items) {
         const shares = sharesForItem(item);
         if (shares.length === 0) continue;
+        // Sanity: backend rejects abs(sum - 1) > 0.01
+        const sum = shares.reduce((s, x) => s + x.weight, 0);
+        if (Math.abs(sum - 1) > 0.01) {
+          // Re-normalize last share to absorb rounding (defensive)
+          const last = shares[shares.length - 1];
+          last.weight = last.weight + (1 - sum);
+        }
         b = await postShares(b.id, item.id, shares);
       }
       setBill(b);
       setStep(5);
     } catch (e: unknown) {
+      // Persist whatever progress we made so the UI reflects backend state.
+      setBill(b);
       showError(e instanceof Error ? e.message : "Error");
     } finally { setBusy(false); }
   }
@@ -608,12 +664,12 @@ export default function SplitPage() {
     }
   }, [step, bill, assignProgress.done, assignProgress.total]);
 
-  // Auto-dismiss banner after 4s
+  // Banner persistent — user dismisses with ✕ (avoids confusing auto-dismiss while reading items)
+
+  // Close inline popovers if user leaves step 4 (otherwise they re-appear later)
   useEffect(() => {
-    if (!autoAssignBanner) return;
-    const t = setTimeout(() => setAutoAssignBanner(false), 4500);
-    return () => clearTimeout(t);
-  }, [autoAssignBanner]);
+    if (step !== 4) { setSplitChoice(null); setChipChoice(null); }
+  }, [step]);
 
   // ── Step 4: Image viewer (zoom + pan + draw) ──────────────────
 
@@ -780,6 +836,33 @@ export default function SplitPage() {
 
   const splitSum = Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
   const splitMatches = bill ? Math.abs(splitSum - bill.total_amount) <= 1 : false;
+
+  // Pre-finalize: compute "Yo" total locally from current shares so the summary
+  // card doesn't show $0 while the backend still has owes_amount=0.
+  const previewMyShare = useMemo(() => {
+    if (!bill) return 0;
+    const me = bill.participants.find((p) => p.is_me);
+    if (!me) return 0;
+    let total = 0;
+    for (const item of bill.items) {
+      const share = item.shares.find((s) => s.participant_id === me.id);
+      if (!share) continue;
+      total += item.line_total * share.weight;
+    }
+    // Tip distributed proportionally to owed
+    if (bill.tip_amount > 0) {
+      const totalOwed = bill.participants.reduce((acc, p) => {
+        let s = 0;
+        for (const item of bill.items) {
+          const sh = item.shares.find((x) => x.participant_id === p.id);
+          if (sh) s += item.line_total * sh.weight;
+        }
+        return acc + s;
+      }, 0);
+      if (totalOwed > 0) total += (total / totalOwed) * bill.tip_amount;
+    }
+    return Math.round(total);
+  }, [bill]);
 
   return (
     <div className="h-[100dvh] bg-slate-50 flex flex-col overflow-hidden">
@@ -977,7 +1060,7 @@ export default function SplitPage() {
           <div className="space-y-4">
             <div className="bg-indigo-600 rounded-2xl px-5 py-6 text-white text-center">
               <p className="text-sm opacity-80 mb-1">Tu gasto personal</p>
-              <p className="text-4xl font-extrabold">{clp(finalized ? myShare : (bill.participants.find((p) => p.is_me)?.owes_amount ?? 0))}</p>
+              <p className="text-4xl font-extrabold">{clp(finalized ? myShare : (bill.participants.find((p) => p.is_me)?.owes_amount || previewMyShare))}</p>
               {finalized && <p className="text-sm mt-2 opacity-80">Guardado en Lucas ✓</p>}
             </div>
 
@@ -1144,7 +1227,14 @@ export default function SplitPage() {
               {autoAssignBanner && (
                 <div className="bg-indigo-50 border border-indigo-200 text-indigo-700 rounded-xl px-3 py-2 text-xs flex items-start gap-2">
                   <Sparkles size={14} className="mt-0.5 shrink-0" />
-                  <span>Asignamos ítems automáticamente. Revisa y ajusta tocando los chips o números.</span>
+                  <span className="flex-1">Asignamos ítems automáticamente. Revisa y ajusta tocando los chips o números.</span>
+                  <button
+                    onClick={() => setAutoAssignBanner(false)}
+                    className="text-indigo-400 hover:text-indigo-700 shrink-0"
+                    aria-label="Cerrar aviso"
+                  >
+                    <X size={14} />
+                  </button>
                 </div>
               )}
 
@@ -1208,21 +1298,19 @@ export default function SplitPage() {
                           </p>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
-                          {item.qty === 1 && (
-                            <button
-                              onClick={() =>
-                                setSplitChoice(
-                                  splitChoice?.itemId === item.id
-                                    ? null
-                                    : { itemId: item.id, n: String(bill.participants.length) }
-                                )
-                              }
-                              className="px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-500 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
-                              title="Dividir ítem en varios"
-                            >
-                              ÷
-                            </button>
-                          )}
+                          <button
+                            onClick={() =>
+                              setSplitChoice(
+                                splitChoice?.itemId === item.id
+                                  ? null
+                                  : { itemId: item.id, n: String(Math.max(2, bill.participants.length || 2)) }
+                              )
+                            }
+                            className="px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-500 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
+                            title={item.qty === 1 ? "Dividir ítem en varios" : "Re-dividir ítem"}
+                          >
+                            ÷
+                          </button>
                           <button
                             onClick={() => selectAll(item)}
                             className="text-[11px] text-indigo-600 font-medium"
@@ -1387,22 +1475,29 @@ export default function SplitPage() {
               })}
 
               {/* CTA */}
-              <button
-                onClick={goToWhoPaid}
-                disabled={busy || assignProgress.done === 0}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
-              >
-                {busy ? (
-                  <>
-                    <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    Guardando…
-                  </>
-                ) : (
-                  <>
-                    ¿Quién pagó? <ChevronRight size={18} />
-                  </>
-                )}
-              </button>
+              {(() => {
+                const allAssigned = assignProgress.total > 0 && assignProgress.done === assignProgress.total;
+                const blocked = busy || !allAssigned;
+                return (
+                  <button
+                    onClick={goToWhoPaid}
+                    disabled={blocked}
+                    title={!allAssigned ? "Asigna todos los ítems primero" : undefined}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2 mt-2"
+                  >
+                    {busy ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                        Guardando…
+                      </>
+                    ) : !allAssigned ? (
+                      <>Asigna todos los ítems ({assignProgress.done}/{assignProgress.total})</>
+                    ) : (
+                      <>¿Quién pagó? <ChevronRight size={18} /></>
+                    )}
+                  </button>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -1417,8 +1512,9 @@ export default function SplitPage() {
         </div>
       )}
 
-      {/* Error toast */}
-      {error && <Toast msg={error} onClose={() => setError(null)} />}
+      {/* Toasts */}
+      {error && <Toast msg={error} onClose={() => setError(null)} kind="error" />}
+      {successMsg && <Toast msg={successMsg} onClose={() => setSuccessMsg(null)} kind="success" />}
 
       <style jsx>{`
         @keyframes ping-once {
