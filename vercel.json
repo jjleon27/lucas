@@ -3,6 +3,8 @@
   "framework": null,
   "buildCommand": "npm run build",
   "outputDirectory": "frontend/out",
+  "cleanUrls": true,
+  "trailingSlash": false,
   "functions": {
     "api/index.py": {
       "includeFiles": "backend/**",
