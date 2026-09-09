@@ -18,6 +18,12 @@
 
 ## 🏗️ Architecture
 
+> **Producción (desde 2026-09-09): 100% Vercel.** Frontend Next.js exportado
+> estático + la misma app FastAPI como Vercel Python Function (`api/index.py`,
+> rutas bajo `/api/*`) + Postgres en **Neon** + imágenes en **Vercel Blob**.
+> Un solo proyecto, hosting ~$0, sin Railway ni Docker. Detalle y runbook:
+> `docs/PLAN_migracion_vercel.md`. El `docker-compose` de abajo es solo para dev local.
+
 ```
 ┌──────────────┐     REST/JWT      ┌───────────────┐
 │  Next.js 14  │ ←───────────────→ │  FastAPI      │

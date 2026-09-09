@@ -227,10 +227,12 @@ class AnthropicProvider(LLMProvider):
         import anthropic  # optional dep
         media_type, b64 = _split_data_url(image_data_url)
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        vision_model = model or getattr(settings, "anthropic_model", "claude-sonnet-5")
+        vision_model = model or getattr(settings, "anthropic_model", "claude-fable-5-1")
+        # No temperature / thinking params: Fable 5.1 rejects temperature and has
+        # thinking always-on. max_tokens generous so thinking + JSON both fit.
         resp = client.messages.create(
             model=vision_model,
-            max_tokens=8192,
+            max_tokens=16000,
             system=system_prompt,
             messages=[{"role": "user", "content": [
                 {"type": "image", "source": {

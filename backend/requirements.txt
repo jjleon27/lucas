@@ -19,7 +19,7 @@ openai==1.51.0
 # Optional alternative providers — keep installed so users can swap by
 # setting AI_PROVIDER + the matching API key in .env. Remove if you want a
 # slimmer image.
-anthropic==0.34.2
+anthropic==0.125.0
 google-generativeai==0.8.3
 boto3==1.35.28
 httpx==0.27.2

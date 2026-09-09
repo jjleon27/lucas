@@ -43,3 +43,4 @@ graphify-out/
 # Backend uploads (runtime data)
 backend/uploads/
 .vercel
+.env*

@@ -73,12 +73,25 @@ instead of requiring manual data entry or bank API integration.
 **Communication:** REST JSON over HTTP. JWT (HS256, 7-day expiry) in
 `Authorization: Bearer` header. Token stored in `localStorage` on the frontend.
 
-**Infrastructure:** Docker Compose with three services: `db` (Postgres 16),
-`backend` (FastAPI), `frontend` (Node 20-alpine, runs `npm run dev` — not
-production-hardened).
+**Infrastructure (producción, desde 2026-09-09): 100% Vercel, un solo proyecto.**
+- Frontend: Next.js con `output: "export"` → sitio estático servido por la CDN
+  de Vercel (`frontend/out/`). Toda la app es client-side.
+- Backend: la misma app FastAPI corre como **Vercel Python Function** en
+  `api/index.py` (monta `backend/app` bajo `/api/*` con un Starlette Mount;
+  `backend/` se bundlea vía `includeFiles`). `NEXT_PUBLIC_API_URL=/api` (same-origin).
+- DB: **Neon** Postgres serverless (pooled). SQLAlchemy con `NullPool` en Vercel.
+- Imágenes de boletas: **Vercel Blob** (`STORAGE_BACKEND=blob`, paquete `vercel_blob`).
+- `init_db()` se llama en el import de `api/index.py` (Vercel no ejecuta el
+  `@app.on_event("startup")`).
+- Ya NO se usa Railway ni Docker Compose en prod. `docker-compose.yml` sigue
+  sirviendo para dev local; ver `docs/PLAN_migracion_vercel.md`.
 
-**CORS:** Configurable via `CORS_ORIGINS` env var (comma-separated). Default:
-`http://localhost:3000`.
+**Modelo de visión OCR:** `OPENAI_VISION_MODEL` (default `gpt-5-mini`, ~95% en el
+eval `backend/tests/eval/`). Para usar Claude Fable 5.1: `AI_PROVIDER=anthropic`,
+`ANTHROPIC_MODEL=claude-fable-5-1`, `ANTHROPIC_API_KEY=…` (el provider ya tiene
+`vision_json`).
+
+**CORS:** `CORS_ORIGINS` env var. Con same-origin (`/api`) es casi irrelevante en prod.
 
 ---
 
@@ -641,31 +654,38 @@ The following are explicitly out of scope for LUCAS:
 5. **Single-user sessions.** JWT auth is per-user. Multi-user household
    accounts are not supported.
 
-6. **Deployment target:** Docker Compose (self-hosted). No managed cloud
-   deployment has been built or documented.
+6. **Deployment target (desde 2026-09-09):** Vercel — frontend estático + backend
+   FastAPI como Python Function, DB en Neon, imágenes en Vercel Blob. Un solo
+   proyecto, hosting ~$0. `docker-compose.yml` queda para dev local. Detalle en
+   `docs/PLAN_migracion_vercel.md`.
 
 ---
 
 ## 20. Current Stability Status
 
+> **Actualizado 2026-09-09:** migrado a Vercel (frontend estático + FastAPI como
+> Python Function + Neon + Blob). Verificado en prod: health, signup, login,
+> accounts, dashboard, upload boleta (Blob + gpt-5-mini). Eval OCR: **95.5%**.
+
 | Component | Status | Notes |
 |-----------|--------|-------|
+| **Deployment (Vercel: static front + Python fn + Neon + Blob)** | **STABLE** | prod verificado 2026-09-09; ver `docs/PLAN_migracion_vercel.md` |
 | Auth (password + Google) | STABLE | |
-| Auth (quick/passwordless) | STABLE (dev only) | Must disable in prod |
+| Auth (quick/passwordless) | STABLE (dev only) | `ALLOW_PASSWORDLESS=false` en prod Vercel |
 | Transaction CRUD | STABLE | |
 | Account management | STABLE | |
 | Balance computation | STABLE | anchor-based, correctly excludes transfers |
 | Transfer-linking (auto) | STABLE | |
 | Transfer-linking (manual) | STABLE | |
 | Balance reconciliation | STABLE | |
-| OCR (vision path) | STABLE | requires OpenAI key |
-| OCR (Tesseract fallback) | STABLE | requires Tesseract system dep |
-| PDF receipt parsing | STABLE | `pdf2image==1.17.0` in requirements.txt |
+| OCR (vision path) | STABLE | `gpt-5-mini` default; eval 95.5%. Fix boleta price-scaling 2026-09-09 (bug del split "$2.150→$1.765"). Fable 5.1 disponible vía `AI_PROVIDER=anthropic` |
+| OCR (Tesseract fallback) | DISABLED en serverless | `run_ocr()` devuelve "" si no hay cv2/tesseract; local sí lo tiene |
+| PDF receipt parsing | STABLE | `pypdfium2` (sin poppler) — pendiente probar cartola escaneada real en prod |
 | Categorizer | STABLE | |
 | Dashboard summary | STABLE | |
 | Alerts | STABLE | |
 | Chat (basic + action) | STABLE | |
-| Bill splitter v2 | STABLE | |
+| Bill splitter v2 | STABLE | depende del OCR — bug de precios corregido 2026-09-09 |
 | Cartola (text PDF) | STABLE | `resp.content` bug fixed |
 | Cartola (scanned PDF) | STABLE | |
 | Voice parse (backend) | STABLE | `resp.content` bug fixed |
@@ -676,7 +696,8 @@ The following are explicitly out of scope for LUCAS:
 | Deduplication | STABLE | |
 | AI usage logging | STABLE (code exists) | `services/ai_usage.py` not fully read |
 | i18n (es/en/pt) | PARTIAL | strings translated; currency not converted |
-| PWA | PARTIAL | manifest exists; no service worker verified |
+| PWA | PARTIAL | manifest existe; sin service worker. En iPhone: Compartir → Agregar a inicio |
+| Cartola (scanned PDF) en Vercel | NOT VERIFIED | `pdfplumber.to_image()` ahora usa pypdfium2 — falta probar con PDF real |
 
 ---
 

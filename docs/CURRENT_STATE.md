@@ -1,6 +1,19 @@
 # LUCAS AI — Current State
-> Last updated: 2026-05-11
-> Based on verified source code only. Unknown items marked [NOT VERIFIED].
+> Last updated: 2026-05-11 · **OBSOLETO en gran parte** — ver nota abajo.
+
+> ## ⚠️ NOTA 2026-09-09 (lo de abajo está desactualizado)
+> - **Deploy:** ya NO es Docker Compose. Prod = **Vercel** (frontend estático +
+>   FastAPI como Python Function + **Neon** Postgres + **Vercel Blob**). Un proyecto,
+>   hosting ~$0. Ver `docs/PLAN_migracion_vercel.md`.
+> - **BUG-001..006** de este doc: **ya arreglados** hace meses (voice `.text`,
+>   `pdf2image`→`pypdfium2`, CORS, reconcile en cartola, etc.).
+> - **NEXT_PUBLIC_API_URL:** ahora `/api` (same-origin), no localhost.
+> - **OCR:** `gpt-5-mini` por defecto (eval 95.5%); fix del bug de precios de boleta
+>   en el split ("$2.150→$1.765") el 2026-09-09. Fable 5.1 disponible con
+>   `AI_PROVIDER=anthropic`.
+> - **Tesseract fallback:** deshabilitado en serverless (no hay binario); la vía de
+>   visión es la única en prod.
+> - Fuente de verdad actual: `docs/MASTER_PLAN.md` §3 y §20.
 
 ---
 

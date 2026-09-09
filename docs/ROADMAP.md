@@ -1,7 +1,18 @@
 # LUCAS AI — Roadmap
-> Last updated: 2026-05-25
+> Last updated: 2026-05-25 · nota 2026-09-09 abajo
 > Priorities derived from confirmed bugs, architectural gaps, and MASTER_PLAN intent.
-> Items marked [NOT VERIFIED] depend on code sections not yet fully read.
+
+> ## Nota 2026-09-09
+> - **T0-5 (Docker `NEXT_PUBLIC_API_URL`)** y toda la fila "Docker/prod" → OBSOLETO.
+>   Prod migró a Vercel (static front + Python fn + Neon + Blob). Ver
+>   `docs/PLAN_migracion_vercel.md`.
+> - **T4-6 Bank API (Open Finance):** en Chile la vía oficial (Ley 21.521 / NCG 514)
+>   no está lista hasta ~jul-2027. Alternativas hoy: Fintoc / Floid / Belvo (por
+>   cuenta conectada + mínimo ~6,5 UF/mes) o scraping con credenciales (lo que hace
+>   SaveMoney/Lisa; frágil, gris legalmente).
+> - OCR: `gpt-5-mini` default, eval 95.5%. Fix bug de precios de boleta en el split.
+> - Pendiente inmediato: feature **Proyectos** (Opción B) — ver
+>   `[[project-next-feature]]` en memoria y `docs/PLAN_autonomo.md` Fase 3.
 
 ---
 
