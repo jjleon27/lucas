@@ -624,15 +624,20 @@ MONEDA:
 REGLAS DE NÚMEROS (CLP):
 - Los puntos son separadores de miles: "9.000" = nueve mil pesos.
 - El número entero ANTES del nombre es la CANTIDAD. Si no hay número, qty=1.
-- El número al final de cada línea es el TOTAL DE ESA LÍNEA (no el precio unitario).
+- `line_total` = el número IMPRESO al final de cada línea, TAL CUAL. NO lo modifiques,
+  NO le quites IVA, NO lo escales. Si dice "$ 2.150", line_total = 2150.
 - Ejemplos: "6 Schop Escudo 26.400" → qty=6, line_total=26400
-             "5 Fernet Branca 27.500" → qty=5, line_total=27500
-             "1 Churrasco Italiano 8.500" → qty=1, line_total=8500
+             "2x4.990 FILE POLLO 9.980" → qty=2, line_total=9980
+             "CHOCO 160  $ 2.150" → qty=1, line_total=2150
 
-VERIFICACIÓN: Suma todos los line_total. Debe coincidir con el TOTAL impreso (±200 CLP).
+VERIFICACIÓN: la suma de todos los line_total debe coincidir con el TOTAL final
+cobrado ("TARJETA DE CREDITO" / "EFECTIVO" / "TOTAL"), NO con el "TOTAL NETO".
+En una boleta chilena de supermercado los precios de cada línea YA INCLUYEN IVA.
 
 BOLETA FISCAL (SII) vs comanda:
-- Si hay líneas "TOTAL NETO" e "IVA" explícitas → llena total_neto e iva_amount.
+- Si aparecen impresas líneas "TOTAL NETO" e "IVA (19%)", SIEMPRE cópialas EXACTAS
+  en total_neto e iva_amount. Son datos útiles pero NO cambian los line_total ni
+  el amount (los line_total ya incluyen IVA).
 - Si es comanda de bar/restaurante sin esas etiquetas → deja ambos en null.
 
 AMOUNT — el monto realmente cobrado:
@@ -690,11 +695,24 @@ REGLAS CRÍTICAS sobre números en Chile:
 - Números embebidos en el nombre como "35°", "500cc", "12 años" NO son cantidad.
 - Modificadores con "+" (ej: "+Sin hielo") son gratis: price=0, quantity=1.
 
+MONEDA:
+- Por defecto CLP (Chile): puntos = separadores de miles, sin decimales.
+- Si el recibo es de otro país (NIF/dirección españoles, "IVA INCLUIDO", símbolo €, o
+  montos con 2 decimales tipo "26,50"), usa esa moneda ("EUR", "USD"...) y CONSERVA los
+  decimales. NO conviertas a CLP. NO multipliques por 1000.
+
 BOLETA FISCAL vs comanda/POS:
 - Si el texto muestra líneas "TOTAL NETO" e "IVA" explícitas, llena total_neto e iva_amount.
 - Si es comanda de bar/restaurante o ticket POS sin esas etiquetas, deja ambos en null.
 
-AMOUNT: total final impreso ("TOTAL", "A PAGAR", "TARJETA DE CRÉDITO", "Consumo Cliente" si existe). Nunca un subtotal intermedio.
+AMOUNT — el monto realmente cobrado:
+- El número de la línea rotulada "TOTAL" / "A PAGAR" / "TARJETA" / "EFECTIVO" /
+  "CONSUMO CLIENTE" (la última si hay varias). Nunca un "SUBTOTAL" ni "TOTAL NETO".
+- PROPINA SUGERIDA: si hay una línea "Propina sugerida" y aparte un "TOTAL + PROPINA",
+  esa propina NO se cobra → usa el "TOTAL" simple.
+- Si la propina YA está sumada dentro de la línea final "TOTAL", usa ese TOTAL tal cual.
+
+FECHA: si no se lee con certeza, devuelve null. NO adivines.
 
 CATEGORÍA:
 - "Bares y Salidas": schops, cervezas, piscos, fernet, tragos.
@@ -709,7 +727,7 @@ CATEGORÍA:
 
 DEVUELVE SOLO ESTE JSON (sin markdown):
 {
-  "currency": "CLP",
+  "currency": "CLP",   // o "EUR" / "USD" / etc. según el recibo (ver MONEDA)
   "total_neto": número o null,
   "iva_amount": número o null,
   "transactions": [
@@ -1379,15 +1397,15 @@ def vision_parse(
                 _img_long = 0
                 if mime == "image/jpeg":
                     i = 2
-                    while i < len(compact) - 8:
-                        if compact[i] == 0xFF and compact[i+1] in (0xC0, 0xC2):
-                            _h, _w = _struct.unpack_from(">HH", compact, i+5)
+                    while i < len(send_bytes) - 8:
+                        if send_bytes[i] == 0xFF and send_bytes[i+1] in (0xC0, 0xC2):
+                            _h, _w = _struct.unpack_from(">HH", send_bytes, i+5)
                             _img_long = max(_h, _w)
                             break
-                        seg_len = _struct.unpack_from(">H", compact, i+2)[0]
+                        seg_len = _struct.unpack_from(">H", send_bytes, i+2)[0]
                         i += 2 + seg_len
                 elif mime == "image/png":
-                    _w, _h = _struct.unpack_from(">II", compact, 16)
+                    _w, _h = _struct.unpack_from(">II", send_bytes, 16)
                     _img_long = max(_w, _h)
             except Exception:
                 _img_long = 0
@@ -1521,11 +1539,31 @@ def vision_parse(
             llm_neto = float(t.get("total_neto") or 0) or top_neto
             llm_iva = float(t.get("iva_amount") or 0) or top_iva
             if llm_neto > 0 and llm_iva > 0:
-                # IVA boleta: normalize items to neto+iva totals
-                if items:
-                    items, raw_amount = _normalize_boleta_items(items, llm_neto, llm_iva)
-                else:
-                    raw_amount = float(round(llm_neto + llm_iva))
+                # Chilean BOLETA: the printed per-line prices already INCLUDE IVA and
+                # sum to the charged total. "TOTAL NETO" / "IVA" at the bottom are
+                # just the mandatory tax breakdown — they must NOT be used to rescale
+                # the line prices. Rescaling correct prices to TOTAL NETO is what
+                # produced the "$2.150 → $1.765" bug when splitting a bill.
+                _neto_iva = float(round(llm_neto + llm_iva))
+                raw_amount = _neto_iva
+                _isum = sum(it.price * it.quantity for it in items)
+                if items and _isum > 0:
+                    _off_final = abs(_isum - _neto_iva) / _neto_iva
+                    _off_neto = abs(_isum - llm_neto) / max(llm_neto, 1)
+                    if _off_final <= 0.15:
+                        # items are IVA-inclusive and close enough → trust them as
+                        # printed (a small gap is usually a fumbled discount line,
+                        # not systematically wrong prices). No IVA row.
+                        pass
+                    elif _off_neto <= 0.06:
+                        # items are NETO prices → keep them, add the printed IVA row
+                        items.append(ParsedItem(name="IVA (19%)", price=round(llm_iva), quantity=1))
+                    else:
+                        # genuinely garbage (e.g. barcodes read as prices) → drop the
+                        # line items rather than show corrupted amounts for a split
+                        print(f"[ocr] boleta items unusable (sum={int(_isum)} vs "
+                              f"neto+iva={int(_neto_iva)}) — dropping items")
+                        items = []
             else:
                 # Simple validation: if items exist and sum is wildly off, drop them.
                 # Don't try to algebraically "fix" — that path caused regressions.

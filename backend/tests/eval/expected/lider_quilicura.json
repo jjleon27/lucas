@@ -1,0 +1,31 @@
+{
+  "image": "lider_quilicura.png",
+  "source": "Boleta digital Lider (supermercado, Quilicura). Screenshot de mail en iPhone. Precios de línea YA con IVA; suman al TOTAL cobrado (41.980), no al TOTAL NETO (35.277). Tiene línea de despacho con descuento que se anula.",
+  "currency": "CLP",
+  "merchant_contains": "lider",
+  "date": "2026-09-08",
+  "amount": 41980,
+  "total_neto": 35277,
+  "iva_amount": 6703,
+  "item_count": 14,
+  "item_count_max": 16,
+  "items_subtotal": 41980,
+  "items_lenient": false,
+  "items": [
+    {"name": "Choco 160", "quantity": 1, "line_total": 2150},
+    {"name": "Brocheta 25C", "quantity": 1, "line_total": 690},
+    {"name": "Yog Nat 0", "quantity": 2, "line_total": 1020},
+    {"name": "Bebida Coco", "quantity": 2, "line_total": 5180},
+    {"name": "File Pollo", "quantity": 2, "line_total": 9980},
+    {"name": "Crema S/L", "quantity": 4, "line_total": 4000},
+    {"name": "Alcachofas", "quantity": 1, "line_total": 2990},
+    {"name": "VC Mondadien", "quantity": 1, "line_total": 390},
+    {"name": "Pepinillo", "quantity": 1, "line_total": 1190},
+    {"name": "Queso Crema", "quantity": 1, "line_total": 2850},
+    {"name": "Pac Carne 10", "quantity": 1, "line_total": 3000},
+    {"name": "Tika Fur 150", "quantity": 1, "line_total": 3390},
+    {"name": "Pack Acei/Qu", "quantity": 1, "line_total": 3000},
+    {"name": "Salma Camote", "quantity": 1, "line_total": 2150}
+  ],
+  "notes": "REGRESIÓN a proteger: 'Choco 160' debe quedar en 2150, NO 1765/1807. El bug era _normalize_boleta_items escalando precios correctos a TOTAL NETO. amount = TARJETA DE CREDITO 41.980. NO debe agregar fila 'IVA (19%)' porque los line_total ya incluyen IVA."
+}
