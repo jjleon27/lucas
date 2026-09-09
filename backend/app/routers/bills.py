@@ -65,7 +65,9 @@ class ItemPatch(BaseModel):
 class ShareEntry(BaseModel):
     participant_id: int
     weight: Optional[float] = Field(None, ge=0, le=1)
-    units: Optional[float] = Field(None, ge=0)  # if set, weight is derived from units/item.qty
+    units: Optional[float] = Field(None, ge=0)      # weight = units / item.qty
+    percent: Optional[float] = Field(None, ge=0, le=100)  # weight = percent / 100
+    # precedencia: units > percent > weight
 
 
 class SetSharesPayload(BaseModel):
@@ -81,6 +83,7 @@ class PayerEntry(BaseModel):
 class FinalizePayload(BaseModel):
     account_id: Optional[int] = None
     category: str = "Comida"
+    save_to_expense: bool = True   # False → guarda la división pero NO crea gasto en Lucas
 
 
 class SettleDebtPayload(BaseModel):
@@ -132,6 +135,7 @@ def _bill_out(bill: Bill) -> dict:
         }
         for it in bill.items
     ]
+    me_p = next((p for p in bill.participants if p.person.is_me), None)
     return {
         "id": bill.id,
         "merchant": bill.merchant,
@@ -141,7 +145,8 @@ def _bill_out(bill: Bill) -> dict:
         "currency": bill.currency,
         "image_url": bill.image_url,
         "status": bill.status,
-        "transaction_id": bill.transaction_id,
+        "transaction_id": bill.transaction_id,   # tx creada al finalizar (o null si no se guardó como gasto)
+        "my_share": round(me_p.owes_amount, 2) if me_p else 0.0,
         "public_token": bill.public_token,
         "participants": participants,
         "items": items,
@@ -231,17 +236,21 @@ def list_bills(
         .limit(50)
         .all()
     )
-    return [
-        {
+    out = []
+    for b in bills:
+        me_p = next((p for p in b.participants if p.person.is_me), None)
+        out.append({
             "id": b.id,
             "merchant": b.merchant,
             "date": str(b.date),
             "total_amount": b.total_amount,
             "status": b.status,
             "participants": len(b.participants),
-        }
-        for b in bills
-    ]
+            "my_share": round(me_p.owes_amount, 2) if me_p else 0.0,
+            "transaction_id": b.transaction_id,
+            "created_at": b.created_at.isoformat(),
+        })
+    return out
 
 
 @router.patch("/{bill_id}")
@@ -483,20 +492,22 @@ def set_shares(
         if s.participant_id not in valid_pids:
             raise HTTPException(400, f"Participant {s.participant_id} not in bill")
 
-    # Derive weights from units if provided (units takes precedence over weight)
+    # Derive weight — precedencia: units > percent > weight
     resolved: list[tuple[int, float, Optional[float]]] = []
     for s in payload.shares:
         if s.units is not None:
             w = s.units / item.qty if item.qty > 0 else 0.0
             resolved.append((s.participant_id, round(w, 10), s.units))
+        elif s.percent is not None:
+            resolved.append((s.participant_id, round(s.percent / 100.0, 10), None))
         elif s.weight is not None:
             resolved.append((s.participant_id, s.weight, None))
         else:
-            raise HTTPException(400, "Each share must have either units or weight")
+            raise HTTPException(400, "Cada share necesita units, percent o weight")
 
     total_weight = sum(w for _, w, _ in resolved)
     if abs(total_weight - 1.0) > 0.01:
-        raise HTTPException(400, f"Weights must sum to 1.0, got {total_weight:.3f}")
+        raise HTTPException(400, f"Los porcentajes/pesos deben sumar 100%, suman {total_weight * 100:.1f}%")
 
     db.query(BillItemShare).filter(BillItemShare.item_id == item.id).delete()
     for pid, w, u in resolved:
@@ -568,6 +579,18 @@ def finalize_bill(
     if not bill.items:
         raise HTTPException(400, "No items")
 
+    # Guard: every item must have shares that sum to ~1 (esto evita el bug de
+    # "no se guardó el monto" — antes un ítem sin shares hacía que owes=0 y no
+    # se creaba la transacción, sin avisar).
+    for item in bill.items:
+        if not item.shares:
+            raise HTTPException(400, f"Falta asignar el ítem «{item.name}»")
+        wsum = sum(s.weight for s in item.shares)
+        if abs(wsum - 1.0) > 0.02:
+            raise HTTPException(
+                400, f"El ítem «{item.name}» no está repartido al 100% (va en {wsum * 100:.0f}%)"
+            )
+
     # Step 1: compute owes_amount for each participant from shares
     for p in bill.participants:
         p.owes_amount = 0.0
@@ -607,12 +630,15 @@ def finalize_bill(
             amount=amount,
         ))
 
-    # Step 4: find "me" participant and create Transaction for my share
+    # Step 4: find "me" participant and (optionally) create a Transaction for my share
     me_participant = next((p for p in bill.participants if p.person.is_me), None)
-    if me_participant:
+    if me_participant and payload.save_to_expense:
         my_share = round(me_participant.owes_amount, 2)
         if my_share > 0:
-            from ..services import account_svc
+            payer = next((p for p in bill.participants if p.paid_amount > 0), None)
+            note = f"Split {len(bill.participants)} personas"
+            if payer and not payer.person.is_me:
+                note += f" · pagó {payer.person.name}"
             tx = Transaction(
                 user_id=current.id,
                 account_id=payload.account_id,
@@ -621,7 +647,7 @@ def finalize_bill(
                 category=payload.category,
                 date=bill.date,
                 merchant=bill.merchant,
-                notes=f"Split {len(bill.participants)} personas",
+                notes=note,
                 image_url=bill.image_url,
                 is_income=False,
             )
@@ -632,7 +658,7 @@ def finalize_bill(
             if payload.account_id:
                 try:
                     from ..services.accounts import reconcile_new_transaction
-                    reconcile_new_transaction(db, tx)
+                    reconcile_new_transaction(db, current.id, tx)
                 except Exception:
                     pass
 
