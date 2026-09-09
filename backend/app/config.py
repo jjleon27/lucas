@@ -15,12 +15,14 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
 
     # Storage
-    storage_backend: str = "local"           # "local" | "s3"
+    storage_backend: str = "local"           # "local" | "s3" | "blob"
     local_storage_dir: str = "./uploads"
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
     aws_region: str = "us-east-1"
     aws_bucket: str = ""
+    # Vercel Blob: the `vercel_blob` package reads BLOB_READ_WRITE_TOKEN from the
+    # env directly (set automatically when a Blob store is linked to the project).
 
     # AI
     # Which provider to prefer. Leave blank to auto-pick the first one with a key set.

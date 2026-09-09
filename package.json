@@ -1,0 +1,8 @@
+{
+  "name": "lucas",
+  "private": true,
+  "description": "Monorepo root: static Next.js frontend in frontend/, FastAPI backend as a Python function in api/ (imports backend/).",
+  "scripts": {
+    "build": "npm --prefix frontend install && npm --prefix frontend run build"
+  }
+}

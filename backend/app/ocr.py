@@ -23,10 +23,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
-import cv2
 import numpy as np
-import pytesseract
 from PIL import Image
+
+# cv2 (opencv) and pytesseract are only used by the offline Tesseract fallback
+# path (_preprocess / run_ocr). They're imported lazily so the module still loads
+# in environments without the tesseract binary (e.g. Vercel serverless), where
+# the vision-LLM path is the only one that runs.
 
 try:
     from pillow_heif import register_heif_opener
@@ -44,26 +47,31 @@ def pdf_page_to_image_bytes(pdf_bytes: bytes, page_index: int = 0, dpi: int = 15
     """
     Render a single PDF page to JPEG bytes.
     Returns JPEG bytes that can be fed into parse_receipt() directly.
+
+    Uses pypdfium2 (pure-wheel, no system poppler) so it works on serverless.
     """
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument(pdf_bytes)
     try:
-        from pdf2image import convert_from_bytes
-        images = convert_from_bytes(pdf_bytes, dpi=dpi, first_page=page_index + 1,
-                                    last_page=page_index + 1, fmt="jpeg")
-        if not images:
-            raise ValueError("pdf2image returned no images")
+        page = pdf[page_index]
+        bitmap = page.render(scale=dpi / 72.0)
+        pil_img = bitmap.to_pil().convert("RGB")
         buf = io.BytesIO()
-        images[0].save(buf, format="JPEG", quality=90)
+        pil_img.save(buf, format="JPEG", quality=90)
         return buf.getvalue()
-    except ImportError:
-        raise RuntimeError("pdf2image is not installed — cannot render PDF pages")
+    finally:
+        pdf.close()
 
 
 def pdf_page_count(pdf_bytes: bytes) -> int:
     """Return the number of pages in a PDF."""
     try:
-        import pdfplumber
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            return len(pdf.pages)
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
     except Exception:
         return 1
 
@@ -114,7 +122,8 @@ class ParseResult:
 
 
 # ---------- Image preprocessing (Tesseract path) ----------
-def _preprocess(image_bytes: bytes) -> np.ndarray:
+def _preprocess(image_bytes: bytes) -> "np.ndarray":
+    import cv2  # lazy: only the Tesseract fallback needs opencv
     arr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -164,8 +173,15 @@ def _preprocess(image_bytes: bytes) -> np.ndarray:
 
 
 def run_ocr(image_bytes: bytes) -> str:
-    processed = _preprocess(image_bytes)
-    return pytesseract.image_to_string(processed, lang="eng+spa").strip()
+    """OCR via Tesseract. Returns "" if opencv/tesseract aren't available
+    (e.g. serverless) — callers then fall through to the vision-LLM path."""
+    try:
+        import pytesseract  # lazy: needs the `tesseract` system binary
+        processed = _preprocess(image_bytes)
+        return pytesseract.image_to_string(processed, lang="eng+spa").strip()
+    except Exception as e:  # ImportError, TesseractNotFoundError, cv2 decode errors…
+        print(f"[ocr] run_ocr unavailable ({type(e).__name__}: {e}) — skipping Tesseract path")
+        return ""
 
 
 # ---------- Number format: handles US, European, and Chilean (CLP, no decimals) ----------
@@ -1062,6 +1078,8 @@ def _extract_boleta_totals(image_bytes: bytes, text: Optional[str] = None) -> di
     result: dict = {}
     if text is None:
         try:
+            import cv2  # lazy — Tesseract fallback only
+            import pytesseract
             img = Image.open(io.BytesIO(image_bytes)).convert("L")
             w, h = img.size
             if max(w, h) < 1200:
@@ -1073,7 +1091,7 @@ def _extract_boleta_totals(image_bytes: bytes, text: Optional[str] = None) -> di
             img_proc = Image.fromarray(arr)
             text = pytesseract.image_to_string(img_proc, lang="spa", config="--psm 6 --oem 3")
         except Exception as exc:
-            print(f"[ocr] _extract_boleta_totals: tesseract failed — {exc}")
+            print(f"[ocr] _extract_boleta_totals: tesseract unavailable — {exc}")
             return result
 
     def last_number_on_line(line: str) -> float:

@@ -19,6 +19,20 @@ def _local_save(data: bytes, ext: str) -> str:
     return f"/files/{fname}"
 
 
+def _blob_save(data: bytes, ext: str) -> str:
+    """Upload to Vercel Blob (public) and return its public https URL.
+
+    Auth: the `vercel_blob` package reads BLOB_READ_WRITE_TOKEN from the env
+    (set automatically when the Blob store is linked to the Vercel project).
+    """
+    import vercel_blob  # lazy: only needed when STORAGE_BACKEND=blob
+    ext = ext.lstrip(".").lower() or "png"
+    # Content-type is inferred from the extension by the lib; the store is public.
+    path = f"uploads/{uuid.uuid4().hex}.{ext}"
+    resp = vercel_blob.put(path, data, {"addRandomSuffix": "false"})
+    return resp["url"]
+
+
 def _s3_save(data: bytes, ext: str) -> str:
     import boto3
     client = boto3.client(
@@ -35,7 +49,10 @@ def _s3_save(data: bytes, ext: str) -> str:
 def save_image(data: bytes, filename: str) -> str:
     """Persist an uploaded image and return a URL to it."""
     ext = (os.path.splitext(filename)[1] or ".png").lstrip(".").lower() or "png"
-    if settings.storage_backend == "s3" and settings.aws_bucket:
+    backend = settings.storage_backend
+    if backend == "blob":
+        return _blob_save(data, ext)
+    if backend == "s3" and settings.aws_bucket:
         return _s3_save(data, ext)
     return _local_save(data, ext)
 

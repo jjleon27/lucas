@@ -2,12 +2,23 @@
 SQLAlchemy engine / session factory. `get_db()` is the FastAPI dependency
 every router uses to get a request-scoped session.
 """
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.pool import NullPool
 
 from .config import settings
 
-engine = create_engine(settings.database_url, pool_pre_ping=True, future=True)
+# On serverless (Vercel) each invocation is short-lived and instances aren't
+# reused predictably — a persistent SQLAlchemy pool leaks connections and
+# exhausts Postgres. NullPool opens/closes a connection per checkout; pair it
+# with a pooled DATABASE_URL (Neon's PgBouncer endpoint) for efficiency.
+_engine_kw = dict(pool_pre_ping=True, future=True)
+if os.environ.get("VERCEL"):
+    _engine_kw["poolclass"] = NullPool
+
+engine = create_engine(settings.database_url, **_engine_kw)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
 
