@@ -141,6 +141,12 @@ export default function SplitPage() {
   // Mini-selector inline for "÷ split into N" button (qty=1 items only)
   const [splitChoice, setSplitChoice] = useState<{ itemId: number; n: string } | null>(null);
 
+  // Step 3 — reparto avanzado por ítem (unidades fraccionales / % / montos)
+  const [advItems, setAdvItems] = useState<Set<number>>(new Set());
+  const [advOpen, setAdvOpen] = useState<number | null>(null);
+  const [advMode, setAdvMode] = useState<"units" | "percent" | "amount">("percent");
+  const [advVals, setAdvVals] = useState<Record<number, string>>({});
+
   // Step 2 — image panel (split-screen viewer + drawing canvas)
   const [leftW, setLeftW] = useState(0.30); // fraction 0-1 for left image panel width
   const [imgScale, setImgScale] = useState(1);
@@ -198,6 +204,7 @@ export default function SplitPage() {
 
   async function handleFile(file: File) {
     setLoading(true);
+    setAdvItems(new Set()); setAdvOpen(null);
     try {
       const today = new Date().toISOString().split("T")[0];
       let b = await createBill({ date: today });
@@ -210,6 +217,7 @@ export default function SplitPage() {
 
   async function handleManual() {
     setLoading(true);
+    setAdvItems(new Set()); setAdvOpen(null);
     try {
       const b = await createBill({ date: new Date().toISOString().split("T")[0] });
       setBill(b); setStep(2);
@@ -430,6 +438,10 @@ export default function SplitPage() {
   const runningTotal = (pid: number) => runningTotals.get(pid) ?? 0;
 
   function itemFullyAssigned(item: BillItem): boolean {
+    if (advItems.has(item.id)) {
+      const wsum = item.shares.reduce((s, x) => s + x.weight, 0);
+      return item.shares.length > 0 && Math.abs(wsum - 1) < 0.02;
+    }
     const slots = slotsOf(item.id, item.qty);
     if (item.qty === 1) {
       const s = slots[0];
@@ -671,6 +683,52 @@ export default function SplitPage() {
     }));
   }
 
+  // ── Reparto avanzado (paso 3) ──────────────────────────────────
+  function openAdv(item: BillItem) {
+    setAdvOpen(item.id);
+    setAdvMode("percent");
+    const seed: Record<number, string> = {};
+    if (item.shares.length) {
+      item.shares.forEach((s) => { seed[s.participant_id] = String(Math.round(s.weight * 100)); });
+    }
+    setAdvVals(seed);
+  }
+
+  async function applyAdv(item: BillItem) {
+    if (!bill) return;
+    const entries = bill.participants
+      .map((p) => ({ pid: p.id, v: parseFloat(advVals[p.id] || "0") || 0 }))
+      .filter((x) => x.v > 0);
+    if (entries.length === 0) { showError("Ingresa un valor para al menos una persona"); return; }
+    const sum = entries.reduce((s, e) => s + e.v, 0);
+    let shares: { participant_id: number; weight: number; units?: number }[];
+    if (advMode === "units") {
+      if (Math.abs(sum - item.qty) > 0.01) { showError(`Las unidades suman ${sum}, deben sumar ${item.qty}`); return; }
+      shares = entries.map((e) => ({ participant_id: e.pid, weight: e.v / item.qty, units: e.v }));
+    } else if (advMode === "percent") {
+      if (Math.abs(sum - 100) > 0.5) { showError(`Los % suman ${sum.toFixed(0)}%, deben sumar 100%`); return; }
+      shares = entries.map((e) => ({ participant_id: e.pid, weight: e.v / 100 }));
+    } else {
+      if (Math.abs(sum - item.line_total) > 1) { showError(`Los montos suman ${clp(sum)}, deben sumar ${clp(item.line_total)}`); return; }
+      shares = entries.map((e) => ({ participant_id: e.pid, weight: e.v / item.line_total }));
+    }
+    const wsum = shares.reduce((s, x) => s + x.weight, 0);
+    shares[shares.length - 1].weight += 1 - wsum;   // que sume exactamente 1
+    setBusy(true);
+    try {
+      const b = await postShares(bill.id, item.id, shares);
+      setBill(b);
+      setAdvItems((prev) => new Set(prev).add(item.id));
+      setAdvOpen(null);
+    } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+    finally { setBusy(false); }
+  }
+
+  function clearAdv(itemId: number) {
+    setAdvItems((prev) => { const n = new Set(prev); n.delete(itemId); return n; });
+    setAdvOpen(null);
+  }
+
   async function goToWhoPaid() {
     if (!bill) return;
     if (bill.participants.length === 0) { showError("Agrega al menos un participante"); return; }
@@ -681,6 +739,7 @@ export default function SplitPage() {
     const items = bill.items;
     try {
       for (const item of items) {
+        if (advItems.has(item.id)) continue;   // ya tiene shares posteadas
         const shares = sharesForItem(item);
         if (shares.length === 0) continue;
         const sum = shares.reduce((s, x) => s + x.weight, 0);
@@ -1336,9 +1395,28 @@ export default function SplitPage() {
                                 <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
                               </div>
                               <button onClick={() => selectAll(item)} className="text-[11px] text-indigo-600 font-medium shrink-0">Todos</button>
+                              <button onClick={() => (advOpen === item.id ? setAdvOpen(null) : openAdv(item))} className="text-[11px] text-slate-500 font-medium shrink-0" title="Reparto avanzado (%, montos, unidades fraccionales)">⚙</button>
                             </div>
 
-                            {item.qty > 1 ? (
+                            {advItems.has(item.id) ? (
+                              /* Reparto manual aplicado */
+                              <div className="text-xs space-y-1">
+                                {item.shares.map((s) => {
+                                  const p = bill.participants.find((x) => x.id === s.participant_id);
+                                  if (!p) return null;
+                                  return (
+                                    <div key={s.participant_id} className="flex justify-between">
+                                      <span className="text-slate-600">{p.name.split(" ")[0]} · {Math.round(s.weight * 100)}%</span>
+                                      <span className="text-slate-400">{clp(item.line_total * s.weight)}</span>
+                                    </div>
+                                  );
+                                })}
+                                <div className="flex gap-3 pt-1">
+                                  <button onClick={() => openAdv(item)} className="text-indigo-600 font-medium">Editar</button>
+                                  <button onClick={() => clearAdv(item.id)} className="text-slate-400">Quitar reparto manual</button>
+                                </div>
+                              </div>
+                            ) : item.qty > 1 ? (
                               /* Steppers for multi-unit items */
                               <div className="space-y-1.5">
                                 {bill.participants.map((p) => {
@@ -1374,6 +1452,45 @@ export default function SplitPage() {
                                     </button>
                                   );
                                 })}
+                              </div>
+                            )}
+
+                            {advOpen === item.id && (
+                              <div className="mt-3 pt-3 border-t border-slate-200/70 space-y-2">
+                                <div className="flex gap-1">
+                                  {([["percent", "%"], ["units", "unidades"], ["amount", "montos"]] as const).map(([m, lbl]) => (
+                                    <button key={m} type="button" onClick={() => { setAdvMode(m); setAdvVals({}); }}
+                                      className={`px-2.5 py-1 text-[11px] rounded-lg border ${advMode === m ? "bg-indigo-600 text-white border-indigo-600" : "border-slate-300 text-slate-500 bg-white"}`}>
+                                      {lbl}
+                                    </button>
+                                  ))}
+                                </div>
+                                {bill.participants.map((p) => {
+                                  const v = parseFloat(advVals[p.id] || "0") || 0;
+                                  const prev = advMode === "percent" ? item.line_total * v / 100
+                                    : advMode === "units" ? item.unit_price * v : v;
+                                  return (
+                                    <div key={p.id} className="flex items-center gap-2">
+                                      <div className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0" style={{ background: p.color }}>{initials(p.name)}</div>
+                                      <span className="flex-1 text-sm text-slate-700">{p.name.split(" ")[0]}</span>
+                                      <input type="number" inputMode="decimal" className="w-20 border border-slate-300 rounded-lg px-2 py-1 text-sm text-right bg-white"
+                                        placeholder="0" value={advVals[p.id] ?? ""}
+                                        onChange={(e) => setAdvVals((s) => ({ ...s, [p.id]: e.target.value }))} />
+                                      <span className="text-[11px] text-slate-400 w-14 text-right">{v > 0 ? clp(prev) : "—"}</span>
+                                    </div>
+                                  );
+                                })}
+                                <div className="flex items-center justify-between text-[11px] pt-1">
+                                  <span className="text-slate-400">
+                                    {advMode === "percent" ? "deben sumar 100%"
+                                      : advMode === "units" ? `deben sumar ${item.qty} uds`
+                                      : `deben sumar ${clp(item.line_total)}`}
+                                  </span>
+                                  <div className="flex gap-3">
+                                    <button onClick={() => setAdvOpen(null)} className="text-slate-400 font-medium">Cancelar</button>
+                                    <button onClick={() => applyAdv(item)} disabled={busy} className="text-indigo-600 font-semibold disabled:opacity-40">Aplicar</button>
+                                  </div>
+                                </div>
                               </div>
                             )}
                           </div>
