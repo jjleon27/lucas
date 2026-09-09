@@ -80,9 +80,19 @@ def create_transaction(
     # "Pago Tarjeta" is always a transfer — never counts as a monthly expense.
     is_transfer = bool(payload.is_transfer) or payload.category == "Pago Tarjeta"
 
+    # Validate project belongs to user, if provided
+    if payload.project_id is not None:
+        owns_p = db.query(models.Project).filter(
+            models.Project.id == payload.project_id,
+            models.Project.user_id == current.id,
+        ).first()
+        if not owns_p:
+            raise HTTPException(400, "project_id does not belong to this user")
+
     tx = models.Transaction(
         user_id=current.id,
         account_id=payload.account_id,
+        project_id=payload.project_id,
         amount=payload.amount,
         currency=payload.currency,
         category=payload.category,

@@ -60,6 +60,8 @@ def _migrate_schema() -> None:
         "ALTER TABLE users ADD COLUMN auth_provider VARCHAR(32) NOT NULL DEFAULT 'password'",
         # bill_item_shares.units — number of individual units assigned (e.g. 2 of 6 schops)
         "ALTER TABLE bill_item_shares ADD COLUMN units REAL",
+        # transactions.project_id — optional cross-category grouping (Proyectos feature)
+        "ALTER TABLE transactions ADD COLUMN project_id INTEGER",
     ]
     with engine.connect() as conn:
         for stmt in stmts:

@@ -33,6 +33,7 @@ class User(Base):
     people = relationship("Person", back_populates="user", cascade="all, delete-orphan")
     categories = relationship("Category", back_populates="user", cascade="all, delete-orphan")
     accounts = relationship("Account", back_populates="user", cascade="all, delete-orphan")
+    projects = relationship("Project", back_populates="user", cascade="all, delete-orphan")
 
 
 class Account(Base):
@@ -90,6 +91,25 @@ class Category(Base):
     user = relationship("User", back_populates="categories")
 
 
+class Project(Base):
+    """A cross-category grouping of expenses with an optional budget and dates
+    (e.g. "Viaje a Buenos Aires", "Remodelación cocina"). Transactions point at
+    a project via `Transaction.project_id`."""
+    __tablename__ = "projects"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    budget = Column(Float, default=0.0, nullable=False)   # 0 = sin presupuesto
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    color = Column(String(16), default="#6366f1", nullable=False)
+    archived = Column(Boolean, default=False, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="projects")
+    transactions = relationship("Transaction", back_populates="project")
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
     id = Column(Integer, primary_key=True)
@@ -126,10 +146,16 @@ class Transaction(Base):
     # Review queue: "confirmed" (normal) or "pending_review" (came from email/auto-import)
     status = Column(String(16), default="confirmed", nullable=False, index=True)
 
+    # Optional grouping across categories/accounts (e.g. "Viaje a Buenos Aires").
+    project_id = Column(
+        Integer, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="transactions")
     account = relationship("Account", back_populates="transactions")
+    project = relationship("Project", back_populates="transactions")
     items = relationship("ReceiptItem", back_populates="transaction", cascade="all, delete-orphan")
     linked = relationship(
         "Transaction",

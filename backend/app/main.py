@@ -18,6 +18,7 @@ from .routers import split as split_router
 from .routers import bills as bills_router
 from .routers import dashboard as dash_router
 from .routers import accounts as accounts_router
+from .routers import projects as projects_router
 from .routers import ai as ai_router
 from .routers import cartola as cartola_router
 from .routers import voice as voice_router
@@ -86,6 +87,7 @@ app.include_router(split_router.router)
 app.include_router(bills_router.router)
 app.include_router(dash_router.router)
 app.include_router(accounts_router.router)
+app.include_router(projects_router.router)
 app.include_router(ai_router.router)
 app.include_router(cartola_router.router)
 app.include_router(voice_router.router)

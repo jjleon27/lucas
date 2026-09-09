@@ -120,6 +120,7 @@ class TransactionBase(BaseModel):
     account_id: Optional[int] = None
     is_transfer: bool = False
     linked_transaction_id: Optional[int] = None
+    project_id: Optional[int] = None
 
 
 class TransactionCreate(TransactionBase):
@@ -138,6 +139,7 @@ class TransactionUpdate(BaseModel):
     account_id: Optional[int] = None
     is_transfer: Optional[bool] = None
     linked_transaction_id: Optional[int] = None
+    project_id: Optional[int] = None
 
 
 class TransactionOut(TransactionBase):
@@ -161,6 +163,53 @@ class OwnTransferCreate(BaseModel):
     merchant: str = "Transferencia entre cuentas"
     notes: str = ""
     currency: str = "CLP"
+
+
+# ---------- Projects (agrupador transversal de gastos) ----------
+class ProjectCreate(BaseModel):
+    name: str
+    budget: float = 0.0
+    start_date: Optional[_date] = None
+    end_date: Optional[_date] = None
+    color: str = "#6366f1"
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    budget: Optional[float] = None
+    start_date: Optional[_date] = None
+    end_date: Optional[_date] = None
+    color: Optional[str] = None
+    archived: Optional[bool] = None
+
+
+class ProjectOut(BaseModel):
+    id: int
+    name: str
+    budget: float
+    start_date: Optional[_date] = None
+    end_date: Optional[_date] = None
+    color: str
+    archived: bool
+    created_at: datetime
+    # convenience aggregates (filled by the router)
+    spent: float = 0.0
+    tx_count: int = 0
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectCategorySpend(BaseModel):
+    category: str
+    amount: float
+
+
+class ProjectSummary(BaseModel):
+    project: ProjectOut
+    spent: float
+    remaining: float           # budget - spent (0 si no hay presupuesto)
+    pct_used: float            # 0..1+ (0 si no hay presupuesto)
+    by_category: list[ProjectCategorySpend] = []
+    tx_count: int = 0
 
 
 # ---------- OCR / Upload ----------
