@@ -144,6 +144,16 @@ def update_transaction(
 
     for f, v in patch.items():
         setattr(tx, f, v)
+    # project_id: allow explicit null to un-assign (exclude_none would drop it).
+    if "project_id" in payload.model_fields_set:
+        if payload.project_id is not None:
+            owns_p = db.query(models.Project).filter(
+                models.Project.id == payload.project_id,
+                models.Project.user_id == current.id,
+            ).first()
+            if not owns_p:
+                raise HTTPException(400, "project_id does not belong to this user")
+        tx.project_id = payload.project_id
     # Ensure Pago Tarjeta is always treated as a transfer.
     if tx.category == "Pago Tarjeta":
         tx.is_transfer = True

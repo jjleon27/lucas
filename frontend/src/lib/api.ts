@@ -250,6 +250,7 @@ export interface Transaction {
   image_url: string;
   is_income: boolean;
   account_id: number | null;
+  project_id: number | null;
   is_transfer: boolean;
   linked_transaction_id: number | null;
   created_at: string;
@@ -285,10 +286,11 @@ export async function createOwnTransfer(payload: {
 }
 
 export async function createTransaction(
-  body: Omit<Transaction, "id" | "image_url" | "created_at" | "is_transfer" | "linked_transaction_id"> & {
+  body: Omit<Transaction, "id" | "image_url" | "created_at" | "is_transfer" | "linked_transaction_id" | "project_id"> & {
     image_url?: string;
     items?: ParsedItem[];
     is_transfer?: boolean;  // set true for CC payments so they auto-link
+    project_id?: number | null;
   },
 ): Promise<Transaction> {
   const { image_url = "", ...tx } = body;
@@ -311,6 +313,56 @@ export async function updateTransaction(
 
 export async function deleteTransaction(id: number): Promise<void> {
   await request(`/transactions/${id}`, { method: "DELETE" });
+}
+
+// -------- Projects (agrupador transversal de gastos) --------
+export interface Project {
+  id: number;
+  name: string;
+  budget: number;
+  start_date: string | null;
+  end_date: string | null;
+  color: string;
+  archived: boolean;
+  created_at: string;
+  spent: number;
+  tx_count: number;
+}
+export interface ProjectSummary {
+  project: Project;
+  spent: number;
+  remaining: number;
+  pct_used: number;
+  by_category: { category: string; amount: number }[];
+  tx_count: number;
+}
+export interface ProjectInput {
+  name: string;
+  budget?: number;
+  start_date?: string | null;
+  end_date?: string | null;
+  color?: string;
+}
+
+export async function listProjects(includeArchived = false): Promise<Project[]> {
+  return request(`/projects${includeArchived ? "?include_archived=true" : ""}`);
+}
+export async function createProject(body: ProjectInput): Promise<Project> {
+  return request("/projects", { method: "POST", body: JSON.stringify(body) });
+}
+export async function updateProject(
+  id: number, body: Partial<ProjectInput> & { archived?: boolean },
+): Promise<Project> {
+  return request(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+export async function deleteProject(id: number): Promise<void> {
+  await request(`/projects/${id}`, { method: "DELETE" });
+}
+export async function getProjectSummary(id: number): Promise<ProjectSummary> {
+  return request(`/projects/${id}/summary`);
+}
+export async function getProjectTransactions(id: number): Promise<Transaction[]> {
+  return request(`/projects/${id}/transactions`);
 }
 
 // -------- Dashboard --------

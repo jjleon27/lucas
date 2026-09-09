@@ -8,7 +8,7 @@
  */
 import { useState, useMemo, useEffect } from "react";
 import { Pencil, Trash2, Check, X, AlertTriangle } from "lucide-react";
-import { Transaction, Account, updateTransaction, deleteTransaction } from "@/lib/api";
+import { Transaction, Account, Project, updateTransaction, deleteTransaction, listProjects } from "@/lib/api";
 import { useT, formatMoney } from "@/lib/i18n";
 import NumericInput from "@/components/NumericInput";
 
@@ -44,6 +44,7 @@ interface EditState {
   notes: string;
   is_income: boolean;
   account_id: number | null;
+  project_id: number | null;
 }
 
 export default function TransactionList({ txs: initial, accounts = [], onRefresh }: Props) {
@@ -53,8 +54,10 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
   const [editState, setEditState] = useState<EditState | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
 
   useEffect(() => { setTxs(initial); }, [initial]);
+  useEffect(() => { listProjects().then(setProjects).catch(() => {}); }, []);
 
   const dupeIds = useMemo(
     () => new Set(txs.filter((tx) => isDuplicate(tx, txs)).map((tx) => tx.id)),
@@ -71,6 +74,7 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
       notes: tx.notes,
       is_income: tx.is_income,
       account_id: tx.account_id,
+      project_id: tx.project_id ?? null,
     });
     setConfirmDelete(null);
   }
@@ -92,6 +96,7 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
         notes: editState.notes,
         is_income: editState.is_income,
         account_id: editState.account_id,
+        project_id: editState.project_id,
       });
       setTxs((prev) => prev.map((t) => (t.id === tx.id ? updated : t)));
       setEditId(null);
@@ -313,6 +318,21 @@ export default function TransactionList({ txs: initial, accounts = [], onRefresh
                       <option value="">Sin cuenta</option>
                       {accounts.map((a) => (
                         <option key={a.id} value={a.id}>{a.name}{a.bank ? ` — ${a.bank}` : ""}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {projects.length > 0 && (
+                  <label className="block">
+                    <span className="text-xs text-slate-500 uppercase">Proyecto</span>
+                    <select
+                      className="input mt-0.5"
+                      value={editState.project_id ?? ""}
+                      onChange={(e) => setEditState((s) => s && { ...s, project_id: e.target.value ? Number(e.target.value) : null })}
+                    >
+                      <option value="">Sin proyecto</option>
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
                       ))}
                     </select>
                   </label>

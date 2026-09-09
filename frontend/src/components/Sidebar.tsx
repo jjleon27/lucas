@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard, Upload, Scissors, LogOut,
   MessageCircle, Globe, CreditCard, Inbox, UserCircle, Receipt,
-  MoreHorizontal, X, type LucideIcon,
+  FolderKanban, MoreHorizontal, X, type LucideIcon,
 } from "lucide-react";
 
 interface NavItem {
@@ -66,6 +66,7 @@ export default function Sidebar() {
   // Mobile: overflow items inside "Más" sheet
   const moreNav: NavItem[] = [
     { href: "/transactions", label: "Ver movimientos", icon: Receipt },
+    { href: "/projects",     label: "Proyectos",        icon: FolderKanban },
     { href: "/chat",         label: t("nav.chat"),     icon: MessageCircle },
     { href: "/settings",     label: "Perfil",           icon: UserCircle },
     { href: "/split",        label: t("nav.split"),    icon: Scissors },
