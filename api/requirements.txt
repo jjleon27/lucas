@@ -26,4 +26,4 @@ pdfplumber==0.11.4
 pypdfium2==4.30.0
 slowapi==0.1.9
 requests==2.32.3
-vercel-blob==0.5.0
+vercel-blob==0.4.2

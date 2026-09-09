@@ -27,12 +27,9 @@ def _blob_save(data: bytes, ext: str) -> str:
     """
     import vercel_blob  # lazy: only needed when STORAGE_BACKEND=blob
     ext = ext.lstrip(".").lower() or "png"
+    # Content-type is inferred from the extension by the lib; the store is public.
     path = f"uploads/{uuid.uuid4().hex}.{ext}"
-    resp = vercel_blob.put(path, data, {
-        "access": "public",
-        "contentType": f"image/{ext}",
-        "addRandomSuffix": "false",
-    })
+    resp = vercel_blob.put(path, data, {"addRandomSuffix": "false"})
     return resp["url"]
 
 
