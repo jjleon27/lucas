@@ -43,6 +43,43 @@ la doc + graphify al día. Cambios visibles en el celu → push frecuente.
 - Edit / Write en el repo.
 - WebSearch / WebFetch para verificar APIs si hace falta.
 
+## PROGRESO (2026-09-09)
+- [x] Fase 1: `compact` NameError → `send_bytes`; `_RECEIPT_TEXT_PROMPT` reglas
+  moneda/propina/fecha; **bug del split arreglado** (`_normalize_boleta_items`
+  ya no escala precios correctos al TOTAL NETO). Nuevo caso eval `lider_quilicura`.
+  Tests 457 pass (11 fail preexistentes). Eval OCR **95.5%**. Deployado + verificado
+  en prod ("CHOCO 160" = 2150, no 1765).
+  - Nota TransactionList.tsx ~276 (cambiar a "Otra" inline): revisado, el código
+    actual YA lo maneja bien — parece arreglado en el churn de junio. No se tocó.
+- [x] Fase 2: MASTER_PLAN/ROADMAP/CURRENT_STATE/README sincronizados a Vercel.
+  `graphify update .` hecho (2452 nodos). Prep Fable 5.1 (anthropic 0.125.0,
+  provider default `claude-fable-5-1`, max_tokens 16k). Deploy OK con el bump.
+- [ ] Fase 3: **Proyectos (Opción B)** — NO empezada. Handoff abajo.
+- [ ] Fase 4: cierre (este bloque).
+
+## Handoff Fase 3 — feature Proyectos (para próxima sesión)
+Spec (memoria `project-next-feature`): entidad `Project(id, user_id, name, budget
+opcional, start_date, end_date, archived)` + `transactions.project_id` FK nullable.
+Pasos:
+1. `backend/app/models.py`: modelo `Project`; `Transaction.project_id`.
+2. `backend/app/database.py` `_migrate_schema()`: ALTER TABLE transactions ADD
+   COLUMN project_id INTEGER; CREATE TABLE projects (create_all lo hace).
+3. `backend/app/schemas.py`: `ProjectCreate/Out`, `project_id` en `TransactionOut/Update`.
+4. `backend/app/routers/projects.py`: CRUD + `GET /projects/{id}/summary`
+   (gasto total, % presupuesto, por categoría). Wire en `main.py`.
+5. `backend/tests/`: test del router.
+6. Frontend: `frontend/src/app/projects/page.tsx` (lista + detalle con barra de
+   presupuesto), selector de proyecto en el form de transacción
+   (`transactions/page.tsx` y/o `review/page.tsx`), item en `Sidebar.tsx`.
+7. `graphify update .`, actualizar MASTER_PLAN §16/§20, commit+push, `vercel --prod`.
+
+## "Que siga funcionando si cierro el laptop"
+- **La APP**: ya cumple — está 100% en Vercel (serverless), no depende del laptop.
+- **Esta sesión de Claude Code**: SÍ se pausa al cerrar el laptop (corre local).
+  Para trabajo autónomo continuo se necesitaría un agente cloud (`/schedule` o
+  agente remoto). Todo está commiteado+pusheado y este archivo + SESSION_STATE
+  permiten a cualquier sesión futura retomar desde Fase 3.
+
 ## Reglas de la corrida
 - Commits chicos y atómicos, push después de cada fase (o antes si hay riesgo de compactación).
 - No gastar API de pago sin necesidad (el eval con LLM NO se corre en loop).
