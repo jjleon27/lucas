@@ -13,10 +13,32 @@ Fecha: 2026-09-09. Rama `migracion-vercel`.
 - [x] Paso 4 — `storage.py` backend `"blob"` (pkg `vercel_blob`); `next.config.js` host blob.
 - [x] Extra — `database.py` NullPool en Vercel; `vercel.json` monorepo.
 - [x] Verificado local: `/api/health` `/api/docs` `/api/openapi.json` → 200. Tests 457 pass, 11 fail preexistentes (sin regresión).
-- [ ] Paso 5 — Neon (provisionar + DATABASE_URL pooled)
-- [ ] Paso 6 — Vercel project Root Directory → repo root
-- [ ] Paso 7 — Blob store + env vars en Vercel
-- [ ] Paso 8 — deploy preview → verificar → prod ; datos: FRESH (usuario eligió b) ; apagar Railway
+- [x] Paso 5 — Neon provisionado (`neon-cinereous-canvas`), `DATABASE_URL` pooled seteado.
+- [x] Paso 6 — Root Directory ya en `./` (raíz). Framework Preset → "Other" (`framework: null` en vercel.json).
+- [x] Paso 7 — Blob store `lucas-uploads` (public) + `BLOB_READ_WRITE_TOKEN`. Env vars en Production.
+- [x] Paso 8 — **DEPLOYADO A PROD 2026-09-09**. Verificado end-to-end:
+      /api/health, signup, login, /api/accounts, /api/dashboard, y **upload boleta
+      → Vercel Blob + gpt-5-mini OCR** todo 200 OK. DB fresh (opción b).
+
+## ESTADO: MIGRACIÓN COMPLETA ✅
+Prod: https://frontend-mu-dusky-88.vercel.app  (API en /api/*)
+Backend = Vercel Python Function · DB = Neon · Imágenes = Vercel Blob · Frontend = estático en CDN.
+
+### Ajustes que se necesitaron sobre el plan
+- Frontend → static export (`output: "export"`) porque Vercel buscaba `next` en package.json de la raíz.
+- `package.json` raíz nuevo (script build) + `framework: null` en vercel.json.
+- `vercel-blob==0.4.2` (0.5.0 no existe); `_blob_save` sin opciones `access`/`contentType`.
+- `init_db()` se llama en el import de `api/index.py` — Vercel serverless NO corre el
+  `@app.on_event("startup")` de FastAPI (daba `relation "users" does not exist`).
+
+### Pendiente (housekeeping, no bloquea)
+- [ ] Merge `migracion-vercel` → `main`.
+- [ ] Borrar proyecto Railway `reasonable-laughter`.
+- [ ] Rotar OPENAI_API_KEY (se pegó en el chat).
+- [ ] Copiar env vars de Production → Preview (si se quieren previews funcionales).
+- [ ] Probar cartola PDF real (pypdfium2) — no testeado aún.
+- [ ] Opcional: dominio propio o quitar Deployment Protection del alias `lucas-*.vercel.app`.
+- [ ] `_RECEIPT_TEXT_PROMPT`: replicar fixes moneda/propina. `ocr.py` ~1350 var `compact`.
 
 ## Decisión tomada: datos viejos → EMPEZAR DE CERO (opción b). No se migra el Postgres de Railway.
 
