@@ -61,8 +61,14 @@ const assignEqual = (billId: number) =>
   billReq<Bill>(`/bills/${billId}/assign-equal`, { method: "POST" });
 const setPayers = (billId: number, payers: { participant_id: number; paid_amount: number }[]) =>
   billReq<Bill>(`/bills/${billId}/set-payers`, { method: "POST", body: JSON.stringify(payers) });
-const finalizeBill = (billId: number, opts: { account_id?: number; category?: string }) =>
+const finalizeBill = (billId: number, opts: { account_id?: number; category?: string; save_to_expense?: boolean }) =>
   billReq<Bill>(`/bills/${billId}/finalize`, { method: "POST", body: JSON.stringify(opts) });
+
+interface BillListRow {
+  id: number; merchant: string; date: string; total_amount: number; status: string;
+  participants: number; my_share: number; transaction_id: number | null; created_at: string;
+}
+const listBills = () => billReq<BillListRow[]>("/bills");
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -159,6 +165,9 @@ export default function SplitPage() {
   // Step 5 — summary
   const [finalized, setFinalized] = useState(false);
   const [myShare, setMyShare] = useState(0);
+  const [saveAsExpense, setSaveAsExpense] = useState(true);
+  // Step 1 — historial de divisiones guardadas
+  const [pastBills, setPastBills] = useState<BillListRow[] | null>(null);
 
   const showError = useCallback((msg: string) => setError(msg), []);
   const showSuccess = useCallback((msg: string) => setSuccessMsg(msg), []);
@@ -167,6 +176,22 @@ export default function SplitPage() {
     listPeople().then(setPeople).catch(() => {});
     listAccounts().then(setAccounts).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (step === 1) listBills().then(setPastBills).catch(() => setPastBills([]));
+  }, [step]);
+
+  async function openPastBill(id: number) {
+    setLoading(true);
+    try {
+      const b = await billReq<Bill>(`/bills/${id}`);
+      setBill(b);
+      setMyShare(b.participants.find((p) => p.is_me)?.owes_amount ?? 0);
+      setFinalized(true);
+      setStep(5);
+    } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+    finally { setLoading(false); }
+  }
 
   // ── Step 1 ────────────────────────────────────────────────────
 
@@ -846,7 +871,11 @@ export default function SplitPage() {
   async function handleFinalize() {
     if (!bill) return; setLoading(true);
     try {
-      const b = await finalizeBill(bill.id, { account_id: selectedAccountId ?? undefined, category: "Comida" });
+      const b = await finalizeBill(bill.id, {
+        account_id: saveAsExpense ? (selectedAccountId ?? undefined) : undefined,
+        category: "Comida",
+        save_to_expense: saveAsExpense,
+      });
       setBill(b); setMyShare(b.participants.find((p) => p.is_me)?.owes_amount ?? 0); setFinalized(true);
     } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
     finally { setLoading(false); }
@@ -1184,6 +1213,31 @@ export default function SplitPage() {
             <button disabled={loading} className="w-full text-sm text-indigo-600 underline text-center py-2 disabled:opacity-40" onClick={handleManual}>
               Ingresar manualmente
             </button>
+
+            {pastBills && pastBills.filter((b) => b.status === "finalized").length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Divisiones guardadas</p>
+                <ul className="space-y-2">
+                  {pastBills.filter((b) => b.status === "finalized").map((b) => (
+                    <li key={b.id}>
+                      <button
+                        onClick={() => openPastBill(b.id)}
+                        className="w-full flex items-center justify-between bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-left hover:border-indigo-300"
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium truncate">{b.merchant || "División"}</span>
+                          <span className="block text-xs text-slate-400">
+                            {b.date} · {b.participants} pers. · total {clp(b.total_amount)}
+                            {b.transaction_id ? "" : " · sin gasto"}
+                          </span>
+                        </span>
+                        <span className="text-sm font-semibold shrink-0 ml-2">{clp(b.my_share)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
 
@@ -1395,7 +1449,11 @@ export default function SplitPage() {
             <div className="bg-indigo-600 rounded-2xl px-5 py-6 text-white text-center">
               <p className="text-sm opacity-80 mb-1">Tu gasto personal</p>
               <p className="text-4xl font-extrabold">{clp(finalized ? myShare : (bill.participants.find((p) => p.is_me)?.owes_amount || previewMyShare))}</p>
-              {finalized && <p className="text-sm mt-2 opacity-80">Guardado en Lucas ✓</p>}
+              {finalized && (
+                <p className="text-sm mt-2 opacity-80">
+                  {bill.transaction_id ? "Guardado en Lucas ✓" : "División guardada ✓ (sin gasto)"}
+                </p>
+              )}
             </div>
 
             {/* Per-person owes/paid summary */}
@@ -1455,7 +1513,20 @@ export default function SplitPage() {
               </div>
             </details>
 
-            {!finalized && accounts.length > 0 && (
+            {!finalized && (
+              <label className="flex items-start gap-3 w-full border border-slate-200 rounded-xl px-3 py-3 bg-white cursor-pointer">
+                <input type="checkbox" checked={saveAsExpense} onChange={(e) => setSaveAsExpense(e.target.checked)} className="mt-0.5 w-4 h-4 rounded" />
+                <span className="text-sm">
+                  <span className="font-medium">Guardar mi parte como gasto</span>
+                  <span className="block text-xs text-slate-500">
+                    {saveAsExpense
+                      ? `Se agrega ${clp(bill.participants.find((p) => p.is_me)?.owes_amount ?? previewMyShare)} a tus gastos.`
+                      : "Solo se guarda la división para revisarla después, sin tocar tus gastos."}
+                  </span>
+                </span>
+              </label>
+            )}
+            {!finalized && saveAsExpense && accounts.length > 0 && (
               <select className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white" value={selectedAccountId ?? ""} onChange={(e) => setSelectedAccountId(e.target.value ? parseInt(e.target.value) : null)}>
                 <option value="">Sin cuenta específica</option>
                 {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.bank})</option>)}
@@ -1463,7 +1534,7 @@ export default function SplitPage() {
             )}
             {!finalized && (
               <button onClick={handleFinalize} disabled={loading} className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
-                {loading ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <><Check size={18} /> Guardar en Lucas</>}
+                {loading ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <><Check size={18} /> {saveAsExpense ? "Guardar en Lucas" : "Guardar división"}</>}
               </button>
             )}
             {finalized && (
