@@ -158,6 +158,7 @@ export default function SplitPage() {
 
   // Step 4 — payers
   const [payerMode, setPayerMode] = useState<"me" | "other" | "split">("me");
+  const [payerSplitUnit, setPayerSplitUnit] = useState<"$" | "%">("$");
   const [otherPayer, setOtherPayer] = useState<number | null>(null);
   const [multiAmounts, setMultiAmounts] = useState<Record<number, string>>({});
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
@@ -855,10 +856,24 @@ export default function SplitPage() {
       if (!otherPayer) { showError("Selecciona quién pagó"); return; }
       payers = [{ participant_id: otherPayer, paid_amount: total }];
     } else {
-      const sum = Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-      if (Math.abs(sum - total) > 1) { showError(`La suma (${clp(Math.round(sum))}) no coincide con el total`); return; }
-      payers = bill.participants.filter((p) => (parseFloat(multiAmounts[p.id] || "0") || 0) > 0)
-        .map((p) => ({ participant_id: p.id, paid_amount: parseFloat(multiAmounts[p.id] || "0") || 0 }));
+      const raw = Object.fromEntries(
+        bill.participants.map((p) => [p.id, parseFloat(multiAmounts[p.id] || "0") || 0]),
+      );
+      if (payerSplitUnit === "%") {
+        const pctSum = Object.values(raw).reduce((s, v) => s + v, 0);
+        if (Math.abs(pctSum - 100) > 0.5) { showError(`Los % suman ${pctSum.toFixed(0)}%, deben sumar 100%`); return; }
+        payers = bill.participants.filter((p) => raw[p.id] > 0).map((p, i, arr) => ({
+          participant_id: p.id,
+          // el último absorbe el redondeo para que sume exacto
+          paid_amount: i === arr.length - 1
+            ? Math.round((total - arr.slice(0, -1).reduce((s, q) => s + Math.round(total * raw[q.id]) / 100, 0)) * 100) / 100
+            : Math.round(total * raw[p.id]) / 100,
+        }));
+      } else {
+        const sum = Object.values(raw).reduce((s, v) => s + v, 0);
+        if (Math.abs(sum - total) > 1) { showError(`La suma (${clp(Math.round(sum))}) no coincide con el total`); return; }
+        payers = bill.participants.filter((p) => raw[p.id] > 0).map((p) => ({ participant_id: p.id, paid_amount: raw[p.id] }));
+      }
     }
     setBusy(true);
     try { setBill(await setPayers(bill.id, payers)); setStep(5); }
@@ -898,7 +913,9 @@ export default function SplitPage() {
   };
 
   const splitSum = Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
-  const splitMatches = bill ? Math.abs(splitSum - bill.total_amount) <= 1 : false;
+  const splitOk = bill
+    ? (payerSplitUnit === "%" ? Math.abs(splitSum - 100) <= 0.5 : Math.abs(splitSum - bill.total_amount) <= 1)
+    : false;
 
   // Pre-finalize: compute "Yo" total locally from current shares so the summary
   // card doesn't show $0 while the backend still has owes_amount=0.
@@ -1417,17 +1434,32 @@ export default function SplitPage() {
               <p className="font-semibold text-slate-800">Pagamos varios</p>
               {payerMode === "split" && (
                 <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex gap-1 justify-end">
+                    {(["$", "%"] as const).map((u) => (
+                      <button key={u} type="button" onClick={() => { setPayerSplitUnit(u); setMultiAmounts({}); }}
+                        className={`px-2.5 py-1 text-xs rounded-lg border ${payerSplitUnit === u ? "bg-indigo-600 text-white border-indigo-600" : "border-slate-200 text-slate-500"}`}>
+                        {u === "$" ? "Montos" : "Porcentaje"}
+                      </button>
+                    ))}
+                  </div>
                   {bill.participants.map((p) => (
                     <div key={p.id} className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ background: p.color }}>{initials(p.name)}</div>
                       <span className="flex-1 text-sm text-slate-700">{p.name}</span>
-                      <input type="number" className="w-28 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" placeholder="0" value={multiAmounts[p.id] ?? ""} onChange={(e) => setMultiAmounts((m) => ({ ...m, [p.id]: e.target.value }))} />
+                      <div className="flex items-center gap-1">
+                        <input type="number" inputMode="decimal" className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" placeholder="0" value={multiAmounts[p.id] ?? ""} onChange={(e) => setMultiAmounts((m) => ({ ...m, [p.id]: e.target.value }))} />
+                        <span className="text-xs text-slate-400 w-3">{payerSplitUnit}</span>
+                      </div>
                     </div>
                   ))}
                   <div className="flex justify-between text-xs pt-1">
-                    <span className="text-slate-400">Total: {clp(bill.total_amount)}</span>
-                    <span className={splitMatches ? "text-emerald-600 font-medium" : "text-red-600 font-medium"}>
-                      Ingresado: {clp(splitSum)}{!splitMatches && " ✗"}
+                    <span className="text-slate-400">
+                      {payerSplitUnit === "%" ? "Deben sumar 100%" : `Total: ${clp(bill.total_amount)}`}
+                    </span>
+                    <span className={splitOk ? "text-emerald-600 font-medium" : "text-red-600 font-medium"}>
+                      {payerSplitUnit === "%"
+                        ? `${splitSum.toFixed(0)}%`
+                        : `Ingresado: ${clp(splitSum)}`}{!splitOk && " ✗"}
                     </span>
                   </div>
                 </div>
