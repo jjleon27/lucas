@@ -558,10 +558,21 @@ CC payments exist. `PendingTransferList.tsx` component handles the UI.
 
 ## 16. Short-Term Roadmap
 
+> **Actualizado 2026-09-09:** hechos en esta ronda — migración a Vercel (deploy),
+> OCR `gpt-5-mini` (eval 95.5%), **fix del bug de precios de boleta en el split**,
+> y **feature Proyectos** (backend + frontend + `/projects`, verificado en prod).
+> Pendiente cortito: replicar fixes en `_RECEIPT_TEXT_PROMPT`; `_RECEIPT_PROMPT`
+> a veces no reporta `total_neto`/`iva_amount` (metadata, no rompe el split);
+> probar cartola escaneada real con `pypdfium2`; copiar env vars a Preview;
+> rotar `OPENAI_API_KEY`; borrar proyecto Railway.
+
 Priority order based on bugs and gaps in current implementation.
 
 | Priority | Task | Type | Status |
 |----------|------|------|--------|
+| ~~P?~~ | ~~Feature Proyectos (agrupador transversal + presupuesto)~~ | Feature | **DONE 2026-09-09** |
+| ~~P?~~ | ~~Migrar deploy a Vercel (fuera de Railway)~~ | Infra | **DONE 2026-09-09** |
+| ~~P?~~ | ~~Bug: split corrompía precios de boleta ($2.150→$1.765)~~ | Bug fix | **DONE 2026-09-09** |
 | ~~P0~~ | ~~Fix `resp.content` → `resp.text` in `ai/voice.py`~~ | Bug fix | DONE |
 | ~~P0~~ | ~~Fix `resp.content` → `resp.text` in `cartola.py`~~ | Bug fix | DONE |
 | ~~P0~~ | ~~Add `pdf2image` to `requirements.txt`~~ | Infrastructure | DONE |
@@ -686,6 +697,7 @@ The following are explicitly out of scope for LUCAS:
 | Alerts | STABLE | |
 | Chat (basic + action) | STABLE | |
 | Bill splitter v2 | STABLE | depende del OCR — bug de precios corregido 2026-09-09 |
+| Proyectos (agrupador + presupuesto) | STABLE | `routers/projects.py`, `/projects`, selector en TransactionList. Verificado en prod 2026-09-09 |
 | Cartola (text PDF) | STABLE | `resp.content` bug fixed |
 | Cartola (scanned PDF) | STABLE | |
 | Voice parse (backend) | STABLE | `resp.content` bug fixed |

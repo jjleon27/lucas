@@ -54,8 +54,15 @@ la doc + graphify al día. Cambios visibles en el celu → push frecuente.
 - [x] Fase 2: MASTER_PLAN/ROADMAP/CURRENT_STATE/README sincronizados a Vercel.
   `graphify update .` hecho (2452 nodos). Prep Fable 5.1 (anthropic 0.125.0,
   provider default `claude-fable-5-1`, max_tokens 16k). Deploy OK con el bump.
-- [ ] Fase 3: **Proyectos (Opción B)** — NO empezada. Handoff abajo.
-- [ ] Fase 4: cierre (este bloque).
+- [x] Fase 3: **Proyectos (Opción B)** — HECHA y verificada en prod.
+  - Backend: `Project` + `Transaction.project_id`, `_migrate_schema` ALTER,
+    `routers/projects.py` (CRUD + `/summary` + `/transactions`), validación por
+    usuario. `tests/test_projects.py` 7 tests. commit 1cdf579.
+  - Frontend: `app/projects/page.tsx` (lista + barra presupuesto + crear/editar/
+    archivar/borrar + detalle con gasto por categoría), link en Sidebar, `<select>`
+    de proyecto en el form de edición de `TransactionList`. commit c2ad3b6.
+  - Prod verificado: crear proyecto + asignar tx + summary (spent/remaining/pct/cats) OK.
+- [x] Fase 4: cierre — docs actualizadas, graphify, memoria, este bloque.
 
 ## Handoff Fase 3 — feature Proyectos (para próxima sesión)
 Spec (memoria `project-next-feature`): entidad `Project(id, user_id, name, budget
