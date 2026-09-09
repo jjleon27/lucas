@@ -54,3 +54,32 @@ y no hay feedback. Además `finalize` no valida que cada ítem tenga shares que 
 3. Frontend P1: modos de reparto por ítem (%, montos, partes iguales) → commit + deploy.
 4. Frontend P2: pagador por % → commit + deploy.
 5. Doc + graphify + MASTER_PLAN.
+
+---
+
+## ESTADO 2026-09-09
+
+### HECHO (commiteado, deployado, verificado en prod)
+- **BUG "no se guardó el monto" ARREGLADO.** Causa: `finalize_bill` hacía
+  `from ..services import account_svc` (import roto) → 500 al crear la tx. Además
+  `reconcile_new_transaction` con firma vieja. commit 7358046.
+- **Backend**: `save_to_expense` en `FinalizePayload`; `percent` en `ShareEntry`
+  (units>percent>weight); guard "cada ítem repartido al 100%"; `my_share` +
+  `transaction_id` + `created_at` en `_bill_out` y `GET /bills`. tests/test_bills.py (4).
+- **Frontend P0**: paso 5 toggle "Guardar mi parte como gasto" (default ON;
+  OFF → división guardada sin gasto). Paso 1 "Divisiones guardadas" (lista de
+  bills finalizadas, tap → resumen read-only). commit b… (split P0).
+- **Frontend P2**: paso 4 "Pagamos varios" → toggle Montos / Porcentaje.
+- Verificado prod: item share % 40/60 → my_share correcto; finalize sin gasto
+  deja `transaction_id:null` y `status:finalized`; historial lista bien.
+
+### PENDIENTE — P1 (reparto flexible por ítem en la UI)
+El backend YA lo soporta (`/bills/{id}/shares` acepta `weight` / `units` (float) /
+`percent`). Falta SOLO la UI en el paso 3 (`split/page.tsx`). El modelo actual es
+`assignments: Map<itemId, (number|null)[]>` con `sharers` pegado al array — frágil.
+Propuesta de bajo riesgo: botón "⚙️ Ajuste fino" por ítem que abre un panel con
+modo Unidades / Porcentaje / Montos e inputs por participante, postea vía
+`postShares` con `percent`/`weight`, y guarda un override `Map<itemId, ShareEntry[]>`
+que `goToWhoPaid` usa en vez de `sharesForItem(item)` si existe.
+Casos objetivo: qty impar entre N seleccionados; "1 persona 2 uds, otras 2 se
+reparten 3" (units fraccionales); % por persona.

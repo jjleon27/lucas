@@ -1,27 +1,38 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-09 04:51:48*
+*Auto-guardado por hook Stop · 2026-09-09 12:22:07*
 
 ## Presión de contexto
-- Tool uses esta sesión: **227** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **359** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-listo
+[Image: source: /Users/kako2/Downloads/IMG_4600.PNG]
 
 ## Último trabajo del asistente
-Todas las rutas dan 200 ahora (`/split`, `/dashboard`, etc.) y la API sigue OK. El 404 al "dividir cuenta" está resuelto.
+Todo hecho, en `main`, deployado y verificado en prod. Resumen de la sesión autónoma:
 
-La app quedó completa en Ve
+## 🔴 Bug del split (lo urgente) — ARREGLADO
+
+El "$2.150 → $1.76
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
+- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/deploy_vercel_2026_09.md`
+- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/feedback_ocr_no_escalar.md`
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/ocr_eval_harness.md`
+- `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/project_next_feature.md`
+- `README.md`
 - `api/index.py`
 - `api/requirements.txt`
 - `backend/.env.example`
 - `backend/app/ai/provider.py`
 - `backend/app/config.py`
 - `backend/app/database.py`
+- `backend/app/main.py`
+- `backend/app/models.py`
 - `backend/app/ocr.py`
+- `backend/app/routers/projects.py`
+- `backend/app/routers/transactions.py`
+- `backend/app/schemas.py`
 - `backend/app/storage.py`
 - `backend/requirements.txt`
 - `backend/tests/eval/README.md`
@@ -30,13 +41,23 @@ La app quedó completa en Ve
 - `backend/tests/eval/expected/cuenta_valeria.json`
 - `backend/tests/eval/expected/danes_vitacura.json`
 - `backend/tests/eval/expected/dondewilly_vinadelmar.json`
+- `backend/tests/eval/expected/lider_quilicura.json`
 - `backend/tests/eval/expected/montana_bellavista.json`
 - `backend/tests/eval/expected/ponzano_madrid.json`
 - `backend/tests/eval/results/.gitignore`
 - `backend/tests/eval/run_eval.py`
+- `backend/tests/test_projects.py`
+- `docs/CURRENT_STATE.md`
+- `docs/MASTER_PLAN.md`
+- `docs/PLAN_autonomo.md`
 - `docs/PLAN_migracion_vercel.md`
+- `docs/ROADMAP.md`
 - `docs/SESSION_STATE.md`
 - `frontend/next.config.js`
+- `frontend/src/app/projects/page.tsx`
+- `frontend/src/components/Sidebar.tsx`
+- `frontend/src/components/TransactionList.tsx`
+- `frontend/src/lib/api.ts`
 - `package.json`
 - `vercel.json`
 
@@ -46,36 +67,14 @@ La app quedó completa en Ve
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
 
-## ESTADO MANUAL (fin de sesión autónoma 2026-09-09)
+## ADDENDUM 2026-09-09 — Dividir cuenta (feedback usuario)
+BUG "no se guardó el monto" ARREGLADO Y DEPLOYADO. Causa: `bills.py finalize_bill`
+tenía `from ..services import account_svc` (nombre inexistente) → 500 al crear la
+transacción. + toggle "guardar como gasto sí/no" (paso 5), + historial
+"Divisiones guardadas" (paso 1), + pagador por % (paso 4), + `percent` en shares.
+Todo commiteado/pusheado/deployado/verificado en prod.
 
-TODO HECHO, commiteado y pusheado a `main`. Prod verificado en
-https://frontend-mu-dusky-88.vercel.app
-
-### Hecho esta sesión
-1. **Bug del split** (usuario reportó "$2.150 → $1.765"): `_normalize_boleta_items`
-   escalaba precios correctos al TOTAL NETO. Fix en `vision_parse` + prompt.
-   Eval `lider_quilicura` guard de regresión. Verificado en prod: CHOCO 160 = 2150.
-2. **Migración a Vercel** completa (de sesión previa): static front + Python fn +
-   Neon + Blob. Ver `docs/PLAN_migracion_vercel.md`.
-3. **OCR gpt-5-mini** default, eval 95.5%. Fable 5.1 listo (falta ANTHROPIC_API_KEY:
-   `AI_PROVIDER=anthropic`, `ANTHROPIC_MODEL=claude-fable-5-1`).
-4. **Feature Proyectos** (Opción B) — backend + frontend + `/projects` + selector
-   en TransactionList. Verificado en prod. Tests `test_projects.py`.
-5. Docs sincronizadas (MASTER_PLAN, ROADMAP, CURRENT_STATE, README), graphify
-   actualizado (2528 nodos), memoria actualizada.
-6. `compact` NameError arreglado; `_RECEIPT_TEXT_PROMPT` con reglas moneda/propina/fecha.
-
-### Pendiente (nada bloquea, todo anotado)
-- Rotar `OPENAI_API_KEY` (se pegó en el chat).
-- Borrar proyecto Railway `reasonable-laughter`.
-- Copiar env vars de Production → Preview en Vercel (para que los previews anden).
-- `_RECEIPT_TEXT_PROMPT`: portar fix "no escalar precios" (solo `_RECEIPT_PROMPT` lo tiene).
-- `_RECEIPT_PROMPT` a veces devuelve `total_neto`/`iva_amount` null (metadata; el split anda igual).
-- Probar cartola PDF escaneada real (`pypdfium2` no testeado en prod).
-- Proyectos: asignar desde el form de "nueva transacción" (hoy solo al editar);
-  filtro por proyecto en la lista de movimientos.
-- (viejo) test_ocr_normalize/_integration: 11 tests fallan hace meses (dead code del churn de junio).
-
-### "Que siga funcionando si cierro el laptop"
-La APP: sí, está 100% en Vercel serverless. Esta sesión de Claude Code: se pausa
-al cerrar el laptop. Para retomar: leer `docs/PLAN_autonomo.md` (todo commiteado).
+PENDIENTE P1: UI de reparto flexible por ítem (qty impar entre N, unidades
+fraccionales, % por persona). El backend `/bills/{id}/shares` YA lo soporta
+(weight/units float/percent). Falta solo la UI del paso 3. Detalle y propuesta
+de bajo riesgo en `docs/PLAN_split_v3.md` sección "PENDIENTE — P1".
