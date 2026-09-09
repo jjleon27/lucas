@@ -1,0 +1,21 @@
+{
+  "image": "baobar_providencia.jpeg",
+  "source": "Comanda BAO BAR (Providencia). Dice 'NO VALIDO COMO BOLETA'.",
+  "currency": "CLP",
+  "merchant_contains": "bao",
+  "date": "2020-01-29",
+  "amount": 21300,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 5,
+  "items_subtotal": 21300,
+  "items_lenient": false,
+  "items": [
+    {"name": "Papas Fritas", "quantity": 1, "line_total": 3500},
+    {"name": "Bao Mix", "quantity": 2, "line_total": 13800},
+    {"name": "Sprite Zero", "quantity": 1, "line_total": 1500},
+    {"name": "Limonada", "quantity": 1, "line_total": 2500},
+    {"name": "Cordirellano", "quantity": 1, "line_total": 0}
+  ],
+  "notes": "amount = TOTAL A PAGAR 21.300 (NO el 'TOTAL + PROPINA SUGERIDA 23.430', que es solo sugerido). Item con precio 0 (Cordirellano). qty>1: Bao Mix x2 = 13.800."
+}

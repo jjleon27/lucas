@@ -1,0 +1,19 @@
+{
+  "image": "dondewilly_vinadelmar.jpeg",
+  "source": "Boleta chica DONDE WILLY RESTAURANTE (Vina del Mar). El TOTAL YA incluye propina sugerida.",
+  "currency": "CLP",
+  "merchant_contains": "willy",
+  "date": "2020-02-11",
+  "amount": 11000,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 2,
+  "item_count_max": 3,
+  "items_subtotal": 11000,
+  "items_lenient": true,
+  "items": [
+    {"name": "Reineta Plancha", "quantity": 1, "line_total": 7500},
+    {"name": "Jugo Natural Frambuesa", "quantity": 1, "line_total": 2500}
+  ],
+  "notes": "amount = TOTAL 11.000 (subtotal 10.000 + PROPINA SUGERIDA 10% 1.000, y aca el total SI la incluye). El pipeline puede o no agregar una linea 'Propina' 1.000 -> item_count 2 o 3 aceptable. items_lenient por eso."
+}

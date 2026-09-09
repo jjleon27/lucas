@@ -1,0 +1,22 @@
+{
+  "image": "cuenta_valeria.jpeg",
+  "source": "Comanda 'CUENTA' de restaurante (usuario Valeria Ortega). Precios sin separador de miles. Sin nombre de local claro.",
+  "currency": "CLP",
+  "merchant_contains": null,
+  "date": "2016-11-03",
+  "amount": 24900,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 6,
+  "items_subtotal": 24900,
+  "items_lenient": true,
+  "items": [
+    {"name": "Coca Cola Light", "quantity": 1, "line_total": 1700},
+    {"name": "Agua Mineral Sin Gas", "quantity": 1, "line_total": 1700},
+    {"name": "Pechuga de Pollo", "quantity": 1, "line_total": 4400},
+    {"name": "Ensalada Surtida", "quantity": 1, "line_total": null},
+    {"name": "Costillar Alfajo de", "quantity": 1, "line_total": 8900},
+    {"name": "Pure", "quantity": 1, "line_total": 2500}
+  ],
+  "notes": "items_lenient: la suma de precios legibles (23.600) no cuadra con Total Final 24.900 (probable mala lectura de 'Ensalada Surtida'). Se evalua currency, amount=24.900 (NO el 'Total con Propina Sugerida'), item_count=6, no IVA."
+}

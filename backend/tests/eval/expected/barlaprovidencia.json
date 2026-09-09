@@ -1,0 +1,29 @@
+{
+  "image": "barlaprovidencia.jpeg",
+  "source": "Precuenta de bar (methodo.cl). Screenshot de TikTok, precios impresos desalineados respecto a cada item. Caso DIFICIL.",
+  "currency": "CLP",
+  "merchant_contains": null,
+  "date": null,
+  "amount": 135000,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 13,
+  "items_subtotal": 135000,
+  "items_lenient": true,
+  "items": [
+    {"name": "Frutilla Spritz", "quantity": 1, "line_total": null},
+    {"name": "Penelope Glamour", "quantity": 1, "line_total": null},
+    {"name": "Penelope Glamour", "quantity": 1, "line_total": null},
+    {"name": "Falso Amor", "quantity": 1, "line_total": null},
+    {"name": "Costilla Bruce Lee", "quantity": 1, "line_total": null},
+    {"name": "Luco Provi", "quantity": 1, "line_total": null},
+    {"name": "La Blue", "quantity": 1, "line_total": null},
+    {"name": "Gin Butterfly", "quantity": 2, "line_total": null},
+    {"name": "Paris in Rose", "quantity": 1, "line_total": null},
+    {"name": "Campo de Rosas", "quantity": 1, "line_total": null},
+    {"name": "Oaxaca", "quantity": 1, "line_total": null},
+    {"name": "Desafio", "quantity": 2, "line_total": null},
+    {"name": "Pura Sangre", "quantity": 1, "line_total": null}
+  ],
+  "notes": "items_lenient: los precios impresos NO cuadran con CONSUMO 135.000 ni siquiera leyendolos bien (precuenta ajustada a mano). Solo se evalua: currency, amount=135.000, item_count=13, no IVA. 13 lineas, 2 de ellas qty=2 (Gin Butterfly, Desafio) => 15 unidades totales."
+}

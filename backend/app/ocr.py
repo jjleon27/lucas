@@ -599,7 +599,13 @@ _RECEIPT_PROMPT = """Eres un experto en recibos y boletas chilenas. Lee la image
 
 ORIENTACIÓN: La imagen puede estar rotada. El texto se lee de izquierda a derecha, precios a la derecha.
 
-REGLAS CHILENAS:
+MONEDA:
+- Por defecto es CLP (Chile): los puntos son separadores de miles ("9.000" = nueve mil), sin decimales.
+- Si el recibo es de otro país (dirección/teléfono/NIF español, "IVA INCLUIDO", símbolo €, o
+  montos con 2 decimales tipo "26,50" / "26.50"), usa esa moneda ("EUR", "USD", etc.) y CONSERVA
+  los decimales. NO conviertas a CLP. NO multipliques por 1000.
+
+REGLAS DE NÚMEROS (CLP):
 - Los puntos son separadores de miles: "9.000" = nueve mil pesos.
 - El número entero ANTES del nombre es la CANTIDAD. Si no hay número, qty=1.
 - El número al final de cada línea es el TOTAL DE ESA LÍNEA (no el precio unitario).
@@ -613,7 +619,15 @@ BOLETA FISCAL (SII) vs comanda:
 - Si hay líneas "TOTAL NETO" e "IVA" explícitas → llena total_neto e iva_amount.
 - Si es comanda de bar/restaurante sin esas etiquetas → deja ambos en null.
 
-AMOUNT: el total final ("TOTAL", "A PAGAR", "TARJETA", "CONSUMO CLIENTE"). Nunca un subtotal.
+AMOUNT — el monto realmente cobrado:
+- Usa el número de la línea rotulada exactamente "TOTAL" / "A PAGAR" / "TARJETA" / "EFECTIVO" /
+  "CONSUMO CLIENTE" (la última si hay varias). Nunca un "SUBTOTAL" ni un "TOTAL NETO".
+- PROPINA SUGERIDA: si hay una línea "Propina sugerida"/"Prop. sugerida 10%" y además una línea
+  "TOTAL + PROPINA" / "Total c/propina", esa propina NO se cobra: usa el "TOTAL" simple (sin propina).
+- Pero si la propina YA está sumada dentro de la línea final "TOTAL" (p.ej. SUBTOTAL 10.000 +
+  PROPINA 1.000 y luego "TOTAL 11.000"), entonces amount = 11.000 (el TOTAL tal cual).
+
+FECHA: si la fecha no se lee con certeza (dígitos borrosos), devuelve null. NO adivines.
 
 CATEGORÍA:
 - "Bares y Salidas": schops, cervezas, fernet, tragos, pub/bar
@@ -628,7 +642,7 @@ CATEGORÍA:
 
 DEVUELVE SOLO ESTE JSON (sin markdown):
 {
-  "currency": "CLP",
+  "currency": "CLP",   // o "EUR" / "USD" / etc. según el recibo (ver MONEDA)
   "total_neto": número o null,
   "iva_amount": número o null,
   "transactions": [

@@ -38,6 +38,27 @@ class LLMResponse:
         return self.prompt_tokens + self.completion_tokens
 
 
+def _extract_json_block(raw: str) -> str:
+    """Pull a JSON object out of a free-form model reply (```json fences or bare {...})."""
+    import re as _re
+    m = _re.search(r"```json\s*([\s\S]+?)\s*```", raw or "")
+    if m:
+        return m.group(1)
+    s = (raw or "").strip()
+    if s.startswith("{"):
+        return s
+    a, b = s.find("{"), s.rfind("}") + 1
+    return s[a:b] if a != -1 and b > a else ""
+
+
+def _split_data_url(image_data_url: str) -> tuple[str, str]:
+    """'data:image/jpeg;base64,XXXX' -> ('image/jpeg', 'XXXX'). Defaults to image/jpeg."""
+    import re as _re
+    header, _, b64 = (image_data_url or "").partition(",")
+    m = _re.match(r"data:([^;]+);base64", header)
+    return (m.group(1) if m else "image/jpeg"), b64
+
+
 class LLMProvider:
     """Base class. Subclasses implement chat_completion()."""
 
@@ -96,6 +117,10 @@ class OpenAIProvider(LLMProvider):
         from openai import OpenAI
         vision_model = model or settings.openai_vision_model
         client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
+        _kw = {}
+        # GPT-5 / o-series reject any temperature but the default (1).
+        if not vision_model.startswith(("gpt-5", "o1", "o3", "o4")):
+            _kw["temperature"] = temperature
         resp = client.chat.completions.create(
             model=vision_model,
             messages=[
@@ -105,7 +130,7 @@ class OpenAIProvider(LLMProvider):
                     {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
                 ]},
             ],
-            temperature=temperature,
+            **_kw,
         )
         usage = getattr(resp, "usage", None)
         raw = resp.choices[0].message.content or ""
@@ -140,6 +165,9 @@ class OpenAIProvider(LLMProvider):
         # Use "low" detail for small images to save ~85% of vision tokens.
         # Receipts < 1500px long side are sharp enough at low detail.
         detail = "low" if 0 < image_long_side < 1500 else "high"
+        _kw = {}
+        if not vision_model.startswith(("gpt-5", "o1", "o3", "o4")):
+            _kw["temperature"] = temperature
         resp = client.chat.completions.create(
             model=vision_model,
             messages=[
@@ -152,7 +180,7 @@ class OpenAIProvider(LLMProvider):
                     {"type": "image_url", "image_url": {"url": image_data_url, "detail": detail}},
                 ]},
             ],
-            temperature=temperature,
+            **_kw,
         )
         usage = getattr(resp, "usage", None)
         return LLMResponse(
@@ -193,6 +221,32 @@ class AnthropicProvider(LLMProvider):
             provider=self.name,
         )
 
+    def vision_json(self, system_prompt: str, user_text: str, image_data_url: str,
+                    *, model=None, temperature=0.0, purpose: str = "parse"):
+        """Image input -> JSON out (Claude). Mirrors OpenAIProvider.vision_json."""
+        import anthropic  # optional dep
+        media_type, b64 = _split_data_url(image_data_url)
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        vision_model = model or getattr(settings, "anthropic_model", "claude-sonnet-5")
+        resp = client.messages.create(
+            model=vision_model,
+            max_tokens=8192,
+            system=system_prompt,
+            messages=[{"role": "user", "content": [
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": media_type, "data": b64}},
+                {"type": "text", "text": user_text},
+            ]}],
+        )
+        raw = "".join(b.text for b in resp.content if getattr(b, "text", None))
+        return LLMResponse(
+            text=_extract_json_block(raw),
+            prompt_tokens=getattr(resp.usage, "input_tokens", 0) or 0,
+            completion_tokens=getattr(resp.usage, "output_tokens", 0) or 0,
+            model=getattr(resp, "model", vision_model),
+            provider=self.name,
+        )
+
 
 # ---------- Google Gemini ----------
 class GeminiProvider(LLMProvider):
@@ -225,6 +279,38 @@ class GeminiProvider(LLMProvider):
             prompt_tokens=getattr(usage, "prompt_token_count", 0) or 0,
             completion_tokens=getattr(usage, "candidates_token_count", 0) or 0,
             model=model or "gemini-1.5-flash",
+            provider=self.name,
+        )
+
+    def vision_json(self, system_prompt: str, user_text: str, image_data_url: str,
+                    *, model=None, temperature=0.0, purpose: str = "parse"):
+        """Image input -> JSON out (Gemini). Uses the new google-genai SDK."""
+        import base64 as _b64
+        from google import genai  # optional dep: pip install google-genai
+        from google.genai import types as _t
+
+        media_type, b64 = _split_data_url(image_data_url)
+        img_bytes = _b64.b64decode(b64)
+        vision_model = model or getattr(settings, "google_model", "gemini-2.5-flash")
+        client = genai.Client(api_key=settings.google_api_key)
+        resp = client.models.generate_content(
+            model=vision_model,
+            contents=[
+                _t.Part.from_bytes(data=img_bytes, mime_type=media_type),
+                user_text,
+            ],
+            config=_t.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=temperature,
+                max_output_tokens=8192,
+            ),
+        )
+        usage = getattr(resp, "usage_metadata", None)
+        return LLMResponse(
+            text=_extract_json_block(resp.text or ""),
+            prompt_tokens=getattr(usage, "prompt_token_count", 0) or 0,
+            completion_tokens=getattr(usage, "candidates_token_count", 0) or 0,
+            model=vision_model,
             provider=self.name,
         )
 

@@ -1,0 +1,22 @@
+{
+  "image": "danes_vitacura.jpg",
+  "source": "Foto de comanda restaurante DANES (Vitacura, Santiago). Foto oscura, papel térmico.",
+  "currency": "CLP",
+  "merchant_contains": "danes",
+  "date": "2015-05-04",
+  "amount": 25500,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 6,
+  "items_subtotal": 25500,
+  "items_lenient": false,
+  "items": [
+    {"name": "Coca-Cola Maq", "quantity": 1, "line_total": 1500},
+    {"name": "Nordic Ginger", "quantity": 1, "line_total": 1500},
+    {"name": "Plateada Greda", "quantity": 2, "line_total": 15800},
+    {"name": "Championes Salteados", "quantity": 1, "line_total": 1900},
+    {"name": "Pure de Papas", "quantity": 1, "line_total": 1900},
+    {"name": "Leche Nevada", "quantity": 1, "line_total": 2900}
+  ],
+  "notes": "Caso qty>1: 'Plateada Greda' es 2 uds por 15.800 (unit 7.900). No hay linea IVA desglosada -> neto/iva null. amount = TARJETA DE CREDITO 25.500."
+}

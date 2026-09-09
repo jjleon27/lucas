@@ -1,0 +1,19 @@
+{
+  "image": "montana_bellavista.jpeg",
+  "source": "Boleta SII restaurante MONTANA (Bellavista). Precios SIN separador de miles ('3100', '13900'). Foto sobre mesa roja.",
+  "currency": "CLP",
+  "merchant_contains": "montana",
+  "date": "2019-09-19",
+  "amount": 19900,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 3,
+  "items_subtotal": 19900,
+  "items_lenient": false,
+  "items": [
+    {"name": "Cristal Lager 500cc", "quantity": 1, "line_total": 3100},
+    {"name": "T Bone Steak", "quantity": 1, "line_total": 13900},
+    {"name": "Papas Fritas Tradicional", "quantity": 1, "line_total": 2900}
+  ],
+  "notes": "amount = TOTAL 19.900 (NO 'Credito 21890' que es el efectivo entregado; 'Su Vuelto 1990'). IVA incluido, no desglosado -> neto/iva null. Prueba lectura de precios sin puntos de miles."
+}

@@ -1,0 +1,20 @@
+{
+  "image": "ponzano_madrid.jpeg",
+  "source": "Ticket BAR RESTAURANTE PONZANO (Madrid, Espana). EUR con decimales. 'IVA INCLUIDO'.",
+  "currency": "EUR",
+  "merchant_contains": "ponzano",
+  "date": "2017-04-01",
+  "amount": 26.5,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 4,
+  "items_subtotal": 26.5,
+  "items_lenient": false,
+  "items": [
+    {"name": "Doble Cerveza", "quantity": 2, "line_total": 6.0},
+    {"name": "Refresco Especial", "quantity": 1, "line_total": 2.5},
+    {"name": "Croquetitas Jamon", "quantity": 1, "line_total": 8.0},
+    {"name": "Alcachofas Fritas", "quantity": 1, "line_total": 10.0}
+  ],
+  "notes": "CASO BORDE MONEDA: es EUR con decimales, NO CLP. El pipeline debe devolver currency EUR y montos con decimales (26.50, no 2650 ni 26). qty>1: Doble Cerveza x2 = 6.00 (unit 3.00)."
+}
