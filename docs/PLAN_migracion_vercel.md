@@ -4,7 +4,76 @@
 > FastAPI como Vercel Python Functions. Postgres en Neon (free). Imágenes en Vercel Blob.
 > Costo de hosting: US$0 (Vercel Hobby + Neon free + Blob free tier).
 
-Fecha: 2026-09-09. Estado: PLANEADO, ejecución por pasos.
+Fecha: 2026-09-09. Rama `migracion-vercel`.
+
+## Progreso
+- [x] Paso 1 — `api/index.py` (Starlette Mount /api) + `api/requirements.txt`. commit 60992a7
+- [x] Paso 2 — cv2/pytesseract lazy; `run_ocr()` degrada a "".
+- [x] Paso 3 — `pdf2image` → `pypdfium2` en ocr.py + requirements.
+- [x] Paso 4 — `storage.py` backend `"blob"` (pkg `vercel_blob`); `next.config.js` host blob.
+- [x] Extra — `database.py` NullPool en Vercel; `vercel.json` monorepo.
+- [x] Verificado local: `/api/health` `/api/docs` `/api/openapi.json` → 200. Tests 457 pass, 11 fail preexistentes (sin regresión).
+- [ ] Paso 5 — Neon (provisionar + DATABASE_URL pooled)
+- [ ] Paso 6 — Vercel project Root Directory → repo root
+- [ ] Paso 7 — Blob store + env vars en Vercel
+- [ ] Paso 8 — deploy preview → verificar → prod ; datos: FRESH (usuario eligió b) ; apagar Railway
+
+## Decisión tomada: datos viejos → EMPEZAR DE CERO (opción b). No se migra el Postgres de Railway.
+
+---
+
+## RUNBOOK pasos 5-8 (los ejecuta el usuario — el classifier bloquea deploy/infra a Claude)
+
+```bash
+cd /Users/kako2/Documents/lucas
+git push -u origin migracion-vercel        # subir la rama
+
+# --- Vercel: apuntar el proyecto al repo root (no a frontend/) ---
+# Dashboard → proyecto lucas → Settings → General → Root Directory → dejar VACÍO (repo root).
+# (vercel.json ya hace: build de Next en frontend/, y la función api/index.py.)
+
+# --- Neon (Postgres serverless, free) ---
+vercel link                                # linkear el dir al proyecto lucas
+vercel integration add neon                # o Dashboard → Storage → Create → Neon
+#   → crea la DB y setea POSTGRES_URL / DATABASE_URL en el proyecto.
+#   Usar el connection string POOLED (…-pooler.…neon.tech).
+
+# --- Vercel Blob (imágenes) ---
+vercel blob store add lucas-uploads        # o Dashboard → Storage → Create → Blob
+#   → setea BLOB_READ_WRITE_TOKEN en el proyecto.
+
+# --- Env vars del proyecto (Production + Preview) ---
+vercel env add OPENAI_API_KEY              # la real (estaba en Railway)
+vercel env add OPENAI_VISION_MODEL         # gpt-5-mini
+vercel env add JWT_SECRET                  # generar: openssl rand -hex 32
+vercel env add ALLOW_PASSWORDLESS          # false
+vercel env add STORAGE_BACKEND            # blob
+vercel env add CORS_ORIGINS               # https://<tu-dominio>.vercel.app
+# DATABASE_URL y BLOB_READ_WRITE_TOKEN los setea la integración sola.
+# Si Neon setea POSTGRES_URL y no DATABASE_URL:  vercel env add DATABASE_URL  (mismo valor pooled)
+
+# --- Frontend env ---
+vercel env add NEXT_PUBLIC_API_URL        # /api    (same-origin)
+#   quitar el viejo NEXT_PUBLIC_API_URL que apuntaba a Railway.
+
+# --- Deploy preview y verificación ---
+vercel deploy                             # preview
+#   probar:  curl https://<preview>.vercel.app/api/health   → {"ok":true}
+#            abrir /api/docs, hacer signup/login, subir 1 boleta (foto), ver dashboard
+#            probar 1 cartola PDF (verifica pypdfium2)
+vercel deploy --prod                      # promover a producción
+
+# --- Apagar Railway ---
+# Dashboard Railway → proyecto reasonable-laughter → Settings → Delete
+```
+
+## Riesgos vivos a vigilar en el deploy
+- `vercel.json` monorepo: si Vercel no buildea Next, mover `buildCommand`/`outputDirectory`
+  o poner Root Directory = `frontend` y las funciones en `frontend/api/`.
+- `opencv`/`tesseract` ausentes → `run_ocr()` devuelve "" (ya manejado) → todo va por visión.
+- `pdfplumber.to_image()` (cartola escaneada) usa pypdfium2 como backend → verificar con PDF real.
+- Neon autosuspend: primera query tras idle +~1s.
+- Cold start función Python ~2-5s.
 
 ---
 
