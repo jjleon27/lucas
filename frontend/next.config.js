@@ -8,6 +8,8 @@ const nextConfig = {
       { protocol: "https", hostname: "**.amazonaws.com" },
       { protocol: "https", hostname: "**.railway.app" },
       { protocol: "https", hostname: "**.up.railway.app" },
+      { protocol: "https", hostname: "**.public.blob.vercel-storage.com" },
+      { protocol: "https", hostname: "**.vercel.app" },
     ],
   },
 };
