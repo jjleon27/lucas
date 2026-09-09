@@ -1,18 +1,16 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-09 12:22:07*
+*Auto-guardado por hook Stop · 2026-09-09 20:47:21*
 
 ## Presión de contexto
-- Tool uses esta sesión: **359** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **436** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-[Image: source: /Users/kako2/Downloads/IMG_4600.PNG]
+Si nro items son impares!? Ipcion para dividir entre los seleccionados (aunque sean nro par). O por ejemplo una persona consumio dos y entre dos personas consumieron tres items (o porcentaje y otro item se divide en numero o como queiran). luego en Quien pagó? Debe dar opciòn de pagar por porcentaje
 
 ## Último trabajo del asistente
-Todo hecho, en `main`, deployado y verificado en prod. Resumen de la sesión autónoma:
+Hecho lo grande, deployado y verificado en prod. Lo que quedó pendiente lo dejé documentado para no meterle mano apurado a código frágil.
 
-## 🔴 Bug del split (lo urgente) — ARREGLADO
-
-El "$2.150 → $1.76
+## ✅ EL BUG
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -30,6 +28,7 @@ El "$2.150 → $1.76
 - `backend/app/main.py`
 - `backend/app/models.py`
 - `backend/app/ocr.py`
+- `backend/app/routers/bills.py`
 - `backend/app/routers/projects.py`
 - `backend/app/routers/transactions.py`
 - `backend/app/schemas.py`
@@ -46,15 +45,18 @@ El "$2.150 → $1.76
 - `backend/tests/eval/expected/ponzano_madrid.json`
 - `backend/tests/eval/results/.gitignore`
 - `backend/tests/eval/run_eval.py`
+- `backend/tests/test_bills.py`
 - `backend/tests/test_projects.py`
 - `docs/CURRENT_STATE.md`
 - `docs/MASTER_PLAN.md`
 - `docs/PLAN_autonomo.md`
 - `docs/PLAN_migracion_vercel.md`
+- `docs/PLAN_split_v3.md`
 - `docs/ROADMAP.md`
 - `docs/SESSION_STATE.md`
 - `frontend/next.config.js`
 - `frontend/src/app/projects/page.tsx`
+- `frontend/src/app/split/page.tsx`
 - `frontend/src/components/Sidebar.tsx`
 - `frontend/src/components/TransactionList.tsx`
 - `frontend/src/lib/api.ts`
@@ -66,15 +68,3 @@ El "$2.150 → $1.76
 2. Lee `docs/ROADMAP.md` tabla "Work Order Summary"
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
-
-## ADDENDUM 2026-09-09 — Dividir cuenta (feedback usuario)
-BUG "no se guardó el monto" ARREGLADO Y DEPLOYADO. Causa: `bills.py finalize_bill`
-tenía `from ..services import account_svc` (nombre inexistente) → 500 al crear la
-transacción. + toggle "guardar como gasto sí/no" (paso 5), + historial
-"Divisiones guardadas" (paso 1), + pagador por % (paso 4), + `percent` en shares.
-Todo commiteado/pusheado/deployado/verificado en prod.
-
-PENDIENTE P1: UI de reparto flexible por ítem (qty impar entre N, unidades
-fraccionales, % por persona). El backend `/bills/{id}/shares` YA lo soporta
-(weight/units float/percent). Falta solo la UI del paso 3. Detalle y propuesta
-de bajo riesgo en `docs/PLAN_split_v3.md` sección "PENDIENTE — P1".
