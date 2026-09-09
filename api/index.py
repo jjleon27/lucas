@@ -8,6 +8,10 @@ The backend code lives unchanged in ../backend/app. Vercel bundles that tree via
 Vercel routes every /api/* request here (see vercel.json rewrites). We mount the
 FastAPI app under "/api" with a Starlette Mount so the prefix is stripped before
 FastAPI routing and OpenAPI/docs URLs are generated with the right root_path.
+
+Vercel's serverless runtime does NOT run the ASGI lifespan / FastAPI startup
+events, so we call init_db() here at import time (once per cold start;
+create_all + the ALTERs are idempotent).
 """
 import os
 import sys
@@ -20,5 +24,12 @@ from starlette.applications import Starlette  # noqa: E402
 from starlette.routing import Mount  # noqa: E402
 
 from app.main import app as _fastapi_app  # noqa: E402
+
+try:
+    from app.database import init_db
+
+    init_db()
+except Exception as _e:  # don't let a transient DB blip kill the whole function
+    print(f"[api/index] init_db() failed: {type(_e).__name__}: {_e}")
 
 app = Starlette(routes=[Mount("/api", app=_fastapi_app)])
