@@ -73,13 +73,18 @@ y no hay feedback. Además `finalize` no valida que cada ítem tenga shares que 
 - Verificado prod: item share % 40/60 → my_share correcto; finalize sin gasto
   deja `transaction_id:null` y `status:finalized`; historial lista bien.
 
-### PENDIENTE — P1 (reparto flexible por ítem en la UI)
-El backend YA lo soporta (`/bills/{id}/shares` acepta `weight` / `units` (float) /
-`percent`). Falta SOLO la UI en el paso 3 (`split/page.tsx`). El modelo actual es
-`assignments: Map<itemId, (number|null)[]>` con `sharers` pegado al array — frágil.
-Propuesta de bajo riesgo: botón "⚙️ Ajuste fino" por ítem que abre un panel con
-modo Unidades / Porcentaje / Montos e inputs por participante, postea vía
-`postShares` con `percent`/`weight`, y guarda un override `Map<itemId, ShareEntry[]>`
-que `goToWhoPaid` usa en vez de `sharesForItem(item)` si existe.
-Casos objetivo: qty impar entre N seleccionados; "1 persona 2 uds, otras 2 se
-reparten 3" (units fraccionales); % por persona.
+### P1 — HECHO (2026-09-09, commit siguiente a efcd92e)
+Botón **⚙** por ítem en el paso 3 (`split/page.tsx`): panel con modo
+**Porcentaje / Unidades / Montos** + input por participante con preview del monto.
+- Estado: `advItems: Set<itemId>` (ítems con reparto manual), `advOpen`, `advMode`, `advVals`.
+- `applyAdv`: valida (% suman 100 / uds suman qty / montos suman line_total),
+  convierte a `weight` (+`units` en modo unidades, para que el backend lo guarde),
+  postea vía `postShares`, marca el ítem en `advItems`.
+- `goToWhoPaid` salta los ítems de `advItems` (ya tienen shares). `itemFullyAssigned`
+  los acepta si sus shares suman ~1.
+- Ítem con reparto manual: resumen "%/monto por persona" + Editar / Quitar.
+- `advItems` se resetea al empezar una división nueva.
+- **Verificado en prod**: ítem qty=5, "Yo 2 uds / Ana 1.5 / Carl 1.5" → Yo debe
+  $4.000 (2/5), Ana y Carl $3.000 c/u. Fracciones OK.
+
+TODA la sección "Dividir cuenta" del feedback quedó implementada.

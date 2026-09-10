@@ -1,16 +1,18 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-09 20:47:21*
+*Auto-guardado por hook Stop · 2026-09-09 20:55:34*
 
 ## Presión de contexto
-- Tool uses esta sesión: **436** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **440** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-Si nro items son impares!? Ipcion para dividir entre los seleccionados (aunque sean nro par). O por ejemplo una persona consumio dos y entre dos personas consumieron tres items (o porcentaje y otro item se divide en numero o como queiran). luego en Quien pagó? Debe dar opciòn de pagar por porcentaje
+actualiza todo, graphify, github y demas...
 
 ## Último trabajo del asistente
-Hecho lo grande, deployado y verificado en prod. Lo que quedó pendiente lo dejé documentado para no meterle mano apurado a código frágil.
+Todo sincronizado.
 
-## ✅ EL BUG
+| | Estado |
+|---|---|
+| **GitHub** (`main`) | Pusheado. HEAD `ac27ee3`, `origin/main` al día. Todo el trabajo de la sesión está a
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -68,3 +70,10 @@ Hecho lo grande, deployado y verificado en prod. Lo que quedó pendiente lo dej�
 2. Lee `docs/ROADMAP.md` tabla "Work Order Summary"
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
+
+## ADDENDUM 2 — Split P1 hecho (2026-09-09)
+Reparto avanzado por ítem: botón ⚙ en paso 3 → panel Porcentaje / Unidades /
+Montos con input por participante. Cubre qty impar entre N, unidades fraccionales
+("Yo 2, Ana y Carl se reparten 3" = 2/1.5/1.5) y % libre. Verificado en prod.
+TODO el feedback de "Dividir cuenta" quedó implementado, commiteado, pusheado y
+deployado. Sin pendientes de esa sección.
