@@ -1,18 +1,17 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-11 01:33:01*
+*Auto-guardado por hook Stop · 2026-09-11 01:51:27*
 
 ## Presión de contexto
-- Tool uses esta sesión: **551** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **568** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-hm no funciona pesimo. lo que quiero es que e item y su valor tengan una sombra del color de la lista que esta a la derecha, ahora tiene numeros y no funciona bien, planea bien esto
+pero ahora subi la foto y a la deerecha salen lo items escrios en colores...pero en la foto no se sombrean con colores los items! }
 
 ## Último trabajo del asistente
-Rediseñado, deployado y pusheado. Resumen:
+Encontré y arreglé dos causas reales de que no se viera nada:
 
-## Qué cambié
-
-Saqué los círculos numerados (confundían y quedaban desalineados) y los reemplacé por lo qu
+## Causa 1: el "resaltador" (mix-blend-mode) nunca llegaba a mezclarse con la foto
+El t
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -71,13 +70,14 @@ Saqué los círculos numerados (confundían y quedaban desalineados) y los reemp
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
 
-## ADDENDUM 5 (2026-09-11) — el resaltado no aparecía en la foto: 2 causas reales
-1. `mix-blend-mode:multiply` no se mezclaba con la foto por los transform de los
-   contenedores padres (creaban su propio stacking context) -> quedaba invisible.
-   Cambiado a opacidad plana + borde del mismo color.
-2. Si la foto venía de caché del navegador, <img onLoad> nunca disparaba
-   (ya estaba "complete") -> imgNatural quedaba null y el overlay ni se montaba.
-   Agregado chequeo de el.complete en useEffect.
-3. Red de seguridad: si igual no llega imgNatural a tiempo, se muestra con el
-   panel completo (no nada) y se realinea solo.
-Deployado. Pendiente: que el usuario confirme que ahora SÍ se ve el color en la foto.
+## ADDENDUM 6 (2026-09-11) — resaltado seguía invisible: se quitó el aspect-ratio
+El usuario confirmó que TRAS el fix de blend-mode/caché seguía sin ver nada — no
+"desalineado", directamente invisible. Diagnóstico: el intento de alinear
+exacto con aspect-ratio + naturalWidth/Height (imgNatural) agregó un estado que
+podía quedar null o rendear en una caja 0px en algunos motores. Se revirtió a
+la posición simple (% del panel completo, mismo sistema que ya usaba el pan/zoom)
+que SÍ se veía en la v1 de círculos numerados — ahora son franjas de 26px con
+opacidad plana 0.7, sin medir la foto ni depender de ningún estado extra.
+Pendiente crítico: que el usuario confirme si ahora SÍ aparece algo. Si sigue sin
+verse, pedirle que cierre del todo la PWA y la reabra (por si estaba viendo una
+versión cacheada de antes de estos cambios) antes de seguir iterando a ciegas.
