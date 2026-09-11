@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
-    openai_vision_model: str = "gpt-5-mini"  # receipt/boleta OCR — best accuracy in eval (91% vs 81% gpt-4.1), slower (~15-25s/img)
+    openai_vision_model: str = "gpt-4.1"  # receipt/boleta OCR — 2-4s/img (10-18x faster than gpt-5-mini's ~15-45s), 81.4% acc vs 91.5%; user chose speed 2026-09-11
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5-20251001"

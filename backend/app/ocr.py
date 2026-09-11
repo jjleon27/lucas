@@ -651,17 +651,11 @@ AMOUNT — el monto realmente cobrado:
 FECHA: si la fecha no se lee con certeza (dígitos borrosos), devuelve null. NO adivines.
 
 RECUADRO (bbox) — MUY IMPORTANTE, léelo con cuidado:
-El bloque de ítems de una boleta es una columna de ancho fijo (todas las líneas
-empiezan y terminan casi en la misma posición horizontal), así que el ancho se
-da UNA sola vez para todo el bloque, y solo el alto (borde superior/inferior)
-se da POR ítem — así respondes más rápido sin perder precisión:
-  "items_x0": borde IZQUIERDO del bloque de ítems completo (0-100, % del ancho
-    de la imagen) — justo donde empieza el texto de los nombres de producto.
-  "items_x1": borde DERECHO del bloque de ítems completo (0-100, % del ancho de
-    la imagen) — justo después de la columna de precios.
-  Por cada ítem: "bbox_y0" (borde superior, justo arriba del texto de esa línea)
-  y "bbox_y1" (borde inferior, justo debajo) — ambos 0-100, % del alto de la
-  imagen, con un decimal.
+Por cada ítem necesitamos solo su posición vertical en la boleta (el resaltado
+en la app cubre todo el ancho, no hace falta el ancho del bloque):
+  "bbox_y0" (borde superior, justo arriba del texto de esa línea) y "bbox_y1"
+  (borde inferior, justo debajo) — ambos 0-100, % del alto de la imagen, con
+  un decimal.
 Reglas:
 - Cada bbox_y0/y1 debe ser AJUSTADO a esa única línea — no debe tapar la línea
   de arriba ni la de abajo, ni el código de barras si lo hay.
@@ -695,8 +689,6 @@ DEVUELVE SOLO ESTE JSON (sin markdown):
       "merchant": "nombre del local",
       "category": "categoría",
       "is_income": false,
-      "items_x0": 0_a_100,
-      "items_x1": 0_a_100,
       "items": [
         {"name": "nombre", "quantity": qty, "line_total": line_total,
          "bbox_y0": 0_a_100, "bbox_y1": 0_a_100}
@@ -783,30 +775,38 @@ def _detect_mime(image_bytes: bytes) -> str:
     return "image/png"
 
 
-def _shrink_for_vision(image_bytes: bytes, max_side: int = 2800) -> bytes:
-    """Downscale large screenshots so the API call is cheap & fast.
+def _resize_for_vision(img: "Image.Image", max_side: int = 2800) -> "Image.Image":
+    """Downscale so the API call is cheap & fast — cuts base64 payload/upload
+    time (OpenAI caps `detail:high` to ~2048px server-side anyway, so this
+    doesn't reduce tile count much, but it does cut how long the image takes
+    to reach them).
 
     Caps the longer side at `max_side` px and total pixels at ~8M. Phone photos
     of rotated paper receipts have fine-print qty digits ~30px tall that get
     mangled at lower resolutions — 2800px keeps them legible to the model.
     """
+    w, h = img.size
+    scale = min(1.0, max_side / max(w, h))
+    # Also cap total pixel area (~8M px ≈ 2828×2828)
+    area_scale = min(1.0, (8_000_000 / (w * h)) ** 0.5)
+    scale = min(scale, area_scale)
+    if scale < 1.0:
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    return img
+
+
+def _shrink_for_vision(image_bytes: bytes, max_side: int = 2800) -> bytes:
+    """Bytes-in/bytes-out wrapper around `_resize_for_vision` for callers that
+    don't need to keep the PIL Image around (EXIF-transposes + re-encodes)."""
     try:
         img = Image.open(io.BytesIO(image_bytes))
         img = img.convert("RGB")
-        # Honor EXIF orientation so the model sees the image upright when possible
         try:
             from PIL import ImageOps
             img = ImageOps.exif_transpose(img)
         except Exception:
             pass
-        w, h = img.size
-        # Cap longer side
-        scale = min(1.0, max_side / max(w, h))
-        # Also cap total pixel area (~8M px ≈ 2828×2828)
-        area_scale = min(1.0, (8_000_000 / (w * h)) ** 0.5)
-        scale = min(scale, area_scale)
-        if scale < 1.0:
-            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        img = _resize_for_vision(img, max_side=max_side)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=92, optimize=True)
         return buf.getvalue()
@@ -1380,12 +1380,17 @@ def vision_parse(
         # could not. Single-pass vision_json with the receipt prompt is what
         # ChatGPT itself does behind the scenes, so we match that.
         # Normalise to JPEG: apply EXIF rotation (iPhone uploads arrive sideways
-        # otherwise), then boost contrast/sharpness so digit quantities are legible.
+        # otherwise), downscale (cuts upload time on full-res iPhone photos —
+        # OpenAI caps detail:high to ~2048px server-side regardless, so this
+        # doesn't buy tile-count savings, just faster transfer), THEN boost
+        # contrast/sharpness so digit quantities stay legible (order matters:
+        # sharpening after the resize, not before, per the qty-legibility fix).
         try:
             from PIL import ImageEnhance, ImageOps
             img_pil = Image.open(io.BytesIO(image_bytes))
             img_pil = ImageOps.exif_transpose(img_pil)  # fix iPhone rotation
             img_pil = img_pil.convert("RGB")
+            img_pil = _resize_for_vision(img_pil, max_side=2000)
             img_pil = ImageEnhance.Contrast(img_pil).enhance(1.8)
             img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
             buf = io.BytesIO()
@@ -1483,19 +1488,6 @@ def vision_parse(
             """
             out_items: list[ParsedItem] = []
 
-            def _tx_pct(key: str) -> Optional[float]:
-                try:
-                    v = tx.get(key)
-                    return max(0.0, min(100.0, float(v))) if v is not None else None
-                except (TypeError, ValueError):
-                    return None
-
-            # Ancho del bloque de ítems: uno solo para toda la boleta (ver prompt
-            # RECUADRO) — las columnas de nombre/precio no cambian línea a línea.
-            items_x0, items_x1 = _tx_pct("items_x0"), _tx_pct("items_x1")
-            if items_x0 is None or items_x1 is None or items_x1 <= items_x0:
-                items_x0 = items_x1 = None
-
             for it in tx.get("items", []) or []:
                 name = it.get("name")
                 if not name:
@@ -1532,12 +1524,14 @@ def vision_parse(
                 by0, by1 = _pct("bbox_y0"), _pct("bbox_y1")
                 if by0 is None or by1 is None or by1 <= by0:
                     by0 = by1 = None
-                bx0, bx1 = (items_x0, items_x1) if by0 is not None else (None, None)
+                # El resaltado en la app va a todo el ancho de la foto (ver
+                # frontend), así que ya no le pedimos al modelo el ancho del
+                # bloque de ítems (bbox_x0/x1) — solo el alto por ítem.
                 position_y = round((by0 + by1) / 2, 1) if by0 is not None else None
 
                 out_items.append(ParsedItem(
                     name=str(name), price=price, quantity=qty, position_y=position_y,
-                    bbox_x0=bx0, bbox_y0=by0, bbox_x1=bx1, bbox_y1=by1,
+                    bbox_y0=by0, bbox_y1=by1,
                 ))
             return out_items
 
