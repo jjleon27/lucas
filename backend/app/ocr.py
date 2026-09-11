@@ -1696,7 +1696,14 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
             qty = 1
         else:
             try:
-                qty = int(_re.sub(r"[^\d]", "", qty_raw) or "1")
+                # Ojo: la boleta suele imprimir la cantidad como "1.00"/"2.00"
+                # (con decimales) — hay que parsearla como número real, NO
+                # sacar solo los dígitos con regex (eso convierte "1.00" en
+                # "100": el punto desaparece y el "00" se pega al "1"). Bug
+                # real visto en prod: "1.00 Frutilla Spritz" terminó guardado
+                # como cantidad=100. Se reusa _to_float (ya sabe distinguir
+                # separador de miles vs decimal) en vez de un parseo nuevo.
+                qty = int(round(_to_float(qty_raw))) or 1
             except Exception:
                 qty = 1
         qty = max(1, min(qty, 999))  # mismo límite que ItemAdd/ItemPatch (ítems a mano)
