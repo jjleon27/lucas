@@ -410,3 +410,59 @@ escalamiento por descuadre de suma sigue activo, no se tocó). Env
 
 Commiteado (`34b8e17`), pusheado, deployado. pytest: mismas 11 fallas
 pre-existentes, no relacionadas.
+
+### Iteración 2026-09-11 (cont. 8) — el usuario tenía razón: era el prompt, no el modelo
+El usuario le pidió a ChatGPT exactamente la boleta difícil con un prompt
+simple ("dame en texto los items en orden, cantidad, valor, total,
+propina") y le salió PERFECTA — las 17 líneas exactas. Insistió: "el
+problema no es el modelo, son los prompts y restricciones que le pides,
+planea bien para lograrlo".
+
+Se probó directo: mismo modelo (gpt-4o/gpt-4.1), mismo prompt simple del
+usuario, sin nuestro JSON — y AUN ASÍ falló (16 líneas en vez de 17). Esto
+descartó momentáneamente la hipótesis... hasta probar `gpt-4.1-mini` (el
+más BARATO de la familia, no el más grande) con ese mismo prompt simple:
+**3/3 corridas exactas, 4.3-5.9s, tokens baratos (3110+286, idéntico cada
+vez con temperature=0)**. El usuario pidió explícitamente "prueba modelos
+más simples que usen menos tokens y quédate con el que no se equivoque".
+
+**Primer intento de "productivizar" el prompt fue un error** — se le
+agregaron reglas explícitas (headers MERCHANT/DATE/CATEGORY/CURRENCY/AMOUNT
+etiquetados, reglas de "no dividir nombres cortados en dos líneas", "no
+agrupar repetidos"). El usuario lo notó de inmediato: "estás agregando
+reglas que es exactamente lo que originó los problemas". Tenía razón — con
+esas reglas el mismo modelo volvió a fallar. Se revirtió a algo mínimo,
+casi idéntico al prompt original que sí funcionó (verificado 3/3 antes de
+aplicarlo).
+
+**Arquitectura final**: nuevo camino dedicado SOLO para `/bills/{id}/ocr`
+(`vision_parse_bill()` + `_RECEIPT_PROMPT_BILL` + `_parse_bill_text()` en
+`ocr.py`, `vision_text()` nuevo en `ai/provider.py` — imagen→texto plano,
+sin extracción de JSON). El `/upload` general (que también lee cartolas
+bancarias con cuotas/bank_hint) sigue con `vision_parse()`/`_RECEIPT_PROMPT`
+sin ningún cambio — no se tocó, no se arriesgó esa ruta. Se verificó que
+`CATEGORY`/`CURRENCY` no se usan para nada en bill-split (el total sale de
+sumar `BillItem.line_total`, `Bill` no tiene columna category) — se
+sacaron del prompt, no hacía falta pedirlos.
+
+**Bug real encontrado y arreglado en el camino** (no del modelo, del
+código): el chequeo de reintento multiplicaba `line_total` (que YA es el
+total de la línea) por `quantity` otra vez, inflando la suma artificialmente
+y disparando reintentos innecesarios en boletas que en realidad se habían
+leído perfecto (ej. lider_quilicura: suma real 42.970 vs reportada
+71.150 antes del fix).
+
+Nuevo setting `openai_vision_model_bill = "gpt-4.1-mini"`, separado de
+`openai_vision_model` (gpt-4o, sigue siendo el de `/upload`) — para no
+arriesgar la ruta de cartolas con un modelo no probado para eso.
+
+**Resultado final, verificado con las 9 boletas reales del eval**: 7/9
+rápidas (2.3-4.6s) sin necesitar reintento. Las 2 restantes no son
+regresiones: `danes_vitacura` es un caso difícil conocido desde el inicio
+de la sesión (todos los modelos probados fallan ahí); `cuenta_valeria` está
+marcada `items_lenient` en su propio ground-truth — ni un humano logra
+cuadrar la suma con el total ahí.
+
+Commiteado (`6b27df3`), pusheado, deployado, pytest verificado (mismas 11
+fallas pre-existentes). Pendiente: confirmación del usuario probando en su
+iPhone con boletas reales variadas.
