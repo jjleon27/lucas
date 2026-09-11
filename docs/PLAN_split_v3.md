@@ -330,3 +330,45 @@ de backend/lógica — puro ajuste visual.
 Pendiente: confirmación del usuario en su iPhone — en particular el matiz
 amarillo/verde-amarillo, que por naturaleza de HSL contrasta menos que
 rojos/azules a la misma saturación/luminosidad.
+
+### Iteración 2026-09-11 (cont. 6) — el problema real era posición, no color
+El usuario aclaró después: "el problema no es el color, sino que las cajas
+de sombra no se posicionan sobre el ítem!!!". Con la captura anterior
+(err1.png) reexaminada de cerca (crop + zoom local): las bandas empezaban
+tapando el ENCABEZADO de la boleta (Comanda/Fecha/Garzón — no son ítems) en
+vez del primer ítem, y se iban desalineando progresivamente hacia abajo,
+terminando antes de cubrir los últimos ítems (+Coca Cola/Zero sin banda).
+Ese patrón — desalineación que CRECE hacia abajo en vez de un corrimiento
+fijo — es la firma de un problema de ESCALA (altura mal calculada), no de
+offset.
+
+Diagnóstico: `imgBox` (recuadro object-fit:contain real de la foto dentro
+del panel) se calculaba con `naturalWidth/naturalHeight` medidos por el
+NAVEGADOR vía `<img>`. Pero los `bbox_y0/y1` que devuelve el modelo son %
+del ancho/alto de la foto tal como la procesó el BACKEND (Pillow, tras
+`exif_transpose` para la rotación EXIF de fotos de iPhone). Si el navegador
+interpreta el EXIF de esa foto en particular distinto a Pillow, ambos lados
+miden un ancho/alto distinto para la MISMA foto y toda la posición queda mal
+escalada — consistente con el patrón observado. (No se pudo reproducir 1:1
+en local: la copia de la foto que se tiene ya no trae metadata EXIF, así
+que el diagnóstico se apoya en el patrón, no en una reproducción exacta.)
+
+Fix de raíz: el backend ahora manda `image_width`/`image_height` (las
+dimensiones reales, orientadas hacia arriba, que usó para calcular los
+bbox) junto con la boleta — `ParseResult.image_width/height` en `ocr.py`,
+columnas `bills.image_width/height`, expuestas en `_bill_out()`. El
+frontend usa ESE número (no lo que mide el navegador) para `imgBox`,
+cayendo a `imgNatural` solo si el backend no lo mandó (boleta vieja o sin
+OCR). Con un solo origen de verdad para el marco de referencia, deja de
+importar si navegador y Pillow concuerdan o no en la interpretación EXIF.
+
+Investigación con browser automation: se intentó reproducir en vivo
+subiendo la foto real a prod, pero la sesión de automatización no estaba
+autenticada (401) — no se ingresaron credenciales por la persona (regla de
+seguridad), se abandonó ese camino y se investigó con medición de imagen
+local + revisión de código en su lugar.
+
+Commiteado (`a1e72bc`), pusheado, deployado, build + pytest verificados
+(mismas 11 fallas pre-existentes). **Pendiente real**: confirmación visual
+del usuario en su iPhone — es el fix más probable dado el patrón, pero no
+se pudo verificar pixel a pixel sin el dispositivo real.
