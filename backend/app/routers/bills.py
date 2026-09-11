@@ -130,6 +130,8 @@ def _bill_out(bill: Bill) -> dict:
             "unit_price": it.unit_price,
             "line_total": it.line_total,
             "position_y": it.position_y,
+            "bbox_x0": it.bbox_x0, "bbox_y0": it.bbox_y0,
+            "bbox_x1": it.bbox_x1, "bbox_y1": it.bbox_y1,
             "shares": [
                 {"participant_id": s.participant_id, "weight": s.weight, "units": s.units}
                 for s in it.shares
@@ -335,6 +337,8 @@ async def bill_ocr(
             unit_price=unit_price,
             line_total=line_total,
             position_y=it.position_y,
+            bbox_x0=it.bbox_x0, bbox_y0=it.bbox_y0,
+            bbox_x1=it.bbox_x1, bbox_y1=it.bbox_y1,
         ))
 
     db.flush()

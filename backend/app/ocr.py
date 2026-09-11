@@ -650,11 +650,25 @@ AMOUNT — el monto realmente cobrado:
 
 FECHA: si la fecha no se lee con certeza (dígitos borrosos), devuelve null. NO adivines.
 
-POSICIÓN VERTICAL (position_y): para cada ítem, estima a qué altura de la imagen
-está esa línea, como porcentaje 0-100 (0 = borde superior de la imagen, 100 =
-borde inferior). Es una estimación visual aproximada, no hace falta exactitud de
-píxel — se usa solo para marcar el ítem sobre la foto al revisar. Sigue el orden
-natural de lectura de arriba hacia abajo.
+RECUADRO (bbox) — MUY IMPORTANTE, léelo con cuidado:
+Para cada ítem, da el recuadro exacto que envuelve SOLO esa línea (el nombre del
+producto + su precio al final de la línea), como 4 números 0-100 (porcentaje del
+ancho/alto TOTAL de la imagen, con un decimal):
+  "bbox_x0": borde IZQUIERDO del recuadro (justo donde empieza el texto de esa línea)
+  "bbox_y0": borde SUPERIOR del recuadro (justo arriba del texto de esa línea)
+  "bbox_x1": borde DERECHO del recuadro (justo después del precio, al final de la línea)
+  "bbox_y1": borde INFERIOR del recuadro (justo debajo del texto de esa línea)
+Reglas:
+- El recuadro debe ser AJUSTADO a esa única línea — no debe tapar la línea de
+  arriba ni la de abajo, ni el código de barras si lo hay, ni el margen del papel.
+- (x0,y0) es la esquina superior-izquierda, (x1,y1) la inferior-derecha, x1>x0, y1>y0.
+- Sigue el orden natural de lectura de arriba hacia abajo.
+- ANTES de responder, revisa mentalmente cada bbox contra la imagen: ¿el recuadro
+  realmente tapa esa línea completa (nombre + precio) y NADA más? Si dudas de un
+  ítem, prefiere un recuadro un poco más angosto (que no invada líneas vecinas)
+  antes que uno más ancho.
+- Es una estimación visual — no hace falta exactitud de píxel, pero sí que quede
+  sobre la línea correcta y no se encime con otras.
 
 CATEGORÍA:
 - "Bares y Salidas": schops, cervezas, fernet, tragos, pub/bar
@@ -680,7 +694,8 @@ DEVUELVE SOLO ESTE JSON (sin markdown):
       "category": "categoría",
       "is_income": false,
       "items": [
-        {"name": "nombre", "quantity": qty, "line_total": line_total, "position_y": 0_a_100}
+        {"name": "nombre", "quantity": qty, "line_total": line_total,
+         "bbox_x0": 0_a_100, "bbox_y0": 0_a_100, "bbox_x1": 0_a_100, "bbox_y1": 0_a_100}
       ]
     }
   ]
@@ -1236,15 +1251,17 @@ def _normalize_boleta_items(
         normalised: list[ParsedItem] = []
         running = 0.0
         for i, it in enumerate(product_items):
+            _pos = dict(position_y=it.position_y, bbox_x0=it.bbox_x0, bbox_y0=it.bbox_y0,
+                       bbox_x1=it.bbox_x1, bbox_y1=it.bbox_y1)
             if i < len(product_items) - 1:
                 new_price = round(it.price * scale)
-                normalised.append(ParsedItem(name=it.name, price=new_price, quantity=it.quantity, position_y=it.position_y))
+                normalised.append(ParsedItem(name=it.name, price=new_price, quantity=it.quantity, **_pos))
                 running += new_price * it.quantity
             else:
                 # Last item absorbs rounding remainder
                 remainder = round(total_neto - running)
                 unit_price = round(remainder / it.quantity) if it.quantity > 1 else remainder
-                normalised.append(ParsedItem(name=it.name, price=unit_price, quantity=it.quantity, position_y=it.position_y))
+                normalised.append(ParsedItem(name=it.name, price=unit_price, quantity=it.quantity, **_pos))
     else:
         normalised = product_items
 
@@ -1487,13 +1504,23 @@ def vision_parse(
                 else:
                     price = 0.0
 
-                try:
-                    position_y = it.get("position_y")
-                    position_y = max(0.0, min(100.0, float(position_y))) if position_y is not None else None
-                except (TypeError, ValueError):
-                    position_y = None
+                def _pct(key: str) -> Optional[float]:
+                    try:
+                        v = it.get(key)
+                        return max(0.0, min(100.0, float(v))) if v is not None else None
+                    except (TypeError, ValueError):
+                        return None
 
-                out_items.append(ParsedItem(name=str(name), price=price, quantity=qty, position_y=position_y))
+                bx0, by0, bx1, by1 = _pct("bbox_x0"), _pct("bbox_y0"), _pct("bbox_x1"), _pct("bbox_y1")
+                # bbox válido solo si las 4 esquinas vinieron y respetan x1>x0, y1>y0
+                if None in (bx0, by0, bx1, by1) or bx1 <= bx0 or by1 <= by0:  # type: ignore[operator]
+                    bx0 = by0 = bx1 = by1 = None
+                position_y = round((by0 + by1) / 2, 1) if by0 is not None and by1 is not None else None
+
+                out_items.append(ParsedItem(
+                    name=str(name), price=price, quantity=qty, position_y=position_y,
+                    bbox_x0=bx0, bbox_y0=by0, bbox_x1=bx1, bbox_y1=by1,
+                ))
             return out_items
 
         def _parse_payload(raw_text: str):

@@ -65,6 +65,12 @@ def _migrate_schema() -> None:
         # bill_items.position_y — altura estimada del ítem en la foto (0-100), para
         # marcarlo con su color al revisar el split; editable arrastrando.
         "ALTER TABLE bill_items ADD COLUMN position_y REAL",
+        # bill_items.bbox_* — recuadro real (0-100) del ítem en la foto, estimado
+        # por el OCR. Reemplaza el resaltado de "franja completa" por uno ajustado.
+        "ALTER TABLE bill_items ADD COLUMN bbox_x0 REAL",
+        "ALTER TABLE bill_items ADD COLUMN bbox_y0 REAL",
+        "ALTER TABLE bill_items ADD COLUMN bbox_x1 REAL",
+        "ALTER TABLE bill_items ADD COLUMN bbox_y1 REAL",
     ]
     with engine.connect() as conn:
         for stmt in stmts:

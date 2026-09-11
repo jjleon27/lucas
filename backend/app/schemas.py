@@ -217,10 +217,16 @@ class ParsedItem(BaseModel):
     name: str
     price: float
     quantity: int = 1
-    # Estimación del modelo de vision: 0-100 = % de la altura de la imagen,
-    # de arriba hacia abajo, de la línea de este ítem en la boleta. Se usa para
-    # marcar el ítem con su color sobre la foto al revisar el split. Best-effort,
-    # no es un bounding box exacto — el usuario puede corregirlo arrastrando.
+    # Recuadro estimado por el modelo de vision (0-100 = % del ancho/alto de la
+    # imagen) que envuelve la línea de este ítem (nombre + precio) en la boleta.
+    # Se usa para marcar el ítem con su color sobre la foto al revisar el split.
+    # Best-effort — el usuario puede corregir la posición arrastrando.
+    bbox_x0: Optional[float] = None
+    bbox_y0: Optional[float] = None
+    bbox_x1: Optional[float] = None
+    bbox_y1: Optional[float] = None
+    # Centro vertical del bbox (derivado) — se mantiene por compatibilidad con
+    # el arrastre existente, que solo reposiciona el centro, no cambia el tamaño.
     position_y: Optional[float] = None
 
 

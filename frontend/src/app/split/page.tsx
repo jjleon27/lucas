@@ -12,7 +12,12 @@ import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2,
 
 interface BillParticipant { id: number; person_id: number; name: string; color: string; is_me: boolean; paid_amount: number; owes_amount: number; }
 interface BillItemShare { participant_id: number; weight: number; units: number | null; }
-interface BillItem { id: number; name: string; qty: number; unit_price: number; line_total: number; position_y: number | null; shares: BillItemShare[]; }
+interface BillItem {
+  id: number; name: string; qty: number; unit_price: number; line_total: number;
+  position_y: number | null;
+  bbox_x0: number | null; bbox_y0: number | null; bbox_x1: number | null; bbox_y1: number | null;
+  shares: BillItemShare[];
+}
 interface Bill {
   id: number; merchant: string; date: string; total_amount: number; tip_amount: number;
   currency: string; image_url: string; status: "draft" | "assigned" | "finalized";
@@ -1869,14 +1874,16 @@ export default function SplitPage() {
               />
               {/* Resaltado de color por ítem — franja translúcida sobre la línea del
                   ítem y su valor, mismo color que su fila a la derecha.
-                  Posicionadas en PÍXELES sobre el recuadro real que ocupa la
-                  foto dentro del panel (imgBox, calculado a mano replicando
-                  object-fit:contain — ver más arriba), no como % del panel
-                  completo: si la foto queda con franjas negras arriba/abajo
-                  o a los lados (proporción distinta a la del panel), un % del
-                  panel completo cae fuera de la foto real. El wrapper recibe
-                  el mismo transform (pan/zoom) que la <img> para que las
-                  franjas se muevan en sincronía. Se arrastra para corregir. */}
+                  Cuando el OCR devolvió un bbox (recuadro real: nombre + precio
+                  de esa línea, no toda la foto), se usa ESE ancho/alto exacto —
+                  no una franja de ancho completo. Sin bbox (ítem agregado a
+                  mano), cae al ancho completo con una altura chica por defecto.
+                  Todo en PÍXELES sobre el recuadro real que ocupa la foto dentro
+                  del panel (imgBox, calculado a mano replicando object-fit:contain
+                  — ver más arriba), no como % del panel completo. El wrapper
+                  recibe el mismo transform (pan/zoom) que la <img>. Arrastrar
+                  sigue moviendo solo el centro vertical (position_y); el tamaño
+                  del recuadro no cambia al arrastrar. */}
               {!drawMode && bill.items.length > 0 && (
                 <div
                   className="absolute inset-0 z-[15] pointer-events-none"
@@ -1885,6 +1892,17 @@ export default function SplitPage() {
                   {bill.items.map((item, idx) => {
                     const pct = bandPctFor(item, idx, bill.items.length);
                     const isDragging = markerDrag?.itemId === item.id;
+                    const hasBbox = item.bbox_x0 != null && item.bbox_y0 != null
+                      && item.bbox_x1 != null && item.bbox_y1 != null;
+                    const left = hasBbox
+                      ? imgBox.offsetX + (item.bbox_x0! / 100) * imgBox.width
+                      : imgBox.offsetX;
+                    const width = hasBbox
+                      ? ((item.bbox_x1! - item.bbox_x0!) / 100) * imgBox.width
+                      : imgBox.width;
+                    const height = hasBbox
+                      ? Math.max(10, ((item.bbox_y1! - item.bbox_y0!) / 100) * imgBox.height)
+                      : 26;
                     const top = imgBox.offsetY + (pct / 100) * imgBox.height;
                     return (
                       <div
@@ -1893,15 +1911,15 @@ export default function SplitPage() {
                         onPointerMove={onBandPointerMove}
                         onPointerUp={(e) => onBandPointerUp(e, item)}
                         onPointerCancel={(e) => onBandPointerUp(e, item)}
-                        className="absolute pointer-events-auto touch-none select-none"
+                        className="absolute pointer-events-auto touch-none select-none rounded-sm"
                         style={{
                           top,
-                          left: imgBox.offsetX,
-                          width: imgBox.width,
-                          height: 26,
+                          left,
+                          width,
+                          height,
                           transform: "translateY(-50%)",
                           background: ITEM_COLORS[idx % ITEM_COLORS.length],
-                          opacity: isDragging ? 0.95 : 0.7,
+                          opacity: isDragging ? 0.95 : 0.6,
                           boxShadow: isDragging ? "0 0 0 2px white" : "none",
                           cursor: "grab",
                         }}

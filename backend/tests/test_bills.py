@@ -131,3 +131,12 @@ def test_item_position_y_starts_null_and_is_draggable(client, h, other_person):
     # fuera de rango → rechazado
     r2 = client.patch(f"/bills/{bid}/items/{item['id']}", json={"position_y": 150}, headers=h)
     assert r2.status_code == 422
+
+
+def test_item_bbox_fields_present_and_null_without_ocr(client, h, other_person):
+    """Un ítem agregado a mano (sin pasar por el OCR) no tiene bbox — los 4
+    campos deben venir en la respuesta como null, no faltar del JSON."""
+    b = _new_bill(client, h, other_person)
+    item = b["items"][0]
+    for f in ("bbox_x0", "bbox_y0", "bbox_x1", "bbox_y1"):
+        assert f in item and item[f] is None
