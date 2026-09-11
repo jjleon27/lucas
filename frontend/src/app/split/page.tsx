@@ -79,7 +79,15 @@ const listBills = () => billReq<BillListRow[]>("/bills");
 
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
-const ITEM_COLORS = ["#fef3c7","#dbeafe","#dcfce7","#fce7f3","#ede9fe","#ffedd5","#f0fdf4","#fdf4ff"];
+// Un color pastel distinto por ítem, SIN repetirse por más ítems que tenga la
+// boleta (la paleta fija de 8 colores hacía que el ítem 1 y el 9 quedaran del
+// mismo color en boletas largas — imposible de distinguir entre la lista y la
+// foto). Ángulo dorado (137.508°) entre índices consecutivos = máxima
+// separación de tono posible para cualquier cantidad de ítems.
+function itemColor(idx: number): string {
+  const hue = (idx * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)}, 65%, 87%)`;
+}
 
 function StepDots({ step }: { step: number }) {
   return (
@@ -1197,7 +1205,7 @@ export default function SplitPage() {
       <div className="space-y-3 pb-6">
         {/* Items list */}
         {bill.items.map((item, idx) => {
-          const itemBg = ITEM_COLORS[idx % ITEM_COLORS.length];
+          const itemBg = itemColor(idx);
           return (
             <div
               key={item.id}
@@ -1517,7 +1525,7 @@ export default function SplitPage() {
                       const slots = slotsOf(item.id, item.qty);
                       const full = itemFullyAssigned(item);
                       const partial = itemPartiallyAssigned(item);
-                      const itemBg = ITEM_COLORS[idx % ITEM_COLORS.length];
+                      const itemBg = itemColor(idx);
                       return (
                         <div key={item.id} className={`rounded-xl shadow-sm overflow-hidden border ${full ? "border-emerald-300" : partial ? "border-amber-200" : "border-slate-200"}`} style={{ background: itemBg }}>
                           <div className="px-4 py-3">
@@ -1918,7 +1926,7 @@ export default function SplitPage() {
                           width,
                           height,
                           transform: "translateY(-50%)",
-                          background: ITEM_COLORS[idx % ITEM_COLORS.length],
+                          background: itemColor(idx),
                           opacity: isDragging ? 0.95 : 0.6,
                           boxShadow: isDragging ? "0 0 0 2px white" : "none",
                           cursor: "grab",

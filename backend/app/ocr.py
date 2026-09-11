@@ -651,22 +651,24 @@ AMOUNT — el monto realmente cobrado:
 FECHA: si la fecha no se lee con certeza (dígitos borrosos), devuelve null. NO adivines.
 
 RECUADRO (bbox) — MUY IMPORTANTE, léelo con cuidado:
-Para cada ítem, da el recuadro exacto que envuelve SOLO esa línea (el nombre del
-producto + su precio al final de la línea), como 4 números 0-100 (porcentaje del
-ancho/alto TOTAL de la imagen, con un decimal):
-  "bbox_x0": borde IZQUIERDO del recuadro (justo donde empieza el texto de esa línea)
-  "bbox_y0": borde SUPERIOR del recuadro (justo arriba del texto de esa línea)
-  "bbox_x1": borde DERECHO del recuadro (justo después del precio, al final de la línea)
-  "bbox_y1": borde INFERIOR del recuadro (justo debajo del texto de esa línea)
+El bloque de ítems de una boleta es una columna de ancho fijo (todas las líneas
+empiezan y terminan casi en la misma posición horizontal), así que el ancho se
+da UNA sola vez para todo el bloque, y solo el alto (borde superior/inferior)
+se da POR ítem — así respondes más rápido sin perder precisión:
+  "items_x0": borde IZQUIERDO del bloque de ítems completo (0-100, % del ancho
+    de la imagen) — justo donde empieza el texto de los nombres de producto.
+  "items_x1": borde DERECHO del bloque de ítems completo (0-100, % del ancho de
+    la imagen) — justo después de la columna de precios.
+  Por cada ítem: "bbox_y0" (borde superior, justo arriba del texto de esa línea)
+  y "bbox_y1" (borde inferior, justo debajo) — ambos 0-100, % del alto de la
+  imagen, con un decimal.
 Reglas:
-- El recuadro debe ser AJUSTADO a esa única línea — no debe tapar la línea de
-  arriba ni la de abajo, ni el código de barras si lo hay, ni el margen del papel.
-- (x0,y0) es la esquina superior-izquierda, (x1,y1) la inferior-derecha, x1>x0, y1>y0.
-- Sigue el orden natural de lectura de arriba hacia abajo.
-- ANTES de responder, revisa mentalmente cada bbox contra la imagen: ¿el recuadro
-  realmente tapa esa línea completa (nombre + precio) y NADA más? Si dudas de un
-  ítem, prefiere un recuadro un poco más angosto (que no invada líneas vecinas)
-  antes que uno más ancho.
+- Cada bbox_y0/y1 debe ser AJUSTADO a esa única línea — no debe tapar la línea
+  de arriba ni la de abajo, ni el código de barras si lo hay.
+- y1 > y0 siempre. Sigue el orden natural de lectura de arriba hacia abajo.
+- ANTES de responder, revisa mentalmente cada bbox_y0/y1 contra la imagen: ¿tapa
+  esa línea completa y NADA más? Si dudas, prefiere un rango más angosto (que no
+  invada líneas vecinas) antes que uno más ancho.
 - Es una estimación visual — no hace falta exactitud de píxel, pero sí que quede
   sobre la línea correcta y no se encime con otras.
 
@@ -693,9 +695,11 @@ DEVUELVE SOLO ESTE JSON (sin markdown):
       "merchant": "nombre del local",
       "category": "categoría",
       "is_income": false,
+      "items_x0": 0_a_100,
+      "items_x1": 0_a_100,
       "items": [
         {"name": "nombre", "quantity": qty, "line_total": line_total,
-         "bbox_x0": 0_a_100, "bbox_y0": 0_a_100, "bbox_x1": 0_a_100, "bbox_y1": 0_a_100}
+         "bbox_y0": 0_a_100, "bbox_y1": 0_a_100}
       ]
     }
   ]
@@ -1478,6 +1482,20 @@ def vision_parse(
             Falls back to price field for backwards-compat with old schema.
             """
             out_items: list[ParsedItem] = []
+
+            def _tx_pct(key: str) -> Optional[float]:
+                try:
+                    v = tx.get(key)
+                    return max(0.0, min(100.0, float(v))) if v is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            # Ancho del bloque de ítems: uno solo para toda la boleta (ver prompt
+            # RECUADRO) — las columnas de nombre/precio no cambian línea a línea.
+            items_x0, items_x1 = _tx_pct("items_x0"), _tx_pct("items_x1")
+            if items_x0 is None or items_x1 is None or items_x1 <= items_x0:
+                items_x0 = items_x1 = None
+
             for it in tx.get("items", []) or []:
                 name = it.get("name")
                 if not name:
@@ -1511,11 +1529,11 @@ def vision_parse(
                     except (TypeError, ValueError):
                         return None
 
-                bx0, by0, bx1, by1 = _pct("bbox_x0"), _pct("bbox_y0"), _pct("bbox_x1"), _pct("bbox_y1")
-                # bbox válido solo si las 4 esquinas vinieron y respetan x1>x0, y1>y0
-                if None in (bx0, by0, bx1, by1) or bx1 <= bx0 or by1 <= by0:  # type: ignore[operator]
-                    bx0 = by0 = bx1 = by1 = None
-                position_y = round((by0 + by1) / 2, 1) if by0 is not None and by1 is not None else None
+                by0, by1 = _pct("bbox_y0"), _pct("bbox_y1")
+                if by0 is None or by1 is None or by1 <= by0:
+                    by0 = by1 = None
+                bx0, bx1 = (items_x0, items_x1) if by0 is not None else (None, None)
+                position_y = round((by0 + by1) / 2, 1) if by0 is not None else None
 
                 out_items.append(ParsedItem(
                     name=str(name), price=price, quantity=qty, position_y=position_y,
