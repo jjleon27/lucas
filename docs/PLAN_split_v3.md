@@ -587,3 +587,48 @@ propina sugerida como si fuera un ítem comprable más.
 `openai_vision_model_bill`: `gpt-4.1-mini` → `gpt-5.6-luna`. No afecta a
 `/upload` (`openai_vision_model` sigue en `gpt-4o`). Commiteado (`4cddb1b`),
 pusheado, deployado. pytest: mismas 3 fallas pre-existentes, no relacionadas.
+
+### Iteración 2026-09-11 (cont. 13) — bug urgente + el usuario tenía razón otra vez: lectura 100% libre
+Dos cosas seguidas:
+
+**Bug urgente en producción**: el usuario reportó "100× Frutilla Spritz
+$79 c/u" en vez de "1× $7.900". Causa: el parser sacaba la cantidad con
+regex de solo-dígitos — para "1.00" (formato con el que `gpt-5.6-luna`
+imprime cantidades) eso borra el punto y deja "100". Bug introducido en el
+fix anterior de la línea de descuento, nunca probado con decimales. Fix:
+reusar `_to_float` (ya existía, ya sabe distinguir miles de decimales) en
+vez de un regex nuevo. Verificado y desplegado de inmediato.
+
+**El problema real de fondo**: el usuario, viendo que la misma boleta
+seguía con pequeños errores (no el bug de cantidad, errores de $800-1.000
+sobre $135.000), insistió: "si a ChatGPT le sale perfecto, el problema lo
+tienes tú, es el prompt o tus restricciones — revisa". Se probó en
+directo: mismo modelo, mismo prompt "mínimo" (`cantidad | nombre | valor`)
+vs. sin pedirle NINGÚN formato — **3/3 exacto sin formato**, errores
+recurrentes con el formato fijo. Confirmado: cualquier estructura de
+respuesta, por mínima que parezca, le cuesta precisión al modelo en
+boletas visualmente difíciles.
+
+**Arquitectura nueva, dos pasos**:
+1. `_RECEIPT_PROMPT_BILL` — pregunta libre, sin pedir formato de
+   respuesta. Esto es lo que mejora la precisión.
+2. `_REFORMAT_PROMPT_BILL` — segundo paso, SOLO TEXTO (no ve la foto),
+   `gpt-4.1-mini`, ~2-3s: reordena la respuesta libre ya correcta a
+   nuestro formato fijo parseable. Verificado explícitamente que es fiel
+   (no reintroduce errores — comparado texto crudo del paso 1 vs 2 línea
+   por línea).
+
+3 bugs reales encontrados y arreglados en el camino: el reformateo (con
+`gpt-4.1-nano` al principio) confundía la línea de "Total" con un ítem más
+(duplicaba la suma) — se subió a `gpt-4.1-mini` + instrucción explícita;
+el prompt libre no pedía nombre del local ni fecha — se agregó de vuelta;
+el regex de MERCHANT se comía la línea de DATE completa cuando el modelo
+las juntaba sin nombre real — corregido.
+
+Verificado: pytest (mismas 3 fallas), pipeline real en las 9 boletas —
+8/9 exactas, incluida la boleta que motivó todo (Bar La Providencia,
+$135.000 exacto en 3 corridas seguidas). Queda un caso residual chico
+(2.4% en `lider_quilicura` — la línea de descuento del despacho a veces se
+pierde en el reformateo) documentado como límite conocido, no se sigue
+puliendo para no arriesgar lo que ya funciona. Commiteado (`817277d`),
+pusheado, deployado.
