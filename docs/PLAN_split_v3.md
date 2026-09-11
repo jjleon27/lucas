@@ -372,3 +372,41 @@ Commiteado (`a1e72bc`), pusheado, deployado, build + pytest verificados
 (mismas 11 fallas pre-existentes). **Pendiente real**: confirmación visual
 del usuario en su iPhone — es el fix más probable dado el patrón, pero no
 se pudo verificar pixel a pixel sin el dispositivo real.
+
+### Iteración 2026-09-11 (cont. 7) — "¿por qué ChatGPT es instantáneo y no se equivoca?"
+El usuario comparó directamente: le pidió a ChatGPT que organizara la misma
+boleta y respondió en <5s sin errores, mientras nuestra app (con gpt-4.1,
+el modelo rápido) sí se equivocó. Pidió sacar el color pensando que eso
+explicaba la lentitud — se le aclaró que NO: el color/bbox son 2 números
+extra por ítem, casi gratis; lo que realmente tarda es el reintento de
+verificación (que escala a un modelo lento SOLO cuando la suma no cuadra),
+y sacar el color no habría cambiado eso.
+
+El usuario entonces preguntó, con razón, si el problema era el MODELO — su
+prueba con gpt-4.1 falló, la de ChatGPT (probablemente un modelo más
+completo) no. Se probó en la práctica en vez de debatir:
+- `gpt-5` (el "completo"): 116.8s en la boleta difícil (Bar Autóctono) Y
+  TAMBIÉN se equivocó en el primer intento — no es la respuesta.
+- `gpt-4o`: 8.1s, total correcto en esa misma boleta (agrupó los "+Coca X"
+  gratis en el nombre del ítem en vez de fila aparte, mantuvo las 6 líneas
+  de "Promo Alto del Carmen" como filas separadas — igual que hizo
+  ChatGPT). Eval completo (9 boletas reales): **88.9% overall — peor que
+  gpt-4.1 (92.7%)**, y en una boleta oscura (`danes_vitacura`) el
+  escalamiento se disparó igual y tardó 179s sin acertar.
+
+Conclusión mostrada al usuario con datos reales: ningún modelo probado es
+siempre rápido Y perfecto — cada uno falla en boletas distintas. ChatGPT
+pareció "perfecto e instantáneo" porque solo le pidieron un resumen de
+texto; nuestra app pide JSON estricto con posición por línea, validación
+de que la plata cuadre, IVA/neto, categoría — más trabajo por respuesta,
+sea cual sea el modelo.
+
+Con el trade-off real sobre la mesa (gpt-4o: similar velocidad, menos
+preciso en general), el usuario eligió probarlo igual como modelo
+principal. `openai_vision_model` → `gpt-4o` (antes `gpt-4.1`), se mantiene
+`openai_vision_model_fallback = gpt-5-mini` como red de seguridad (el
+escalamiento por descuadre de suma sigue activo, no se tocó). Env
+`OPENAI_VISION_MODEL` actualizado en Vercel producción.
+
+Commiteado (`34b8e17`), pusheado, deployado. pytest: mismas 11 fallas
+pre-existentes, no relacionadas.
