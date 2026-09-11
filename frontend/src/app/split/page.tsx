@@ -1900,15 +1900,14 @@ export default function SplitPage() {
                   {bill.items.map((item, idx) => {
                     const pct = bandPctFor(item, idx, bill.items.length);
                     const isDragging = markerDrag?.itemId === item.id;
-                    const hasBbox = item.bbox_x0 != null && item.bbox_y0 != null
-                      && item.bbox_x1 != null && item.bbox_y1 != null;
-                    const left = hasBbox
-                      ? imgBox.offsetX + (item.bbox_x0! / 100) * imgBox.width
-                      : imgBox.offsetX;
-                    const width = hasBbox
-                      ? ((item.bbox_x1! - item.bbox_x0!) / 100) * imgBox.width
-                      : imgBox.width;
-                    const height = hasBbox
+                    // La banda cubre todo el ancho de la foto (mismo color exacto
+                    // que la fila de la derecha, itemColor(idx) en ambos lados) —
+                    // ya no le pedimos al modelo el ancho del bloque de ítems, solo
+                    // el alto por línea (bbox_y0/y1), más rápido de generar.
+                    const hasYBbox = item.bbox_y0 != null && item.bbox_y1 != null;
+                    const left = imgBox.offsetX;
+                    const width = imgBox.width;
+                    const height = hasYBbox
                       ? Math.max(10, ((item.bbox_y1! - item.bbox_y0!) / 100) * imgBox.height)
                       : 26;
                     const top = imgBox.offsetY + (pct / 100) * imgBox.height;

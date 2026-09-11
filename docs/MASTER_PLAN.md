@@ -689,7 +689,7 @@ The following are explicitly out of scope for LUCAS:
 | Transfer-linking (auto) | STABLE | |
 | Transfer-linking (manual) | STABLE | |
 | Balance reconciliation | STABLE | |
-| OCR (vision path) | STABLE | `gpt-4.1` default desde 2026-09-11 (antes `gpt-5-mini`) — usuario eligió velocidad: ~4s/img vs ~36s/img, 90.7% vs 91.5% precisión (casi igual). Resize a 2000px antes de enviar (`_resize_for_vision`, antes sin usar). Fix boleta price-scaling 2026-09-09 (bug del split "$2.150→$1.765"). Fable 5.1 disponible vía `AI_PROVIDER=anthropic` |
+| OCR (vision path) | STABLE | `gpt-4.1` default desde 2026-09-11 (antes `gpt-5-mini`) — usuario eligió velocidad: ~4s/img vs ~36s/img, 90.7% vs 91.5% precisión (casi igual). Resize a 2000px antes de enviar (`_resize_for_vision`, antes sin usar). **Escalamiento a `gpt-5-mini`** (`openai_vision_model_fallback`) cuando el retry por descuadre de suma dispara (umbral 6%) — gpt-4.1 solo se saltaba ítems en boletas de bar complejas con líneas repetidas, no capturado por el eval de 8 boletas simples. Fix boleta price-scaling 2026-09-09 (bug del split "$2.150→$1.765"). Fable 5.1 disponible vía `AI_PROVIDER=anthropic` |
 | OCR (Tesseract fallback) | DISABLED en serverless | `run_ocr()` devuelve "" si no hay cv2/tesseract; local sí lo tiene |
 | PDF receipt parsing | STABLE | `pypdfium2` (sin poppler) — pendiente probar cartola escaneada real en prod |
 | Categorizer | STABLE | |

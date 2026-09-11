@@ -254,4 +254,36 @@ Env `OPENAI_VISION_MODEL` actualizado en Vercel producción. Tests pytest:
 `git stash`) — no relacionadas, quedan pendientes fuera de este trabajo.
 
 Todo commiteado (`3f94b46`), pusheado, deployado, verificado en prod.
-Pendiente: confirmación visual del usuario en su iPhone.
+
+### Iteración 2026-09-11 (cont. 4) — gpt-4.1 se saltó un ítem, escalamiento
+Probando en prod con la boleta real "Bar Autóctono" (la misma de antes, 21
+ítems con varias "Promo X" repetidas), el usuario reportó dos cosas con
+captura: (1) faltaba un ítem en la lista comparado con lo que dice la foto,
+(2) las bandas de color seguían mal alineadas ("los colores siguen
+pésimo"). Esperable: gpt-4.1 es más débil que gpt-5-mini justo en el tipo
+de boleta compleja para la que se había elegido gpt-5-mini originalmente
+(ver commit `2990316`) — el eval de 8 boletas (mayormente simples, un solo
+local) no lo capturó porque no incluye ninguna boleta de bar con líneas
+repetidas.
+
+Ya existía un retry cuando la suma de ítems no cuadraba con el total
+(`_diff/_amount_preview > 0.10`), pero un solo ítem faltante de ~$6.400 en
+un total >$100.000 es solo ~5-6% de diferencia — nunca disparaba. Fix:
+- Umbral bajado 10%→6%.
+- El retry ya NO reintenta con el mismo modelo que se equivocó — escala a
+  `openai_vision_model_fallback = "gpt-5-mini"` (nuevo setting), el mismo
+  modelo que ya se verificó bueno leyendo bboxes/montos en boletas de bar
+  complejas. Esto también arregla las bandas mal posicionadas en los casos
+  que escalan, sin tocar el prompt de bbox en sí.
+
+Verificado con eval: overall se mantiene 90.7%, una boleta (dondewilly,
+diff≈9%, antes no disparaba con el umbral de 10%) escaló y llegó a 100%.
+La mayoría (7/8) se mantuvo rápida (2.2-5.2s); solo la que escaló pagó el
+costo de la segunda pasada (~40s) — exactamente el trade-off buscado: rápido
+por defecto, cuidadoso solo cuando hace falta.
+
+Commiteado (`ce37923`), pusheado, deployado. **Pendiente real**: no se pudo
+reproducir la boleta exacta "Bar Autóctono" localmente (solo se tuvo el
+screenshot de la app, no la foto original) — falta que el usuario la
+vuelva a subir en prod para confirmar que ahora sale completa y las
+bandas calzan.
