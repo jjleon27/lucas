@@ -12,7 +12,7 @@ import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2,
 
 interface BillParticipant { id: number; person_id: number; name: string; color: string; is_me: boolean; paid_amount: number; owes_amount: number; }
 interface BillItemShare { participant_id: number; weight: number; units: number | null; }
-interface BillItem { id: number; name: string; qty: number; unit_price: number; line_total: number; shares: BillItemShare[]; }
+interface BillItem { id: number; name: string; qty: number; unit_price: number; line_total: number; position_y: number | null; shares: BillItemShare[]; }
 interface Bill {
   id: number; merchant: string; date: string; total_amount: number; tip_amount: number;
   currency: string; image_url: string; status: "draft" | "assigned" | "finalized";
@@ -49,7 +49,7 @@ const removeParticipant = (billId: number, pid: number) =>
   billReq<Bill>(`/bills/${billId}/participants/${pid}`, { method: "DELETE" });
 const addItem = (billId: number, item: { name: string; qty: number; unit_price: number }) =>
   billReq<Bill>(`/bills/${billId}/items`, { method: "POST", body: JSON.stringify(item) });
-const patchItem = (billId: number, iid: number, patch: { name?: string; qty?: number; unit_price?: number }) =>
+const patchItem = (billId: number, iid: number, patch: { name?: string; qty?: number; unit_price?: number; position_y?: number }) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "PATCH", body: JSON.stringify(patch) });
 const deleteItem = (billId: number, iid: number) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "DELETE" });
@@ -157,6 +157,10 @@ export default function SplitPage() {
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const imgTransformRef = useRef({ scale: 1, x: 0, y: 0 });
   const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
+
+  // Marcadores de color por ítem sobre la foto (arrastrables verticalmente)
+  const [markerDrag, setMarkerDrag] = useState<{ itemId: number; startY: number; startPct: number } | null>(null);
+  const [markerPreview, setMarkerPreview] = useState<Record<number, number>>({}); // itemId -> % mientras se arrastra
   const panStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const drawingRef = useRef(false);
   const vDivRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -901,6 +905,49 @@ export default function SplitPage() {
   };
   const resetImgTransform = () => applyTransform(1, 0, 0);
 
+  // ── Marcadores de color por ítem sobre la foto ──────────────────
+  // Si el OCR no estimó position_y (ítems agregados a mano, o el modelo lo
+  // omitió), los repartimos parejo para que no se amontonen — el usuario los
+  // corrige arrastrando y ahí sí se guarda.
+  function defaultMarkerPct(idx: number, total: number): number {
+    return total > 0 ? ((idx + 1) / (total + 1)) * 100 : 50;
+  }
+  function markerPctFor(item: BillItem, idx: number, total: number): number {
+    if (markerPreview[item.id] !== undefined) return markerPreview[item.id];
+    return item.position_y ?? defaultMarkerPct(idx, total);
+  }
+
+  function onMarkerPointerDown(e: React.PointerEvent, item: BillItem, idx: number, total: number) {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setMarkerDrag({ itemId: item.id, startY: e.clientY, startPct: markerPctFor(item, idx, total) });
+  }
+  function onMarkerPointerMove(e: React.PointerEvent) {
+    if (!markerDrag || !imgContainerRef.current) return;
+    e.stopPropagation();
+    const rect = imgContainerRef.current.getBoundingClientRect();
+    const scale = imgTransformRef.current.scale || 1;
+    const deltaPct = ((e.clientY - markerDrag.startY) / (rect.height * scale)) * 100;
+    const next = Math.max(0, Math.min(100, markerDrag.startPct + deltaPct));
+    setMarkerPreview((prev) => ({ ...prev, [markerDrag.itemId]: next }));
+  }
+  async function onMarkerPointerUp(e: React.PointerEvent, item: BillItem) {
+    e.stopPropagation();
+    if (!markerDrag || !bill) return;
+    const finalPct = markerPreview[item.id];
+    setMarkerDrag(null);
+    if (finalPct === undefined) return;
+    try {
+      const b = await patchItem(bill.id, item.id, { position_y: Math.round(finalPct * 10) / 10 });
+      setBill(b);
+    } catch {
+      // si falla el guardado, al menos queda la posición local hasta refrescar
+    } finally {
+      setMarkerPreview((prev) => { const n = { ...prev }; delete n[item.id]; return n; });
+    }
+  }
+
   // ── Step 4 ────────────────────────────────────────────────────
 
   async function handleSetPayers() {
@@ -955,10 +1002,31 @@ export default function SplitPage() {
     finally { setLoading(false); }
   }
 
-  function buildWhatsApp() {
+  function buildShareText(): string {
     if (!bill) return "";
-    const msg = `Cuenta en ${bill.merchant || "la cuenta"}\n${bill.participants.map((p) => `${p.name}: ${clp(p.owes_amount)}`).join("\n")}\nTotal: ${clp(bill.total_amount)}`;
-    return `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    return `Cuenta en ${bill.merchant || "la cuenta"}\n${bill.participants.map((p) => `${p.name}: ${clp(p.owes_amount)}`).join("\n")}\nTotal: ${clp(bill.total_amount)}`;
+  }
+
+  // Web Share API en vez de un link wa.me: dentro de una PWA instalada
+  // (standalone, "Agregar a inicio") el link wa.me a veces abre WhatsApp
+  // vacío porque la redirección wa.me → api.whatsapp.com → whatsapp:// necesita
+  // una pestaña normal de Safari. navigator.share usa la hoja nativa de iOS y
+  // entrega el texto directo a la app que elijas — sin esa cadena de redirects.
+  async function handleShare() {
+    const text = buildShareText();
+    if (!text) return;
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({ text });
+      } catch (e) {
+        // AbortError = el usuario cerró la hoja de compartir; no es un error real.
+        if (e instanceof Error && e.name !== "AbortError") {
+          window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+        }
+      }
+    } else {
+      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    }
   }
 
   // ─── RENDER ──────────────────────────────────────────────────────────────────
@@ -1094,6 +1162,13 @@ export default function SplitPage() {
               ) : (
                 <div className="px-4 py-3">
                   <div className="flex items-center gap-2">
+                    <span
+                      className="shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-slate-700 shadow-sm"
+                      style={{ background: itemBg, boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.08)" }}
+                      title="Mismo color y número que su marcador en la foto"
+                    >
+                      {idx + 1}
+                    </span>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
                       <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
@@ -1687,9 +1762,9 @@ export default function SplitPage() {
               </button>
             )}
             {finalized && (
-              <a href={buildWhatsApp()} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-3 rounded-xl">
+              <button onClick={handleShare} className="flex items-center justify-center gap-2 w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-3 rounded-xl">
                 <Share2 size={18} /> Compartir por WhatsApp
-              </a>
+              </button>
             )}
             {finalized && <button onClick={() => router.push("/dashboard")} className="w-full text-sm text-slate-500 underline py-2">Cerrar</button>}
           </div>
@@ -1738,6 +1813,40 @@ export default function SplitPage() {
                 onPointerUp={onCanvasPointerUp}
                 onPointerCancel={onCanvasPointerUp}
               />
+              {/* Marcadores de color por ítem — mismo color que su fila a la derecha.
+                  Se arrastran verticalmente para corregir la posición estimada. */}
+              {!drawMode && (
+                <div
+                  className="absolute inset-0 z-[5] pointer-events-none"
+                  style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
+                >
+                  {bill.items.map((item, idx) => {
+                    const pct = markerPctFor(item, idx, bill.items.length);
+                    const isDragging = markerDrag?.itemId === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        onPointerDown={(e) => onMarkerPointerDown(e, item, idx, bill.items.length)}
+                        onPointerMove={onMarkerPointerMove}
+                        onPointerUp={(e) => onMarkerPointerUp(e, item)}
+                        onPointerCancel={(e) => onMarkerPointerUp(e, item)}
+                        className={`absolute flex items-center justify-center rounded-full text-[10px] font-bold text-slate-700 shadow-md pointer-events-auto touch-none select-none transition-transform ${isDragging ? "scale-125 ring-2 ring-white" : ""}`}
+                        style={{
+                          top: `${pct}%`,
+                          right: 6,
+                          width: 22, height: 22,
+                          background: ITEM_COLORS[idx % ITEM_COLORS.length],
+                          transform: "translateY(-50%)",
+                          cursor: "grab",
+                        }}
+                        title={`${item.name} — arrastra para ajustar`}
+                      >
+                        {idx + 1}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               {/* Toolbar overlay */}
               <div className="absolute top-2 left-2 right-2 flex items-center gap-1.5 z-10">
                 <button
