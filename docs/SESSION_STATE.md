@@ -1,14 +1,18 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-11 02:26:30*
+*Auto-guardado por hook Stop · 2026-09-11 02:41:33*
 
 ## Presión de contexto
-- Tool uses esta sesión: **606** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **651** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-[Image: source: /Users/kako2/Downloads/IMG_4615.PNG]
+pero no lo puede hacer gpt que es el modelo que estamos usando ya?
 
 ## Último trabajo del asistente
-¿Qué te gustaría aclarar antes de que decidas?
+Tenías razón en dudar. Ya está arreglado y verificado.
+
+## Lo que estaba mal
+
+Nunca le pedimos a GPT un recuadro real — solo un punto vago ("más o men
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -67,20 +71,10 @@
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
 
-## ADDENDUM 8 (2026-09-11) — bbox real en vez de punto: solucionado con GPT, sin Google Vision
-El usuario preguntó "¿pero esto no lo puede hacer GPT?" tras ver que las franjas
-seguían mal (screenshot: pared de colores tapando toda la foto, causa: altura
-fija 26px encimándose con 15-20 ítems). Investigué en GitHub/web: el patrón
-correcto es pedir un bbox real con formato estricto (no un punto vago) — nunca
-lo habíamos intentado así. Cambié el prompt para pedir bbox_x0/y0/x1/y1 por
-ítem + auto-revisión. Probado con 3 boletas reales: bboxes ajustados,
-secuenciales, sin encimarse. NO hizo falta Google Cloud Vision.
-
-Backend: ParsedItem/BillItem += bbox_x0/y0/x1/y1 (migración). Frontend: la
-franja usa el bbox exacto (ancho/alto reales) sobre el imgBox que ya calculaba
-bien Fable. Eval 92.4% (vs 95.5% baseline — ruido normal de danes_vitacura, no
-regresión sistemática). Deployado y verificado end-to-end en prod (bboxes
-secuenciales confirmados vía curl).
-
-CRÍTICO — quinta iteración sobre esta feature: pedir captura de pantalla real
-al usuario antes de seguir asumiendo que algo "debería" verse bien.
+## ADDENDUM 9 (2026-09-11) — 504 al subir boleta: maxDuration muy bajo
+El usuario reportó "ocr 504 decía error al subir boleta". Causa: el bbox por
+ítem (4 números en vez de 1) alargó las respuestas del modelo — 2/8 boletas del
+eval tardaron 60.3s/63.7s, justo en el límite de 60s de la función Vercel.
+Fix: maxDuration 60 -> 180 en vercel.json. Verificado en prod subiendo la
+boleta más lenta conocida (danes_vitacura, ~59-64s reales): antes hubiera
+dado 504, ahora HTTP 200 completo.
