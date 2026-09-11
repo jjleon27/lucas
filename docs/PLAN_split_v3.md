@@ -513,3 +513,77 @@ reparte 0-100 parejo por índice (mismo resultado que ya calcula el
 frontend gratis, sin gastar tokens ni arriesgar la precisión de ítems).
 Pendiente: resultado de la investigación de GitHub, aún no realizada al
 momento de este commit.
+
+### Iteración 2026-09-11 (cont. 11) — investigación GitHub: sin bala de plata, pero un camino real
+Resultado de la investigación (agente Explore): no existe una librería
+lista que resuelva "posición real de cada ítem, barato y rápido" para
+boletas fotografiadas. Hallazgos:
+- **Tesseract `image_to_data`** (ya está instalado en el proyecto) da
+  bounding boxes por palabra/línea gratis, ~0.5-1s — podría correr EN
+  PARALELO con la llamada al modelo (no suma latencia) y emparejar sus
+  líneas OCR con los ítems ya bien leídos por el modelo, por ORDEN (no por
+  parecido de texto, para sobrevivir a ítems repetidos). Es el único camino
+  genuinamente distinto a lo ya probado — nunca toca el prompt de
+  extracción, así que no puede reintroducir el bug de ítems saltados.
+  No está probado, falta construirlo y testearlo.
+- **Gemini** tiene un modo nativo real de bounding-box — pero evaluación
+  independiente (SimEdw, contra COCO) confirma que sufre el MISMO problema
+  que ya tenemos: falla con objetos casi idénticos repetidos en la imagen
+  ("ve cuatro tortas, Gemini ve solo una").
+- **OpenAI** (incluido su modelo más nuevo, gpt-5.6) sigue sin tener modo
+  nativo de coordenadas — evaluación independiente confirma que inventa
+  cajas "en filas parejas, evenly spaced" — el mismo patrón que ya
+  encontramos nosotros mismos hoy.
+- invoice2data/Donut/PaddleOCR/EasyOCR: ninguno resuelve esto barato para
+  boletas térmicas fotografiadas (o son para PDFs, o son pipelines pesados
+  sin ventaja clara de velocidad sobre Tesseract).
+
+Sin ejecutar nada de esto por ahora — queda documentado como el camino a
+probar si se retoma el tema de posicionamiento.
+
+### Iteración 2026-09-11 (cont. 12) — boleta real "Bar La Providencia": desalineamiento de precios
+El usuario reportó una boleta real con un error distinto a todo lo visto
+hasta ahora: cada ítem mostraba el precio del ítem ANTERIOR (no un ítem
+faltante). Con zoom a la foto se confirmó: en ESTA boleta puntual, la
+columna de precios está impresa visiblemente más alta que la de nombres —
+un defecto de impresión/alineación del propio papel, no una confusión de
+lectura evitable con mejor prompting. Se probaron 3 prompts distintos
+(emparejar por orden, verificar suma antes de responder, dos listas
+separadas) — los 3 fallaron exactamente igual.
+
+El usuario insistió: "si ChatGPT pudo, nosotros deberíamos poder — evalúa
+si es el prompt o el modelo". Se probó sistemáticamente TODA la escala de
+modelos de OpenAI, de más barato a más caro, deteniéndose en el primero
+que no fallara (pedido explícito):
+
+| Modelo | Resultado en esta boleta |
+|---|---|
+| gpt-5-nano | se niega a responder ("está borrosa") |
+| gpt-4.1-nano | mezcla "Total General Mesa" como si fuera un ítem (falla en OTRA boleta) |
+| gpt-4o-mini | texto mezclado/ilegible |
+| gpt-4.1-mini (el que estaba activo) | precios desalineados |
+| gpt-4o | precios desalineados |
+| gpt-4.1 | precios desalineados |
+| gpt-5-mini | precios desalineados, y 55s |
+| **gpt-5.6-luna** | **exacto — $135.000, igual que ChatGPT** |
+| gpt-5.6-sol | también exacto (29.6s, más lento) |
+| gpt-5.6-terra | también exacto (11.1s) |
+
+No es un modelo con suerte — es la familia `gpt-5.6` completa la que lee
+bien esta boleta; todo lo anterior (incluyendo `gpt-4.1-mini`, el que
+estaba en producción) falla igual. `luna` es la más rápida del grupo.
+
+Verificado contra las 9 boletas reales del eval completo con `gpt-5.6-luna`
+como modelo del split: TODAS correctas, incluyendo `cuenta_valeria` (una
+boleta que ni el propio archivo de ground-truth podía cuadrar — ahora da
+exacto $24.900, primera vez en toda la sesión) y `barlaprovidencia` (exacto
+$135.000). De paso se encontró y arregló un bug real: `AMOUNT` a veces
+incluía la propina sugerida — se agregó una frase al prompt para excluirla
+explícitamente, verificado que no reintroduce el bug de ítems saltados en
+`bar_autoctono` antes de aplicarlo. Efecto secundario bueno: `dondewilly`
+ahora reporta 2 ítems reales ($10.000, el subtotal) en vez de contar la
+propina sugerida como si fuera un ítem comprable más.
+
+`openai_vision_model_bill`: `gpt-4.1-mini` → `gpt-5.6-luna`. No afecta a
+`/upload` (`openai_vision_model` sigue en `gpt-4o`). Commiteado (`4cddb1b`),
+pusheado, deployado. pytest: mismas 3 fallas pre-existentes, no relacionadas.

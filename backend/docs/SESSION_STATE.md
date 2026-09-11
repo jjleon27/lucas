@@ -1,14 +1,20 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-11 05:57:10*
+*Auto-guardado por hook Stop · 2026-09-11 06:25:08*
 
 ## Presión de contexto
-- Tool uses esta sesión: **1025** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **1118** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-ok ahora vamos con lo de los colores en la foto que funcionan mal...mi logica es esta...si el modelo puede reconocer texto e items y valor y generar una lista con colores a la derecha, entonces ese mismo item que reconoee en la foto puede pintarlo en la foto de ese color qu eluego us en la lista de 
+no, quiero que lo arreglemos! mira chatgpt si puede...Claro. La boleta transcrita en el mismo orden en que aparecen los ítems es:
+Cantidad    Ítem    Valor
+1    Frutilla Spritz    $7.900
+1    Penelope Glamour    $7.900
+1    Penelope Glamour    $7.900
+1    Falso Amor    $7.600
+1    Costilla Bruce Lee
 
 ## Último trabajo del asistente
-El panel terminó. Buenas noticias primero: el flujo completo (crear boleta → OCR real → participantes → repartir → finalizar → transacción) funciona d
+Tercer intento, mismo resultado — ni siquiera pidiéndole explícitamente que verifique su propia suma antes de responder logró corregirlo (bar_autocton
 
 ## Archivos modificados esta sesión
 - `.env.example`
@@ -60,6 +66,7 @@ El panel terminó. Buenas noticias primero: el flujo completo (crear boleta → 
 - `tests/eval/results/.gitignore`
 - `tests/eval/run_eval.py`
 - `tests/test_bills.py`
+- `tests/test_ocr_normalize.py`
 - `tests/test_projects.py`
 
 ## Cómo continuar en la próxima sesión
