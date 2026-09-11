@@ -126,3 +126,24 @@ al link wa.me si el navegador no soporta share.
   verdad (no se puede probar el gesto táctil desde acá) — pedirle al usuario
   que lo pruebe y reporte si el marcador queda muy desalineado al abrir la
   imagen (ahí se evaluaría implementar el object-contain exacto).
+
+### Iteración 2026-09-11 — de "franja de altura fija" a bbox real
+Historial de intentos sobre esta misma feature (documentado para no repetir errores):
+1. Círculo numerado, % del panel completo → visible pero "funciona pésimo" (desconectado, números confusos).
+2. Franja + mix-blend-mode + aspect-ratio calculado con CSS → **invisible** (stacking context roto por los `transform` de los padres, y/o `imgNatural` nunca se resolvía).
+3. Vuelta a % del panel completo, opacidad plana, altura fija 26px → visible pero desalineado (la foto tiene letterboxing por `object-fit:contain` en un panel angosto).
+4. (Con Claude Fable 5.1) Cálculo manual en JS del recuadro real que ocupa la foto dentro del panel (mismo algoritmo que `object-fit:contain`, con `ResizeObserver` + `naturalWidth/Height`) → alineación correcta, pero la altura seguía fija en 26px → con 15-20 ítems, las franjas se ENCIMABAN y tapaban toda la foto ("se sombrea cualquier cosa").
+5. **(Definitivo)** El usuario preguntó "¿pero esto no lo puede hacer GPT, que es el modelo que ya usamos?" — tenía razón: solo le habíamos pedido un punto vago (`position_y`), nunca un recuadro real con formato estricto. Se cambió el prompt para pedir `bbox_x0/y0/x1/y1` (0-100) por ítem, con reglas explícitas ("ajustado a esa línea, no invadas la vecina") + instrucción de auto-revisar antes de responder. Resultado probado con 3 boletas reales: bboxes ajustados, secuenciales, sin encimarse. **No hizo falta Google Cloud Vision ni ningún servicio nuevo** — el modelo sí podía, solo había que pedírselo bien.
+
+Backend: `ParsedItem`/`BillItem` += `bbox_x0/y0/x1/y1`; `position_y` ahora se
+deriva del centro vertical del bbox (compatibilidad con el arrastre existente).
+Frontend: la franja usa el bbox real (ancho/alto exactos) vía el mismo `imgBox`
+(recuadro real de la foto) que calculó Fable en el paso anterior — ambos fixes
+se complementan: uno da el marco de referencia correcto (dónde está la foto
+dentro del panel), el otro da el tamaño correcto de cada ítem dentro de ese marco.
+
+Eval tras el cambio de prompt: 92.4% (baseline previo 95.5% — la diferencia es
+ruido normal de `danes_vitacura`, una foto oscura con varianza alta entre
+corridas incluso antes de este cambio; el resto de las boletas ≥85.7%).
+Verificado en prod: bboxes secuenciales y sin encimarse en Lider, Danes, Bao Bar.
+Pendiente: confirmación visual del usuario en su iPhone.
