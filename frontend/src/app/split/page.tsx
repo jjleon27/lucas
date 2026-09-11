@@ -184,8 +184,19 @@ export default function SplitPage() {
   // Resaltado de color por ítem sobre la foto (franja translúcida, arrastrable)
   const [markerDrag, setMarkerDrag] = useState<{ itemId: number; startY: number; startPct: number } | null>(null);
   const [markerPreview, setMarkerPreview] = useState<Record<number, number>>({}); // itemId -> % mientras se arrastra
+  // Tap-to-spotlight: tocar un ítem en la lista de la derecha lo resalta
+  // inequívocamente sobre la foto (zoom+pan automático a su bbox, banda a
+  // opacidad completa con borde blanco, el resto de las bandas casi invisibles).
+  // Reemplaza el "hay que adivinar por color" en boletas largas.
+  const [spotlightItemId, setSpotlightItemId] = useState<number | null>(null);
   const panStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const drawingRef = useRef(false);
+  // true mientras se arrastra una banda: en touchscreens, el `touchstart` de
+  // la banda igual burbujea hasta el contenedor (stopPropagation/preventDefault
+  // en el pointerdown de la banda solo frena la cadena de eventos pointer +
+  // los mouse-compat, no el touchstart nativo) — sin esta bandera, iniciar el
+  // arrastre de la banda del ítem spotlighted lo cerraría de golpe.
+  const bandInteractionRef = useRef(false);
   const vDivRef = useRef<{ startX: number; startW: number } | null>(null);
   const [isDraggingDiv, setIsDraggingDiv] = useState(false);
 
@@ -807,6 +818,17 @@ export default function SplitPage() {
     if (step !== 2) setSplitChoice(null);
   }, [step]);
 
+  // Clear spotlight + return the photo to its default view when leaving step 2
+  useEffect(() => {
+    if (step !== 2) {
+      setSpotlightItemId((cur) => {
+        if (cur !== null) applyTransform(1, 0, 0);
+        return null;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
   // ── Image viewer (zoom + pan + draw) ─────────────────────────
 
   useEffect(() => {
@@ -877,6 +899,7 @@ export default function SplitPage() {
   };
 
   const onImgTouchStart = (e: React.TouchEvent) => {
+    if (!bandInteractionRef.current) clearSpotlightOnDirectPhotoInteraction();
     if (drawMode) return;
     const t = e.touches;
     if (t.length === 2) {
@@ -906,6 +929,7 @@ export default function SplitPage() {
   };
 
   const onImgMouseDown = (e: React.MouseEvent) => {
+    if (!bandInteractionRef.current) clearSpotlightOnDirectPhotoInteraction();
     if (drawMode || imgTransformRef.current.scale <= 1) return;
     panStartRef.current = { x: e.clientX, y: e.clientY, px: imgTransformRef.current.x, py: imgTransformRef.current.y };
   };
@@ -970,6 +994,59 @@ export default function SplitPage() {
   };
   const resetImgTransform = () => applyTransform(1, 0, 0);
 
+  // ── Tap-to-spotlight (zoom+pan automático al ítem tocado) ───────
+  // Centra y acerca el bbox del ítem dentro del panel. `imgBox` es el
+  // recuadro real (sin escalar) que ocupa la foto dentro del contenedor
+  // (object-fit:contain, ver más arriba); el transform CSS de pan/zoom se
+  // aplica ENCIMA de ese recuadro con transform-origin: center center, igual
+  // que <img> y las bandas de color. Para que un punto a offset (px, py) del
+  // centro del contenedor (en píxeles sin escalar) quede centrado tras
+  // aplicar `scale(s)` + `translate(x,y)` alrededor del centro:
+  //   posición final relativa al centro = s*(px,py) + (x,y)
+  //   queremos que sea (0,0)  →  x = -s*px , y = -s*py
+  function spotlightZoomTo(item: BillItem) {
+    const cw = containerSize.w, ch = containerSize.h;
+    if (cw <= 0 || ch <= 0) return;
+    const hasBbox = item.bbox_x0 != null && item.bbox_y0 != null && item.bbox_x1 != null && item.bbox_y1 != null;
+    if (!hasBbox) return;
+    const top = imgBox.offsetY + (item.bbox_y0! / 100) * imgBox.height;
+    const bottom = imgBox.offsetY + (item.bbox_y1! / 100) * imgBox.height;
+    const left = imgBox.offsetX + (item.bbox_x0! / 100) * imgBox.width;
+    const right = imgBox.offsetX + (item.bbox_x1! / 100) * imgBox.width;
+    const bboxHeight = bottom - top;
+    if (!(bboxHeight > 0)) return; // bbox degenerado — no forzar zoom
+    const bboxCenterX = (left + right) / 2;
+    const bboxCenterY = (top + bottom) / 2;
+    // Apunta a que la altura del bbox ocupe ~15% de la altura del panel
+    // (rango cómodo 12–18%), acotado igual que el pinch-zoom (1x–4x, ver
+    // onImgTouchMove más arriba).
+    const targetHeight = ch * 0.15;
+    const scale = Math.min(4, Math.max(1, targetHeight / bboxHeight));
+    const px = bboxCenterX - cw / 2;
+    const py = bboxCenterY - ch / 2;
+    const x = -scale * px;
+    const y = -scale * py;
+    if (!Number.isFinite(scale) || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    applyTransform(scale, x, y);
+  }
+  function toggleSpotlight(item: BillItem) {
+    if (spotlightItemId === item.id) {
+      setSpotlightItemId(null);
+      resetImgTransform();
+      return;
+    }
+    setSpotlightItemId(item.id);
+    spotlightZoomTo(item);
+  }
+  // Tocar/arrastrar la foto directamente (fuera de una banda) sale del modo
+  // spotlight y vuelve a la vista por defecto — no se queda con zoom "random".
+  function clearSpotlightOnDirectPhotoInteraction() {
+    setSpotlightItemId((cur) => {
+      if (cur !== null) applyTransform(1, 0, 0);
+      return null;
+    });
+  }
+
   // ── Resaltado de color por ítem sobre la foto ───────────────────
   // Una franja translúcida (mismo color que la fila de la derecha) tapa la
   // línea del ítem en la foto, como marcador de texto. Si el OCR no estimó
@@ -983,6 +1060,7 @@ export default function SplitPage() {
     return item.position_y ?? defaultBandPct(idx, total);
   }
   function onBandPointerDown(e: React.PointerEvent, item: BillItem, startPct: number) {
+    bandInteractionRef.current = true;
     e.stopPropagation();
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -1005,6 +1083,7 @@ export default function SplitPage() {
     setMarkerPreview((prev) => ({ ...prev, [markerDrag.itemId]: next }));
   }
   async function onBandPointerUp(e: React.PointerEvent, item: BillItem) {
+    bandInteractionRef.current = false;
     e.stopPropagation();
     if (!markerDrag || !bill) return;
     const finalPct = markerPreview[item.id];
@@ -1209,7 +1288,7 @@ export default function SplitPage() {
           return (
             <div
               key={item.id}
-              className="rounded-xl shadow-sm overflow-hidden border border-slate-200"
+              className={`rounded-xl shadow-sm overflow-hidden border transition-shadow ${spotlightItemId === item.id ? "border-indigo-400 ring-2 ring-indigo-400" : "border-slate-200"}`}
               style={{ background: itemBg }}
             >
               {editItemId === item.id ? (
@@ -1234,19 +1313,23 @@ export default function SplitPage() {
               ) : (
                 <div className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <div className="flex-1 min-w-0">
+                    <div
+                      className="flex-1 min-w-0 cursor-pointer active:opacity-70 transition-opacity"
+                      onClick={() => toggleSpotlight(item)}
+                      title="Tocar para ubicar este ítem en la foto"
+                    >
                       <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
                       <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
                     </div>
                     <button
-                      onClick={() => setSplitChoice(splitChoice?.itemId === item.id ? null : { itemId: item.id, n: "2" })}
+                      onClick={(e) => { e.stopPropagation(); setSplitChoice(splitChoice?.itemId === item.id ? null : { itemId: item.id, n: "2" }); }}
                       className="px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-500 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
                       title="Dividir ítem en varios"
                     >
                       ÷
                     </button>
-                    <button onClick={() => { setEditItemId(item.id); setEditDraft({ name: item.name, qty: item.qty, total: item.line_total }); }} className="text-slate-400 hover:text-indigo-600 p-1"><Pencil size={15} /></button>
-                    <button onClick={() => handleDeleteItem(item.id)} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={15} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); setEditItemId(item.id); setEditDraft({ name: item.name, qty: item.qty, total: item.line_total }); }} className="text-slate-400 hover:text-indigo-600 p-1"><Pencil size={15} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); handleDeleteItem(item.id); }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={15} /></button>
                   </div>
 
                   {/* Inline "÷ split into N" popover */}
@@ -1912,6 +1995,13 @@ export default function SplitPage() {
                       ? Math.max(10, ((item.bbox_y1! - item.bbox_y0!) / 100) * imgBox.height)
                       : 26;
                     const top = imgBox.offsetY + (pct / 100) * imgBox.height;
+                    // Spotlight: el ítem tocado queda a opacidad total con
+                    // borde blanco y un pulso sutil; todos los demás casi
+                    // desaparecen — cero ambigüedad sobre cuál es cuál,
+                    // aunque los colores pastel sean difíciles de distinguir
+                    // a simple vista en una boleta larga.
+                    const isSpotlit = spotlightItemId !== null;
+                    const isThisSpotlit = spotlightItemId === item.id;
                     return (
                       <div
                         key={item.id}
@@ -1919,17 +2009,21 @@ export default function SplitPage() {
                         onPointerMove={onBandPointerMove}
                         onPointerUp={(e) => onBandPointerUp(e, item)}
                         onPointerCancel={(e) => onBandPointerUp(e, item)}
-                        className="absolute pointer-events-auto touch-none select-none rounded-sm"
+                        className={`absolute pointer-events-auto touch-none select-none rounded-sm${isThisSpotlit ? " spotlight-band" : ""}`}
                         style={{
                           top,
                           left,
                           width,
                           height,
-                          transform: "translateY(-50%)",
+                          transform: isThisSpotlit ? "translateY(-50%) scale(1.05)" : "translateY(-50%)",
                           background: itemColor(idx),
-                          opacity: isDragging ? 0.95 : 0.6,
-                          boxShadow: isDragging ? "0 0 0 2px white" : "none",
+                          opacity: isSpotlit ? (isThisSpotlit ? 1 : 0.08) : (isDragging ? 0.95 : 0.6),
+                          boxShadow: isThisSpotlit
+                            ? "0 0 0 3px white, 0 0 0 5px rgba(15,23,42,0.45)"
+                            : (isDragging ? "0 0 0 2px white" : "none"),
                           cursor: "grab",
+                          transition: "opacity 150ms ease, box-shadow 150ms ease",
+                          zIndex: isThisSpotlit ? 1 : 0,
                         }}
                         title={`${item.name} — arrastra para ajustar`}
                       />
@@ -1962,7 +2056,7 @@ export default function SplitPage() {
                 </button>
                 {imgScale > 1 && (
                   <button
-                    onClick={resetImgTransform}
+                    onClick={() => { setSpotlightItemId(null); resetImgTransform(); }}
                     className="ml-auto px-2 py-1 rounded-lg shadow bg-white/90 text-[11px] text-slate-700 font-medium"
                   >
                     {Math.round(imgScale * 100)}% ✕
@@ -2016,6 +2110,13 @@ export default function SplitPage() {
         }
         :global(.animate-ping-once) {
           animation: ping-once 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes spotlight-pulse {
+          0%, 100% { box-shadow: 0 0 0 3px white, 0 0 0 6px rgba(79,70,229,0.55); }
+          50% { box-shadow: 0 0 0 3px white, 0 0 0 10px rgba(79,70,229,0.15); }
+        }
+        :global(.spotlight-band) {
+          animation: spotlight-pulse 1.6s ease-in-out infinite;
         }
       `}</style>
     </div>
