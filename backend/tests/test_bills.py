@@ -113,3 +113,21 @@ def test_shares_percent_must_sum_100(client, h, other_person):
         {"participant_id": me["id"], "percent": 70}]}, headers=h)
     assert r.status_code == 400
     assert "100" in r.json()["detail"]
+
+
+def test_item_position_y_starts_null_and_is_draggable(client, h, other_person):
+    """position_y: null por defecto (ítem agregado a mano); se puede fijar/editar
+    vía PATCH (lo que hace el frontend al soltar el marcador arrastrado)."""
+    b = _new_bill(client, h, other_person)
+    bid = b["id"]
+    item = b["items"][0]
+    assert item["position_y"] is None
+
+    r = client.patch(f"/bills/{bid}/items/{item['id']}", json={"position_y": 37.5}, headers=h)
+    assert r.status_code == 200, r.text
+    updated = next(i for i in r.json()["items"] if i["id"] == item["id"])
+    assert updated["position_y"] == 37.5
+
+    # fuera de rango → rechazado
+    r2 = client.patch(f"/bills/{bid}/items/{item['id']}", json={"position_y": 150}, headers=h)
+    assert r2.status_code == 422

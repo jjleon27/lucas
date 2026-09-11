@@ -650,6 +650,12 @@ AMOUNT — el monto realmente cobrado:
 
 FECHA: si la fecha no se lee con certeza (dígitos borrosos), devuelve null. NO adivines.
 
+POSICIÓN VERTICAL (position_y): para cada ítem, estima a qué altura de la imagen
+está esa línea, como porcentaje 0-100 (0 = borde superior de la imagen, 100 =
+borde inferior). Es una estimación visual aproximada, no hace falta exactitud de
+píxel — se usa solo para marcar el ítem sobre la foto al revisar. Sigue el orden
+natural de lectura de arriba hacia abajo.
+
 CATEGORÍA:
 - "Bares y Salidas": schops, cervezas, fernet, tragos, pub/bar
 - "Alimentación": restaurantes, delivery, cafeterías
@@ -674,7 +680,7 @@ DEVUELVE SOLO ESTE JSON (sin markdown):
       "category": "categoría",
       "is_income": false,
       "items": [
-        {"name": "nombre", "quantity": qty, "line_total": line_total}
+        {"name": "nombre", "quantity": qty, "line_total": line_total, "position_y": 0_a_100}
       ]
     }
   ]
@@ -1232,17 +1238,18 @@ def _normalize_boleta_items(
         for i, it in enumerate(product_items):
             if i < len(product_items) - 1:
                 new_price = round(it.price * scale)
-                normalised.append(ParsedItem(name=it.name, price=new_price, quantity=it.quantity))
+                normalised.append(ParsedItem(name=it.name, price=new_price, quantity=it.quantity, position_y=it.position_y))
                 running += new_price * it.quantity
             else:
                 # Last item absorbs rounding remainder
                 remainder = round(total_neto - running)
                 unit_price = round(remainder / it.quantity) if it.quantity > 1 else remainder
-                normalised.append(ParsedItem(name=it.name, price=unit_price, quantity=it.quantity))
+                normalised.append(ParsedItem(name=it.name, price=unit_price, quantity=it.quantity, position_y=it.position_y))
     else:
         normalised = product_items
 
-    # Step 3: append authoritative IVA row
+    # Step 3: append authoritative IVA row (sin posición propia — es una fila
+    # agregada, no una línea impresa en la boleta)
     normalised.append(ParsedItem(name="IVA (19%)", price=round(iva_amount), quantity=1))
 
     # Step 4: authoritative total
@@ -1480,7 +1487,13 @@ def vision_parse(
                 else:
                     price = 0.0
 
-                out_items.append(ParsedItem(name=str(name), price=price, quantity=qty))
+                try:
+                    position_y = it.get("position_y")
+                    position_y = max(0.0, min(100.0, float(position_y))) if position_y is not None else None
+                except (TypeError, ValueError):
+                    position_y = None
+
+                out_items.append(ParsedItem(name=str(name), price=price, quantity=qty, position_y=position_y))
             return out_items
 
         def _parse_payload(raw_text: str):

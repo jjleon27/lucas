@@ -265,6 +265,9 @@ class BillItem(Base):
     qty = Column(Integer, nullable=False, default=1)
     unit_price = Column(Float, nullable=False)
     line_total = Column(Float, nullable=False)  # = qty * unit_price
+    # 0-100 = % de la altura de la imagen donde está esta línea (estimación del
+    # modelo de OCR, editable a mano arrastrando el marcador). Null = sin marcar.
+    position_y = Column(Float, nullable=True)
 
     bill = relationship("Bill", back_populates="items")
     shares = relationship("BillItemShare", back_populates="item", cascade="all, delete-orphan")

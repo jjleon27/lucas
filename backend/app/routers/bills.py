@@ -60,6 +60,7 @@ class ItemPatch(BaseModel):
     name: Optional[str] = None
     qty: Optional[int] = Field(None, ge=1, le=999)
     unit_price: Optional[float] = Field(None, ge=0)
+    position_y: Optional[float] = Field(None, ge=0, le=100)
 
 
 class ShareEntry(BaseModel):
@@ -128,6 +129,7 @@ def _bill_out(bill: Bill) -> dict:
             "qty": it.qty,
             "unit_price": it.unit_price,
             "line_total": it.line_total,
+            "position_y": it.position_y,
             "shares": [
                 {"participant_id": s.participant_id, "weight": s.weight, "units": s.units}
                 for s in it.shares
@@ -332,6 +334,7 @@ async def bill_ocr(
             qty=qty,
             unit_price=unit_price,
             line_total=line_total,
+            position_y=it.position_y,
         ))
 
     db.flush()
@@ -442,6 +445,8 @@ def patch_item(
         item.qty = payload.qty
     if payload.unit_price is not None:
         item.unit_price = payload.unit_price
+    if payload.position_y is not None:
+        item.position_y = payload.position_y
     item.line_total = round(item.qty * item.unit_price, 2)
     _recalc_total(bill)
     db.commit()

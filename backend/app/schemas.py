@@ -217,6 +217,11 @@ class ParsedItem(BaseModel):
     name: str
     price: float
     quantity: int = 1
+    # Estimación del modelo de vision: 0-100 = % de la altura de la imagen,
+    # de arriba hacia abajo, de la línea de este ítem en la boleta. Se usa para
+    # marcar el ítem con su color sobre la foto al revisar el split. Best-effort,
+    # no es un bounding box exacto — el usuario puede corregirlo arrastrando.
+    position_y: Optional[float] = None
 
 
 class ParsedReceipt(BaseModel):

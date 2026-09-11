@@ -62,6 +62,9 @@ def _migrate_schema() -> None:
         "ALTER TABLE bill_item_shares ADD COLUMN units REAL",
         # transactions.project_id — optional cross-category grouping (Proyectos feature)
         "ALTER TABLE transactions ADD COLUMN project_id INTEGER",
+        # bill_items.position_y — altura estimada del ítem en la foto (0-100), para
+        # marcarlo con su color al revisar el split; editable arrastrando.
+        "ALTER TABLE bill_items ADD COLUMN position_y REAL",
     ]
     with engine.connect() as conn:
         for stmt in stmts:
