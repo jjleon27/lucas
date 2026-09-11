@@ -1,18 +1,14 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-11 02:41:33*
+*Auto-guardado por hook Stop · 2026-09-11 02:51:05*
 
 ## Presión de contexto
-- Tool uses esta sesión: **651** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **657** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-pero no lo puede hacer gpt que es el modelo que estamos usando ya?
+ocr 504 decia error al subir boleta!
 
 ## Último trabajo del asistente
-Tenías razón en dudar. Ya está arreglado y verificado.
-
-## Lo que estaba mal
-
-Nunca le pedimos a GPT un recuadro real — solo un punto vago ("más o men
+Arreglado y verificado. Al pedirle el recuadro por ítem, las respuestas del modelo se hicieron más pesadas (4 números en vez de 1 por ítem) y algunas 
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -71,10 +67,13 @@ Nunca le pedimos a GPT un recuadro real — solo un punto vago ("más o men
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
 
-## ADDENDUM 9 (2026-09-11) — 504 al subir boleta: maxDuration muy bajo
-El usuario reportó "ocr 504 decía error al subir boleta". Causa: el bbox por
-ítem (4 números en vez de 1) alargó las respuestas del modelo — 2/8 boletas del
-eval tardaron 60.3s/63.7s, justo en el límite de 60s de la función Vercel.
-Fix: maxDuration 60 -> 180 en vercel.json. Verificado en prod subiendo la
-boleta más lenta conocida (danes_vitacura, ~59-64s reales): antes hubiera
-dado 504, ahora HTTP 200 completo.
+## ADDENDUM 10 (2026-09-11) — colores sin repetirse + ancho de ítems compartido
+El usuario mostró screenshot de una boleta de 21 ítems donde "aún no calza".
+Causa real encontrada: paleta fija de 8 colores → ítem 1 e ítem 9 quedaban
+exactamente del mismo color en una boleta larga. Fix: itemColor(idx) genera
+color por ángulo dorado (137.508°), sin repetirse en la práctica. Además:
+bbox_x0/x1 ahora se piden UNA vez por boleta (items_x0/items_x1), no por
+ítem — confirmado que el ancho de columna apenas varía línea a línea; no bajó
+mucho la latencia (el cuello de botella real es leer boletas largas línea por
+línea, no los campos de posición). Deployado, verificado con 2 boletas reales
++ suite backend sin regresión. Falta: confirmación visual del usuario.

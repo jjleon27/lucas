@@ -146,4 +146,26 @@ Eval tras el cambio de prompt: 92.4% (baseline previo 95.5% — la diferencia es
 ruido normal de `danes_vitacura`, una foto oscura con varianza alta entre
 corridas incluso antes de este cambio; el resto de las boletas ≥85.7%).
 Verificado en prod: bboxes secuenciales y sin encimarse en Lider, Danes, Bao Bar.
-Pendiente: confirmación visual del usuario en su iPhone.
+
+### Iteración 2026-09-11 (cont.) — 504 al subir + colores repetidos en boletas largas
+El usuario reportó dos problemas reales al probar en su iPhone con una boleta
+de 21 ítems (Bar Autóctono):
+1. **"OCR 504 al subir boleta"** — el bbox por ítem alargó las respuestas del
+   modelo (2/8 boletas del eval tardaron 60.3s/63.7s) justo contra el límite
+   de 60s configurado en `vercel.json`. Fix: `maxDuration` 60→180. Verificado
+   en prod subiendo la boleta más lenta conocida (~59-64s reales): antes
+   hubiera dado 504, ahora HTTP 200 completo.
+2. **"Aún no calza"** — con 21 ítems y una paleta fija de 8 colores, el ítem 1
+   y el ítem 9 quedaban EXACTAMENTE del mismo color — imposible de distinguir
+   entre la foto y la lista en boletas largas. Fix: `itemColor(idx)` genera un
+   color pastel por índice con ángulo dorado (137.508°/índice) en vez de una
+   paleta fija — separación máxima de tono, no se repite en la práctica sea
+   cual sea el largo de la boleta.
+3. Optimización de paso: el ancho del bloque de ítems (`bbox_x0/x1`) se pide
+   UNA vez por boleta (`items_x0/items_x1`), no por ítem — confirmado con 3
+   boletas reales que el ancho apenas varía línea a línea. Menos tokens
+   redundantes (la latencia en sí no bajó mucho — el cuello de botella real es
+   la lectura línea por línea de boletas largas, no los campos de posición).
+
+Todo commiteado, deployado, verificado con tests + eval + curl a prod.
+Pendiente: confirmación visual del usuario con la boleta larga real.
