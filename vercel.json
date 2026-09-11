@@ -8,7 +8,7 @@
   "functions": {
     "api/index.py": {
       "includeFiles": "backend/**",
-      "maxDuration": 60
+      "maxDuration": 180
     }
   },
   "rewrites": [
