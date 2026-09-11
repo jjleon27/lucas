@@ -1653,7 +1653,7 @@ cantidad | nombre | valor total de esa línea
 
 Si hay una línea de descuento, inclúyela con valor negativo.
 
-Al final agrega en su propia línea: MERCHANT: nombre del local, DATE: fecha (YYYY-MM-DD), AMOUNT: total cobrado."""
+Al final agrega en su propia línea: MERCHANT: nombre del local, DATE: fecha (YYYY-MM-DD), AMOUNT: total del consumo (si hay una propina sugerida aparte, no la incluyas en AMOUNT)."""
 
 
 def _parse_bill_text(raw_text: str) -> Optional[dict]:
