@@ -1720,24 +1720,25 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
         if len(parts) < 3:
             continue
         qty_raw = parts[0].strip()
-        if qty_raw.startswith("-"):
-            # Línea de descuento: el modelo a veces repite el valor negativo
-            # en la columna de cantidad ("-990 | Descuento | -990") — ahí la
-            # cantidad real es 1, no 990 (el "-" no es señal de cantidad).
+        try:
+            # Ojo: la boleta suele imprimir la cantidad como "1.00"/"2.00"
+            # (con decimales) — hay que parsearla como número real, NO sacar
+            # solo los dígitos con regex (eso convierte "1.00" en "100": el
+            # punto desaparece y el "00" se pega al "1"). Bug real visto en
+            # prod: "1.00 Frutilla Spritz" terminó guardado como cantidad=100.
+            # Se reusa _to_float (ya sabe distinguir miles de decimales, y ya
+            # interpreta un "-" como negativo) en vez de un parseo nuevo.
+            qty = int(round(_to_float(qty_raw))) or 1
+        except Exception:
             qty = 1
-        else:
-            try:
-                # Ojo: la boleta suele imprimir la cantidad como "1.00"/"2.00"
-                # (con decimales) — hay que parsearla como número real, NO
-                # sacar solo los dígitos con regex (eso convierte "1.00" en
-                # "100": el punto desaparece y el "00" se pega al "1"). Bug
-                # real visto en prod: "1.00 Frutilla Spritz" terminó guardado
-                # como cantidad=100. Se reusa _to_float (ya sabe distinguir
-                # separador de miles vs decimal) en vez de un parseo nuevo.
-                qty = int(round(_to_float(qty_raw))) or 1
-            except Exception:
-                qty = 1
-        qty = max(1, min(qty, 999))  # mismo límite que ItemAdd/ItemPatch (ítems a mano)
+        # Cantidad siempre positiva y acotada — mismo límite (999) que ya usan
+        # los ítems agregados a mano (ItemAdd/ItemPatch). Esto también cubre,
+        # de forma general, cualquier línea donde el modelo puso un valor
+        # negativo en la columna de cantidad (p.ej. una línea de descuento
+        # "-990 | Descuento | -990"): _to_float ya lo lee como -990, y este
+        # límite lo lleva a 1 igual que a cualquier otra cantidad inválida —
+        # sin necesitar un caso especial para "empieza con -".
+        qty = max(1, min(qty, 999))
         name = parts[1].strip()
         if not name:
             continue
