@@ -1,18 +1,18 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-09 21:01:38*
+*Auto-guardado por hook Stop · 2026-09-11 01:20:12*
 
 ## Presión de contexto
-- Tool uses esta sesión: **463** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **527** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-ok impmemetalo y luego comitea y pushea y actualiza todo
+antes de esto guarda todo en este checkpoint para volver ayras si se rompe algp, luego implementa y si que la etiqueta de color se pueda arrastrar...planea bien eso y ejecuta
 
 ## Último trabajo del asistente
-P1 implementado, todo commiteado, pusheado, deployado y verificado.
+Listo, todo implementado, commiteado, pusheado y deployado. Resumen:
 
-## Reparto avanzado por ítem (⚙ en el paso 3)
+## 🔒 Checkpoint
 
-Botón **⚙** en cada ítem → panel c
+Tag `checkpoint-2026-09-11-pre-markers` en GitHub (commit `8868
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -71,19 +71,10 @@ Botón **⚙** en cada ítem → panel c
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
 
-## ADDENDUM 3 (2026-09-11) — WhatsApp fix + marcador de color arrastrable
-Checkpoint git antes de empezar: tag `checkpoint-2026-09-11-pre-markers` @ 8868ce3
-(rollback: `git reset --hard checkpoint-2026-09-11-pre-markers`).
-
-HECHO, deployado, verificado en prod:
-- Compartir WhatsApp: `navigator.share` en vez de link `wa.me` (fallaba vacío
-  dentro de la PWA instalada).
-- Marcador de color arrastrable por ítem en la foto (paso 2): `BillItem.position_y`
-  (0-100, estimado por el OCR, corregible arrastrando, persiste vía PATCH).
-  Mismo color+número en el marcador y en la fila de la derecha.
-
-Pendiente: que el usuario pruebe el arrastre en su iPhone real — el posicionamiento
-inicial es % del contenedor (no replica el letterboxing exacto de object-contain),
-así que puede quedar levemente desalineado hasta el primer ajuste manual. Si queda
-muy mal, el siguiente paso es implementar el cálculo exacto de aspect-ratio
-(detallado en docs/PLAN_split_v3.md, sección "Ronda 2026-09-11").
+## ADDENDUM 4 (2026-09-11) — rediseño del resaltado en la foto (v1 no funcionaba)
+El usuario probó los marcadores circulares numerados y reportó "funciona pésimo".
+Rediseño: se reemplazaron por una FRANJA translúcida (mixBlendMode multiply, tipo
+resaltador de texto) sin números, alineada a la caja real de la imagen (aspect-ratio
+con dimensiones naturales — antes era % del panel completo, podía caer fuera de la
+foto si había letterboxing). Área de arrastre = toda la franja (antes un círculo de
+22px). Deployado, pendiente que el usuario lo pruebe en su iPhone real.
