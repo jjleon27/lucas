@@ -1,18 +1,18 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-11 01:20:12*
+*Auto-guardado por hook Stop · 2026-09-11 01:33:01*
 
 ## Presión de contexto
-- Tool uses esta sesión: **527** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **551** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-antes de esto guarda todo en este checkpoint para volver ayras si se rompe algp, luego implementa y si que la etiqueta de color se pueda arrastrar...planea bien eso y ejecuta
+hm no funciona pesimo. lo que quiero es que e item y su valor tengan una sombra del color de la lista que esta a la derecha, ahora tiene numeros y no funciona bien, planea bien esto
 
 ## Último trabajo del asistente
-Listo, todo implementado, commiteado, pusheado y deployado. Resumen:
+Rediseñado, deployado y pusheado. Resumen:
 
-## 🔒 Checkpoint
+## Qué cambié
 
-Tag `checkpoint-2026-09-11-pre-markers` en GitHub (commit `8868
+Saqué los círculos numerados (confundían y quedaban desalineados) y los reemplacé por lo qu
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -71,10 +71,13 @@ Tag `checkpoint-2026-09-11-pre-markers` en GitHub (commit `8868
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
 
-## ADDENDUM 4 (2026-09-11) — rediseño del resaltado en la foto (v1 no funcionaba)
-El usuario probó los marcadores circulares numerados y reportó "funciona pésimo".
-Rediseño: se reemplazaron por una FRANJA translúcida (mixBlendMode multiply, tipo
-resaltador de texto) sin números, alineada a la caja real de la imagen (aspect-ratio
-con dimensiones naturales — antes era % del panel completo, podía caer fuera de la
-foto si había letterboxing). Área de arrastre = toda la franja (antes un círculo de
-22px). Deployado, pendiente que el usuario lo pruebe en su iPhone real.
+## ADDENDUM 5 (2026-09-11) — el resaltado no aparecía en la foto: 2 causas reales
+1. `mix-blend-mode:multiply` no se mezclaba con la foto por los transform de los
+   contenedores padres (creaban su propio stacking context) -> quedaba invisible.
+   Cambiado a opacidad plana + borde del mismo color.
+2. Si la foto venía de caché del navegador, <img onLoad> nunca disparaba
+   (ya estaba "complete") -> imgNatural quedaba null y el overlay ni se montaba.
+   Agregado chequeo de el.complete en useEffect.
+3. Red de seguridad: si igual no llega imgNatural a tiempo, se muestra con el
+   panel completo (no nada) y se realinea solo.
+Deployado. Pendiente: que el usuario confirme que ahora SÍ se ve el color en la foto.
