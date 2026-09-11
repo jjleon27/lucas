@@ -201,4 +201,57 @@ de arrastre (regresión del gesto de ajuste manual ya existente).
 No se tocó backend, `itemColor`, `imgBox`, ni el flujo de arrastre de
 `position_y`. Build verificado, revisado línea por línea, commiteado,
 pusheado y deployado a prod (`98b7c5b`).
-Pendiente: confirmación visual del usuario en su iPhone con la boleta larga real.
+
+### Iteración 2026-09-11 (cont. 3) — el usuario rechaza el spotlight, pide simple + rápido
+El usuario fue tajante: no quería tap-to-spotlight. Cita textual: "yo no
+quiero eso! quiero simplemente que se cree la lista que se crea a la
+derecha con items en colores pero que esos mismos items se resalten con
+los mismos colores en la foto de la izquierda! y que sea mas rapido, se
+esta demorando mucho." Pidió explícitamente un proceso de plan → equipo
+crítico que lo juzgue y afine → ejecutar, antes de tocar código.
+
+**Revert**: `git revert 98b7c5b` — vuelve la banda a simple, siempre
+visible, mismo color que la lista (`itemColor(idx)`, sin cambios), sin
+zoom ni dimming. Además se cambió `left`/`width` a **todo el ancho de la
+foto** (antes usaba `bbox_x0/x1` para un ancho ajustado — ya no hace falta
+si no hay zoom-to-item, y el backend dejó de pedir ese dato, ver abajo).
+
+**Diagnóstico de la lentitud real** (verificado por un pase de revisión
+independiente contra el código real antes de tocar nada — encontró 2
+supuestos equivocados en el borrador inicial):
+1. `ai/provider.py` `vision_json()` (el llamado principal de OCR) manda la
+   foto con `detail:"high"` fijo, a resolución original del iPhone — nunca
+   se redimensiona. Existía una función `_shrink_for_vision()` ya escrita
+   para esto pero **sin usar en ningún lado**. Se conectó al flujo real
+   (refactorizada en `_resize_for_vision` + wrapper), resize a 2000px
+   ANTES del contraste/nitidez (no después — importa el orden para no
+   perder el fix de legibilidad de cantidades, b31d9f2).
+2. El lever real y dominante era el **modelo**: `gpt-5-mini` tardaba
+   22-46s/imagen. Se le preguntó al usuario explícitamente (no es una
+   decisión que se deba tomar en silencio en una app de plata real) y
+   eligió cambiar a `gpt-4.1`.
+3. Un intento de "simplificar" el bbox a un solo `position_y` (en vez de
+   `bbox_y0/y1`) fue RECHAZADO por el equipo revisor: ya se probó antes
+   (ver Iteración 2026-09-11 arriba, paso 4) y causa que las bandas se
+   encimen en boletas largas. Se mantuvo `bbox_y0/y1` por ítem; solo se
+   dejó de pedir `items_x0/items_x1` (ancho del bloque), que ya no se usa.
+
+**Resultado medido con el eval harness (8 boletas reales, antes/después)**:
+
+| | gpt-5-mini (antes) | gpt-4.1 + resize (después) |
+|---|---|---|
+| Velocidad | 21.9-45.8s/img (avg ~36s) | 2.4-6.9s/img (avg ~4s) — **~10x más rápido** |
+| Precisión overall | 91.5% | 90.7% — prácticamente igual |
+
+El 81.4% histórico de gpt-4.1 (ver `MASTER_PLAN.md` §20, comentario viejo
+en `config.py`) estaba desactualizado — el prompt mejoró mucho desde esa
+medición (bbox, reglas de IVA/neto, etc.), así que el trade-off real hoy
+es mucho mejor de lo que sugería el historial.
+
+Env `OPENAI_VISION_MODEL` actualizado en Vercel producción. Tests pytest:
+11 fallas en `test_ocr_normalize`/`test_ocr_integration` confirmadas
+**pre-existentes** (fallan igual en `main` sin este cambio, vía
+`git stash`) — no relacionadas, quedan pendientes fuera de este trabajo.
+
+Todo commiteado (`3f94b46`), pusheado, deployado, verificado en prod.
+Pendiente: confirmación visual del usuario en su iPhone.

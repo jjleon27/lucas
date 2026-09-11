@@ -689,14 +689,14 @@ The following are explicitly out of scope for LUCAS:
 | Transfer-linking (auto) | STABLE | |
 | Transfer-linking (manual) | STABLE | |
 | Balance reconciliation | STABLE | |
-| OCR (vision path) | STABLE | `gpt-5-mini` default; eval 95.5%. Fix boleta price-scaling 2026-09-09 (bug del split "$2.150→$1.765"). Fable 5.1 disponible vía `AI_PROVIDER=anthropic` |
+| OCR (vision path) | STABLE | `gpt-4.1` default desde 2026-09-11 (antes `gpt-5-mini`) — usuario eligió velocidad: ~4s/img vs ~36s/img, 90.7% vs 91.5% precisión (casi igual). Resize a 2000px antes de enviar (`_resize_for_vision`, antes sin usar). Fix boleta price-scaling 2026-09-09 (bug del split "$2.150→$1.765"). Fable 5.1 disponible vía `AI_PROVIDER=anthropic` |
 | OCR (Tesseract fallback) | DISABLED en serverless | `run_ocr()` devuelve "" si no hay cv2/tesseract; local sí lo tiene |
 | PDF receipt parsing | STABLE | `pypdfium2` (sin poppler) — pendiente probar cartola escaneada real en prod |
 | Categorizer | STABLE | |
 | Dashboard summary | STABLE | |
 | Alerts | STABLE | |
 | Chat (basic + action) | STABLE | |
-| Bill splitter (`bills.py` + `/split`) | STABLE | 2026-09-09: arreglado bug "no se guardó el monto" (`account_svc` ImportError en finalize); +toggle "guardar como gasto", +historial "Divisiones guardadas", +pagador por % (Splitwise), +reparto avanzado por ítem (⚙ %/unidades fraccionales/montos). 2026-09-11: compartir por WhatsApp vía `navigator.share`; resaltado de color por ítem sobre la foto — bbox real por ítem (`bbox_x0/y0/x1/y1`) + recuadro exacto `object-fit:contain` calculado a mano; **tap-to-spotlight**: tocar un ítem en la lista hace zoom/pan automático a su línea exacta en la foto y apaga el resto (opacidad 0.08) — resuelve la ambigüedad de emparejar color a simple vista en boletas largas (15-21 ítems). Historial completo de intentos en `docs/PLAN_split_v3.md`. Checkpoint de rollback: tag git `checkpoint-2026-09-11-pre-markers` |
+| Bill splitter (`bills.py` + `/split`) | STABLE | 2026-09-09: arreglado bug "no se guardó el monto" (`account_svc` ImportError en finalize); +toggle "guardar como gasto", +historial "Divisiones guardadas", +pagador por % (Splitwise), +reparto avanzado por ítem (⚙ %/unidades fraccionales/montos). 2026-09-11: compartir por WhatsApp vía `navigator.share`; resaltado de color por ítem sobre la foto — banda simple, siempre visible, a todo el ancho, mismo color exacto que la fila de la lista (`itemColor(idx)`), posición vertical del bbox real (`bbox_y0/y1`) sobre el recuadro exacto `object-fit:contain`. (Se probó y se revirtió un modo "tap-to-spotlight" con zoom automático — el usuario lo rechazó explícitamente, pidió la versión simple.) Historial completo de intentos en `docs/PLAN_split_v3.md`. Checkpoint de rollback: tag git `checkpoint-2026-09-11-pre-markers` |
 | Proyectos (agrupador + presupuesto) | STABLE | `routers/projects.py`, `/projects`, selector en TransactionList. Verificado en prod 2026-09-09 |
 | Cartola (text PDF) | STABLE | `resp.content` bug fixed |
 | Cartola (scanned PDF) | STABLE | |
