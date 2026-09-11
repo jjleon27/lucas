@@ -116,6 +116,11 @@ class ParseResult:
     transactions: list[ParsedReceipt] = field(default_factory=list)
     bank_hint: str = ""
     account_type_hint: str = ""          # "debit" | "credit" | ""
+    # Ancho/alto reales de la foto, orientada hacia arriba (post EXIF-transpose)
+    # — el marco de referencia del que bbox_x0/y0/x1/y1 son %. Ver nota en
+    # vision_parse(). None si no se pudo determinar (Tesseract-only fallback).
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
 
     def __bool__(self) -> bool:
         return bool(self.transactions)
@@ -1385,11 +1390,25 @@ def vision_parse(
         # doesn't buy tile-count savings, just faster transfer), THEN boost
         # contrast/sharpness so digit quantities stay legible (order matters:
         # sharpening after the resize, not before, per the qty-legibility fix).
+        # Ancho/alto REALES de la foto tal como queda orientada hacia arriba
+        # (post EXIF-transpose) — es el marco de referencia del que son % los
+        # bbox_x0/y0/x1/y1 que devuelve el modelo. Se guarda y se manda al
+        # frontend para que calcule el recuadro object-fit:contain contra ESTOS
+        # números, no contra `naturalWidth/naturalHeight` medido por el
+        # navegador — esos dos valores pueden no coincidir si el navegador
+        # interpreta el EXIF de forma distinta a Pillow (visto en boletas de
+        # iPhone reales: el bloque de ítems terminaba comprimido/desalineado
+        # en la foto, consistente con un ancho/alto invertidos en algún punto
+        # del camino). Con un único origen de verdad (el backend) el cálculo
+        # del frontend es correcto sin importar esa discrepancia.
+        upright_w: Optional[int] = None
+        upright_h: Optional[int] = None
         try:
             from PIL import ImageEnhance, ImageOps
             img_pil = Image.open(io.BytesIO(image_bytes))
             img_pil = ImageOps.exif_transpose(img_pil)  # fix iPhone rotation
             img_pil = img_pil.convert("RGB")
+            upright_w, upright_h = img_pil.size
             img_pil = _resize_for_vision(img_pil, max_side=2000)
             img_pil = ImageEnhance.Contrast(img_pil).enhance(1.8)
             img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
@@ -1671,6 +1690,8 @@ def vision_parse(
             transactions=out,
             bank_hint=str(bank_hint)[:80],
             account_type_hint=str(account_type_hint)[:16],
+            image_width=upright_w,
+            image_height=upright_h,
         )
     except Exception as e:  # noqa: BLE001
         print(f"[ocr] vision_parse failed: {e}")

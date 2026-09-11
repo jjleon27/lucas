@@ -148,6 +148,8 @@ def _bill_out(bill: Bill) -> dict:
         "tip_amount": bill.tip_amount,
         "currency": bill.currency,
         "image_url": bill.image_url,
+        "image_width": bill.image_width,
+        "image_height": bill.image_height,
         "status": bill.status,
         "transaction_id": bill.transaction_id,   # tx creada al finalizar (o null si no se guardó como gasto)
         "my_share": round(me_p.owes_amount, 2) if me_p else 0.0,
@@ -313,6 +315,13 @@ async def bill_ocr(
     if parsed is None or not parsed.transactions:
         db.commit()
         return _bill_out(bill)
+
+    # Dimensiones reales de la foto orientada hacia arriba (post EXIF-transpose)
+    # — el marco de referencia del que son % los bbox_* de cada ítem. El
+    # frontend las usa en vez de medir naturalWidth/Height con el navegador.
+    if parsed.image_width and parsed.image_height:
+        bill.image_width = parsed.image_width
+        bill.image_height = parsed.image_height
 
     # Pick best transaction from OCR (single receipt → 1 tx with items)
     tx_data = parsed.transactions[0]

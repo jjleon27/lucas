@@ -229,6 +229,13 @@ class Bill(Base):
     tip_amount = Column(Float, nullable=False, default=0.0)
     currency = Column(String(8), default="CLP", nullable=False)
     image_url = Column(String(1024), default="", nullable=False)
+    # Ancho/alto reales de la foto, orientada hacia arriba (post EXIF-transpose)
+    # — el marco de referencia del que bbox_x0/y0/x1/y1 (en BillItem) son %.
+    # El frontend los usa para el cálculo object-fit:contain en vez de confiar
+    # en naturalWidth/naturalHeight medido por el navegador (que puede
+    # interpretar el EXIF distinto a Pillow). None si no viene de OCR.
+    image_width = Column(Integer, nullable=True)
+    image_height = Column(Integer, nullable=True)
     # draft → participants/items being edited; assigned → shares set; finalized → tx created
     status = Column(String(16), default="draft", nullable=False)
     # Set on finalize() — points to the user's personal expense transaction

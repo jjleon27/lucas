@@ -71,6 +71,13 @@ def _migrate_schema() -> None:
         "ALTER TABLE bill_items ADD COLUMN bbox_y0 REAL",
         "ALTER TABLE bill_items ADD COLUMN bbox_x1 REAL",
         "ALTER TABLE bill_items ADD COLUMN bbox_y1 REAL",
+        # bills.image_width/height — dimensiones reales de la foto orientada
+        # hacia arriba (post EXIF-transpose), el marco de referencia del que
+        # los bbox_* son %. El frontend los usa en vez de naturalWidth/Height
+        # medido por el navegador, para que el cálculo object-fit:contain no
+        # dependa de que el navegador interprete el EXIF igual que Pillow.
+        "ALTER TABLE bills ADD COLUMN image_width INTEGER",
+        "ALTER TABLE bills ADD COLUMN image_height INTEGER",
     ]
     with engine.connect() as conn:
         for stmt in stmts:

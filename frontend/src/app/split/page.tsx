@@ -21,6 +21,12 @@ interface BillItem {
 interface Bill {
   id: number; merchant: string; date: string; total_amount: number; tip_amount: number;
   currency: string; image_url: string; status: "draft" | "assigned" | "finalized";
+  // Ancho/alto reales de la foto (orientada hacia arriba, post EXIF-transpose
+  // en el backend) — el marco de referencia del que bbox_x0/y0/x1/y1 son %.
+  // Se usan para el cálculo object-fit:contain en vez de naturalWidth/Height
+  // medido por el navegador (puede interpretar el EXIF distinto a Pillow).
+  // null en boletas viejas o si el OCR no corrió — ahí se cae a imgNatural.
+  image_width: number | null; image_height: number | null;
   transaction_id: number | null; public_token: string | null;
   participants: BillParticipant[]; items: BillItem[];
 }
@@ -867,14 +873,31 @@ export default function SplitPage() {
   // (mismo algoritmo que usa el navegador). Si aún no se conoce el tamaño
   // natural de la imagen o del contenedor, se asume que la foto llena todo
   // el panel — nunca "tamaño cero" ni "no renderizar" (ver bug v2).
+  //
+  // El ancho/alto usado para la proporción viene de `bill.image_width/height`
+  // (calculado por el backend con Pillow al procesar la foto para OCR —  el
+  // MISMO marco de referencia del que bbox_x0/y0/x1/y1 son %) cuando está
+  // disponible, y solo cae a `imgNatural` (medido por el navegador via
+  // <img>.naturalWidth/Height) si el backend no lo mandó (boleta vieja, o
+  // ítem agregado a mano sin OCR). Motivo: se detectó que las bandas de color
+  // quedaban comprimidas/desalineadas de forma creciente hacia abajo de la
+  // foto — la firma característica de una proporción ancho/alto incorrecta,
+  // no de un simple desplazamiento — consistente con que el navegador podía
+  // interpretar la orientación EXIF de la foto distinto a como lo hace Pillow
+  // en el backend (que es lo que realmente usó el modelo para calcular los
+  // bbox). Usar el mismo número en ambos lados elimina esa discrepancia de
+  // raíz, sin importar cuál de los dos la estaba causando.
   const imgBox = useMemo(() => {
     const cw = containerSize.w, ch = containerSize.h;
     if (cw <= 0 || ch <= 0) return { offsetX: 0, offsetY: 0, width: cw, height: ch };
-    if (!imgNatural || imgNatural.w <= 0 || imgNatural.h <= 0) {
+    const authoritative = bill?.image_width && bill?.image_height
+      ? { w: bill.image_width, h: bill.image_height }
+      : imgNatural;
+    if (!authoritative || authoritative.w <= 0 || authoritative.h <= 0) {
       return { offsetX: 0, offsetY: 0, width: cw, height: ch };
     }
     const containerRatio = cw / ch;
-    const imageRatio = imgNatural.w / imgNatural.h;
+    const imageRatio = authoritative.w / authoritative.h;
     if (imageRatio > containerRatio) {
       // Foto proporcionalmente más ancha que el panel -> franjas arriba/abajo
       const width = cw;
@@ -885,7 +908,7 @@ export default function SplitPage() {
     const height = ch;
     const width = ch * imageRatio;
     return { offsetX: (cw - width) / 2, offsetY: 0, width, height };
-  }, [containerSize, imgNatural]);
+  }, [containerSize, imgNatural, bill?.image_width, bill?.image_height]);
 
   const applyTransform = (scale: number, x: number, y: number) => {
     imgTransformRef.current = { scale, x, y };
