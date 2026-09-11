@@ -154,9 +154,19 @@ export default function SplitPage() {
   const [drawMode, setDrawMode] = useState(false); // false = pan, true = draw
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const imgTransformRef = useRef({ scale: 1, x: 0, y: 0 });
   const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
+
+  // Tamaño real de la foto (naturalWidth/Height) y del contenedor — para
+  // calcular a mano el recuadro que ocupa la foto dentro del panel con
+  // object-fit:contain (puede quedar con franjas negras arriba/abajo o a
+  // los lados si la proporción no calza). Mientras no se conozcan ambos,
+  // se asume que la foto llena el panel completo (fallback seguro, nunca
+  // "no renderizar nada").
+  const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
 
   // Resaltado de color por ítem sobre la foto (franja translúcida, arrastrable)
   const [markerDrag, setMarkerDrag] = useState<{ itemId: number; startY: number; startPct: number } | null>(null);
@@ -793,6 +803,7 @@ export default function SplitPage() {
     if (!container || !canvas) return;
     const sync = () => {
       const w = container.clientWidth, h = container.clientHeight;
+      setContainerSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
       if (canvas.width === w && canvas.height === h) return;
       const prev = document.createElement("canvas");
       prev.width = canvas.width; prev.height = canvas.height;
@@ -805,6 +816,47 @@ export default function SplitPage() {
     ro.observe(container);
     return () => ro.disconnect();
   }, [step, leftW, bill?.image_url]);
+
+  // Dimensiones reales de la foto (para el cálculo de object-fit:contain de
+  // más abajo). Se comprueba `.complete` al montar/cambiar de foto por si el
+  // navegador ya la tenía en caché (onLoad no dispara en ese caso), y además
+  // se escucha onLoad por si todavía no había cargado.
+  useEffect(() => {
+    setImgNatural(null);
+    const img = imgRef.current;
+    if (img && img.complete && img.naturalWidth > 0) {
+      setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
+    }
+  }, [bill?.image_url, step]);
+
+  function onImgLoad() {
+    const img = imgRef.current;
+    if (img && img.naturalWidth > 0) setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
+  }
+
+  // Recuadro real que ocupa la foto dentro del panel bajo object-fit:contain
+  // (mismo algoritmo que usa el navegador). Si aún no se conoce el tamaño
+  // natural de la imagen o del contenedor, se asume que la foto llena todo
+  // el panel — nunca "tamaño cero" ni "no renderizar" (ver bug v2).
+  const imgBox = useMemo(() => {
+    const cw = containerSize.w, ch = containerSize.h;
+    if (cw <= 0 || ch <= 0) return { offsetX: 0, offsetY: 0, width: cw, height: ch };
+    if (!imgNatural || imgNatural.w <= 0 || imgNatural.h <= 0) {
+      return { offsetX: 0, offsetY: 0, width: cw, height: ch };
+    }
+    const containerRatio = cw / ch;
+    const imageRatio = imgNatural.w / imgNatural.h;
+    if (imageRatio > containerRatio) {
+      // Foto proporcionalmente más ancha que el panel -> franjas arriba/abajo
+      const width = cw;
+      const height = cw / imageRatio;
+      return { offsetX: 0, offsetY: (ch - height) / 2, width, height };
+    }
+    // Foto proporcionalmente más alta que el panel -> franjas a los lados
+    const height = ch;
+    const width = ch * imageRatio;
+    return { offsetX: (cw - width) / 2, offsetY: 0, width, height };
+  }, [containerSize, imgNatural]);
 
   const applyTransform = (scale: number, x: number, y: number) => {
     imgTransformRef.current = { scale, x, y };
@@ -924,12 +976,18 @@ export default function SplitPage() {
     setMarkerDrag({ itemId: item.id, startY: e.clientY, startPct });
   }
   function onBandPointerMove(e: React.PointerEvent) {
-    if (!markerDrag || !imgContainerRef.current) return;
+    if (!markerDrag) return;
     e.stopPropagation();
-    const rect = imgContainerRef.current.getBoundingClientRect();
     const scale = imgTransformRef.current.scale || 1;
-    if (rect.height <= 0) return;
-    const deltaPct = ((e.clientY - markerDrag.startY) / (rect.height * scale)) * 100;
+    // 100% de position_y corresponde a la altura real de la FOTO renderizada
+    // (imgBox.height), no a la altura del panel completo — si no, arrastrar
+    // se siente demasiado rápido/lento cuando la foto queda con franjas
+    // negras (object-fit:contain). Se divide por el zoom actual porque un
+    // mismo desplazamiento en pantalla representa menos % de la foto real
+    // cuanto más zoom hay.
+    const height = imgBox.height;
+    if (height <= 0) return;
+    const deltaPct = ((e.clientY - markerDrag.startY) / (height * scale)) * 100;
     const next = Math.max(0, Math.min(100, markerDrag.startPct + deltaPct));
     setMarkerPreview((prev) => ({ ...prev, [markerDrag.itemId]: next }));
   }
@@ -1792,11 +1850,13 @@ export default function SplitPage() {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
+                ref={imgRef}
                 src={resolveBackendUrl(bill.image_url)}
                 alt="Boleta"
                 className="absolute inset-0 w-full h-full object-contain pointer-events-none"
                 style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
                 draggable={false}
+                onLoad={onImgLoad}
               />
               <canvas
                 ref={canvasRef}
@@ -1808,14 +1868,15 @@ export default function SplitPage() {
                 onPointerCancel={onCanvasPointerUp}
               />
               {/* Resaltado de color por ítem — franja translúcida sobre la línea del
-                  ítem y su valor, mismo color que su fila a la derecha. La caja
-                  interna replica el recuadro real de la foto (object-contain) para
-                  que la franja caiga sobre el contenido, no sobre las bandas negras
-                  cuando la foto no llena el panel. Se arrastra para corregir. */}
-              {/* Franjas de color por ítem, mismo color que su fila a la derecha.
-                  Posicionadas simple: % del panel completo (mismo sistema de
-                  coordenadas que usa el pan/zoom de la imagen), sin depender de
-                  medir la foto — así no hay forma de que queden en 0px. */}
+                  ítem y su valor, mismo color que su fila a la derecha.
+                  Posicionadas en PÍXELES sobre el recuadro real que ocupa la
+                  foto dentro del panel (imgBox, calculado a mano replicando
+                  object-fit:contain — ver más arriba), no como % del panel
+                  completo: si la foto queda con franjas negras arriba/abajo
+                  o a los lados (proporción distinta a la del panel), un % del
+                  panel completo cae fuera de la foto real. El wrapper recibe
+                  el mismo transform (pan/zoom) que la <img> para que las
+                  franjas se muevan en sincronía. Se arrastra para corregir. */}
               {!drawMode && bill.items.length > 0 && (
                 <div
                   className="absolute inset-0 z-[15] pointer-events-none"
@@ -1824,6 +1885,7 @@ export default function SplitPage() {
                   {bill.items.map((item, idx) => {
                     const pct = bandPctFor(item, idx, bill.items.length);
                     const isDragging = markerDrag?.itemId === item.id;
+                    const top = imgBox.offsetY + (pct / 100) * imgBox.height;
                     return (
                       <div
                         key={item.id}
@@ -1831,9 +1893,11 @@ export default function SplitPage() {
                         onPointerMove={onBandPointerMove}
                         onPointerUp={(e) => onBandPointerUp(e, item)}
                         onPointerCancel={(e) => onBandPointerUp(e, item)}
-                        className="absolute left-0 right-0 pointer-events-auto touch-none select-none"
+                        className="absolute pointer-events-auto touch-none select-none"
                         style={{
-                          top: `${pct}%`,
+                          top,
+                          left: imgBox.offsetX,
+                          width: imgBox.width,
                           height: 26,
                           transform: "translateY(-50%)",
                           background: ITEM_COLORS[idx % ITEM_COLORS.length],
