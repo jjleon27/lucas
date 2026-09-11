@@ -282,8 +282,51 @@ La mayoría (7/8) se mantuvo rápida (2.2-5.2s); solo la que escaló pagó el
 costo de la segunda pasada (~40s) — exactamente el trade-off buscado: rápido
 por defecto, cuidadoso solo cuando hace falta.
 
-Commiteado (`ce37923`), pusheado, deployado. **Pendiente real**: no se pudo
-reproducir la boleta exacta "Bar Autóctono" localmente (solo se tuvo el
-screenshot de la app, no la foto original) — falta que el usuario la
-vuelva a subir en prod para confirmar que ahora sale completa y las
-bandas calzan.
+Commiteado (`ce37923`), pusheado, deployado.
+
+### Iteración 2026-09-11 (cont. 5) — el usuario manda la foto original: verificado + fix de contraste
+El usuario mandó la foto original de "Bar Autóctono" (antes solo se tenía
+el screenshot de la app). Se sumó a mano: 17 líneas (14 con precio + 3
+modificadores "+Coca X" a $0), total $74.300 = "Total General Mesa". Se
+agregó como caso de regresión permanente: `tests/eval/receipts/bar_autoctono.jpeg`
++ `tests/eval/expected/bar_autoctono.json`.
+
+Corrida directa de `vision_parse()` contra la foto real: la primera pasada
+(gpt-4.1) se saltó 1 ítem (sum 67.900 vs 74.300, diff 8.6% — por encima del
+umbral 6%), disparó el escalamiento a gpt-5-mini, y esa segunda pasada sacó
+los 17 ítems exactos, con `bbox_y0/y1` perfectamente secuenciales y sin
+encimarse (20.0→22.7, 22.8→25.5, ...). **El fix del ítem faltante (cont. 4)
+quedó confirmado funcionando con la boleta real, no solo en teoría.**
+
+Eval completo con este caso incluido: overall 92.7% (9 imágenes).
+
+**Pero el usuario reportó un problema distinto**, con captura nueva: los
+ítems ya salían completos y bien posicionados, pero la banda sobre la foto
+se veía como una franja borrosa de colores pálidos que se mezclan entre sí
+— no "resalta" nada, aunque la lista de la derecha se ve perfecta.
+
+Diagnóstico (revisado por un pase de diseño antes de tocar CSS): `itemColor(idx)`
+(`hsl(_, 65%, 87%)`, casi blanco) funciona bien como fondo de tarjeta en la
+lista (UI clara), pero contra una foto real (papel crema, luz tenue,
+textura de mesa) casi no tiene contraste de luminosidad — con 17 bandas
+pegadas sin borde, se leen como una sola franja difusa.
+
+Fix: nueva `itemHighlightColor(idx)` — MISMO hue que `itemColor(idx)`
+(misma identidad de color que la lista, eso no cambia — es justamente lo
+que el usuario pidió que se mantuviera), pero saturación/luminosidad de
+tinta de marcador real (85%/55% en vez de 65%/87%) + borde 2px en un tono
+más oscuro/saturado del mismo hue para separar bandas contiguas. Opacidad
+0.6→0.45 en reposo (compensa el color más fuerte, el texto sigue legible
+por debajo), 0.95→0.85 arrastrando. `itemColor(idx)` queda intacto — sigue
+siendo el único usado en las 2 filas de lista.
+
+Se evaluó y se descartó reemplazar la banda por un "tab" de color en el
+margen (menos invasivo, no toca la mecánica que ya funciona/fue aceptada) y
+se evaluó y se descartó reintroducir zoom automático por ítem (el usuario
+ya rechazó esa mecánica explícitamente en cont. 3 — no se repite ese error).
+
+Commiteado (`319745c`), pusheado, deployado. Build verificado, sin cambios
+de backend/lógica — puro ajuste visual.
+Pendiente: confirmación del usuario en su iPhone — en particular el matiz
+amarillo/verde-amarillo, que por naturaleza de HSL contrasta menos que
+rojos/azules a la misma saturación/luminosidad.
