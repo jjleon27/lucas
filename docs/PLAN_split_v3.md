@@ -88,3 +88,41 @@ Botón **⚙** por ítem en el paso 3 (`split/page.tsx`): panel con modo
   $4.000 (2/5), Ana y Carl $3.000 c/u. Fracciones OK.
 
 TODA la sección "Dividir cuenta" del feedback quedó implementada.
+
+---
+
+## Ronda 2026-09-11 — Compartir WhatsApp + marcador de color arrastrable
+
+**Checkpoint antes de empezar**: tag git `checkpoint-2026-09-11-pre-markers` en
+`8868ce3` (para `git reset --hard` / comparar si algo se rompe).
+
+### Bug: Compartir por WhatsApp abría la app vacía — ARREGLADO
+Causa: `<a href="https://wa.me/?text=...">` dentro de una PWA instalada
+(standalone) no completa la redirección wa.me→api.whatsapp.com→whatsapp://
+(necesita una pestaña normal de Safari) → WhatsApp abre sin el texto.
+Fix: `navigator.share({text})` (Web Share API, hoja nativa de iOS) con fallback
+al link wa.me si el navegador no soporta share.
+
+### Feature: marcador de color arrastrable por ítem sobre la foto — HECHO
+- Backend: `ParsedItem.position_y` (0-100, estimación del modelo: altura de la
+  línea en la imagen) pedida en `_RECEIPT_PROMPT`; `BillItem.position_y`
+  (migración); `PATCH /bills/{id}/items/{id}` acepta `position_y` para
+  persistir la corrección manual.
+- Frontend (paso 2, Revisar): marcador circular numerado por ítem sobre la foto,
+  mismo color (`ITEM_COLORS[idx]`) y número que su fila a la derecha (que ahora
+  también muestra el número). Se arrastra verticalmente (Pointer Events +
+  setPointerCapture) y persiste al soltar. Sigue el pan/zoom de la imagen.
+  Sin `position_y` del modelo → se reparte parejo por índice hasta que se arrastre.
+- **Simplificación consciente**: el marcador se posiciona como % de la altura
+  del contenedor (no replica el letterboxing exacto de `object-contain`) — la
+  alineación inicial puede quedar levemente desfasada si la foto tiene mucho
+  espacio vacío arriba/abajo; el arrastre lo corrige en un toque y de ahí queda
+  fijo. No se intentó bounding-box 2D exacto — solo altura vertical, suficiente
+  para una boleta (lista de una columna).
+- Verificado en prod: `position_y` llega desde el OCR (valores monótonos
+  20→37.5% en orden de lectura en la boleta Lider), el PATCH persiste, rechaza
+  fuera de rango (422).
+- Pendiente de verificación real: cómo se ve/siente el arrastre en un iPhone de
+  verdad (no se puede probar el gesto táctil desde acá) — pedirle al usuario
+  que lo pruebe y reporte si el marcador queda muy desalineado al abrir la
+  imagen (ahí se evaluaría implementar el object-contain exacto).

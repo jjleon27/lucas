@@ -696,7 +696,7 @@ The following are explicitly out of scope for LUCAS:
 | Dashboard summary | STABLE | |
 | Alerts | STABLE | |
 | Chat (basic + action) | STABLE | |
-| Bill splitter (`bills.py` + `/split`) | STABLE | 2026-09-09: arreglado bug "no se guardó el monto" (`account_svc` ImportError en finalize); +toggle "guardar como gasto", +historial "Divisiones guardadas", +pagador por % (Splitwise), +reparto avanzado por ítem (⚙ %/unidades fraccionales/montos). Todo verificado en prod. Ver `docs/PLAN_split_v3.md` |
+| Bill splitter (`bills.py` + `/split`) | STABLE | 2026-09-09: arreglado bug "no se guardó el monto" (`account_svc` ImportError en finalize); +toggle "guardar como gasto", +historial "Divisiones guardadas", +pagador por % (Splitwise), +reparto avanzado por ítem (⚙ %/unidades fraccionales/montos). 2026-09-11: compartir por WhatsApp vía `navigator.share` (el link `wa.me` fallaba dentro de la PWA instalada); marcador de color arrastrable por ítem sobre la foto (`BillItem.position_y`, estimado por el OCR y corregible a mano). Todo verificado en prod. Ver `docs/PLAN_split_v3.md`. Checkpoint de rollback: tag git `checkpoint-2026-09-11-pre-markers` |
 | Proyectos (agrupador + presupuesto) | STABLE | `routers/projects.py`, `/projects`, selector en TransactionList. Verificado en prod 2026-09-09 |
 | Cartola (text PDF) | STABLE | `resp.content` bug fixed |
 | Cartola (scanned PDF) | STABLE | |

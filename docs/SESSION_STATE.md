@@ -1,18 +1,18 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-09 20:55:34*
+*Auto-guardado por hook Stop · 2026-09-09 21:01:38*
 
 ## Presión de contexto
-- Tool uses esta sesión: **440** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **463** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-actualiza todo, graphify, github y demas...
+ok impmemetalo y luego comitea y pushea y actualiza todo
 
 ## Último trabajo del asistente
-Todo sincronizado.
+P1 implementado, todo commiteado, pusheado, deployado y verificado.
 
-| | Estado |
-|---|---|
-| **GitHub** (`main`) | Pusheado. HEAD `ac27ee3`, `origin/main` al día. Todo el trabajo de la sesión está a
+## Reparto avanzado por ítem (⚙ en el paso 3)
+
+Botón **⚙** en cada ítem → panel c
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -71,9 +71,19 @@ Todo sincronizado.
 3. Revisa los archivos modificados arriba
 4. Pregunta al usuario si quiere continuar desde la última tarea
 
-## ADDENDUM 2 — Split P1 hecho (2026-09-09)
-Reparto avanzado por ítem: botón ⚙ en paso 3 → panel Porcentaje / Unidades /
-Montos con input por participante. Cubre qty impar entre N, unidades fraccionales
-("Yo 2, Ana y Carl se reparten 3" = 2/1.5/1.5) y % libre. Verificado en prod.
-TODO el feedback de "Dividir cuenta" quedó implementado, commiteado, pusheado y
-deployado. Sin pendientes de esa sección.
+## ADDENDUM 3 (2026-09-11) — WhatsApp fix + marcador de color arrastrable
+Checkpoint git antes de empezar: tag `checkpoint-2026-09-11-pre-markers` @ 8868ce3
+(rollback: `git reset --hard checkpoint-2026-09-11-pre-markers`).
+
+HECHO, deployado, verificado en prod:
+- Compartir WhatsApp: `navigator.share` en vez de link `wa.me` (fallaba vacío
+  dentro de la PWA instalada).
+- Marcador de color arrastrable por ítem en la foto (paso 2): `BillItem.position_y`
+  (0-100, estimado por el OCR, corregible arrastrando, persiste vía PATCH).
+  Mismo color+número en el marcador y en la fila de la derecha.
+
+Pendiente: que el usuario pruebe el arrastre en su iPhone real — el posicionamiento
+inicial es % del contenedor (no replica el letterboxing exacto de object-contain),
+así que puede quedar levemente desalineado hasta el primer ajuste manual. Si queda
+muy mal, el siguiente paso es implementar el cálculo exacto de aspect-ratio
+(detallado en docs/PLAN_split_v3.md, sección "Ronda 2026-09-11").
