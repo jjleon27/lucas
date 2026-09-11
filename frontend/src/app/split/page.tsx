@@ -154,13 +154,15 @@ export default function SplitPage() {
   const [drawMode, setDrawMode] = useState(false); // false = pan, true = draw
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
+  const imgBoxRef = useRef<HTMLDivElement>(null); // caja que replica el recuadro real de la foto (object-contain)
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const imgTransformRef = useRef({ scale: 1, x: 0, y: 0 });
   const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
 
-  // Marcadores de color por ítem sobre la foto (arrastrables verticalmente)
+  // Resaltado de color por ítem sobre la foto (franja translúcida, arrastrable)
   const [markerDrag, setMarkerDrag] = useState<{ itemId: number; startY: number; startPct: number } | null>(null);
   const [markerPreview, setMarkerPreview] = useState<Record<number, number>>({}); // itemId -> % mientras se arrastra
+  const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null); // tamaño real de la foto, para alinear la franja con el contenido (no con el panel)
   const panStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const drawingRef = useRef(false);
   const vDivRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -208,7 +210,7 @@ export default function SplitPage() {
 
   async function handleFile(file: File) {
     setLoading(true);
-    setAdvItems(new Set()); setAdvOpen(null);
+    setAdvItems(new Set()); setAdvOpen(null); setImgNatural(null);
     try {
       const today = new Date().toISOString().split("T")[0];
       let b = await createBill({ date: today });
@@ -221,7 +223,7 @@ export default function SplitPage() {
 
   async function handleManual() {
     setLoading(true);
-    setAdvItems(new Set()); setAdvOpen(null);
+    setAdvItems(new Set()); setAdvOpen(null); setImgNatural(null);
     try {
       const b = await createBill({ date: new Date().toISOString().split("T")[0] });
       setBill(b); setStep(2);
@@ -905,34 +907,45 @@ export default function SplitPage() {
   };
   const resetImgTransform = () => applyTransform(1, 0, 0);
 
-  // ── Marcadores de color por ítem sobre la foto ──────────────────
-  // Si el OCR no estimó position_y (ítems agregados a mano, o el modelo lo
-  // omitió), los repartimos parejo para que no se amontonen — el usuario los
-  // corrige arrastrando y ahí sí se guarda.
-  function defaultMarkerPct(idx: number, total: number): number {
+  // ── Resaltado de color por ítem sobre la foto ───────────────────
+  // Una franja translúcida (mismo color que la fila de la derecha) tapa la
+  // línea del ítem en la foto, como marcador de texto. Si el OCR no estimó
+  // position_y (ítems agregados a mano, o el modelo lo omitió), se reparte
+  // parejo hasta que el usuario la arrastra a su lugar.
+  function defaultBandPct(idx: number, total: number): number {
     return total > 0 ? ((idx + 1) / (total + 1)) * 100 : 50;
   }
-  function markerPctFor(item: BillItem, idx: number, total: number): number {
+  function bandPctFor(item: BillItem, idx: number, total: number): number {
     if (markerPreview[item.id] !== undefined) return markerPreview[item.id];
-    return item.position_y ?? defaultMarkerPct(idx, total);
+    return item.position_y ?? defaultBandPct(idx, total);
+  }
+  // Grosor de cada franja según el espacio hasta sus vecinas, para que no se
+  // encimen cuando hay muchas líneas ni queden muy angostas cuando hay pocas.
+  function bandHeightPct(pct: number, idx: number, allPcts: number[]): number {
+    const prev = idx > 0 ? allPcts[idx - 1] : Math.max(0, pct - 12);
+    const next = idx < allPcts.length - 1 ? allPcts[idx + 1] : Math.min(100, pct + 12);
+    const gap = Math.max(0.5, Math.min(pct - prev, next - pct));
+    return Math.max(2.5, Math.min(7, gap * 0.8));
   }
 
-  function onMarkerPointerDown(e: React.PointerEvent, item: BillItem, idx: number, total: number) {
+  function onBandPointerDown(e: React.PointerEvent, item: BillItem, startPct: number) {
     e.stopPropagation();
     e.preventDefault();
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    setMarkerDrag({ itemId: item.id, startY: e.clientY, startPct: markerPctFor(item, idx, total) });
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setMarkerDrag({ itemId: item.id, startY: e.clientY, startPct });
   }
-  function onMarkerPointerMove(e: React.PointerEvent) {
-    if (!markerDrag || !imgContainerRef.current) return;
+  function onBandPointerMove(e: React.PointerEvent) {
+    if (!markerDrag || !imgBoxRef.current) return;
     e.stopPropagation();
-    const rect = imgContainerRef.current.getBoundingClientRect();
-    const scale = imgTransformRef.current.scale || 1;
-    const deltaPct = ((e.clientY - markerDrag.startY) / (rect.height * scale)) * 100;
+    const rect = imgBoxRef.current.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    // getBoundingClientRect ya refleja el zoom actual (scale), así que el
+    // delta en pantalla se convierte directo a % del contenido de la imagen.
+    const deltaPct = ((e.clientY - markerDrag.startY) / rect.height) * 100;
     const next = Math.max(0, Math.min(100, markerDrag.startPct + deltaPct));
     setMarkerPreview((prev) => ({ ...prev, [markerDrag.itemId]: next }));
   }
-  async function onMarkerPointerUp(e: React.PointerEvent, item: BillItem) {
+  async function onBandPointerUp(e: React.PointerEvent, item: BillItem) {
     e.stopPropagation();
     if (!markerDrag || !bill) return;
     const finalPct = markerPreview[item.id];
@@ -1162,13 +1175,6 @@ export default function SplitPage() {
               ) : (
                 <div className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <span
-                      className="shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-slate-700 shadow-sm"
-                      style={{ background: itemBg, boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.08)" }}
-                      title="Mismo color y número que su marcador en la foto"
-                    >
-                      {idx + 1}
-                    </span>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
                       <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
@@ -1803,6 +1809,7 @@ export default function SplitPage() {
                 className="absolute inset-0 w-full h-full object-contain pointer-events-none"
                 style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
                 draggable={false}
+                onLoad={(e) => setImgNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
               />
               <canvas
                 ref={canvasRef}
@@ -1813,38 +1820,52 @@ export default function SplitPage() {
                 onPointerUp={onCanvasPointerUp}
                 onPointerCancel={onCanvasPointerUp}
               />
-              {/* Marcadores de color por ítem — mismo color que su fila a la derecha.
-                  Se arrastran verticalmente para corregir la posición estimada. */}
-              {!drawMode && (
-                <div
-                  className="absolute inset-0 z-[5] pointer-events-none"
-                  style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
-                >
-                  {bill.items.map((item, idx) => {
-                    const pct = markerPctFor(item, idx, bill.items.length);
-                    const isDragging = markerDrag?.itemId === item.id;
-                    return (
-                      <div
-                        key={item.id}
-                        onPointerDown={(e) => onMarkerPointerDown(e, item, idx, bill.items.length)}
-                        onPointerMove={onMarkerPointerMove}
-                        onPointerUp={(e) => onMarkerPointerUp(e, item)}
-                        onPointerCancel={(e) => onMarkerPointerUp(e, item)}
-                        className={`absolute flex items-center justify-center rounded-full text-[10px] font-bold text-slate-700 shadow-md pointer-events-auto touch-none select-none transition-transform ${isDragging ? "scale-125 ring-2 ring-white" : ""}`}
-                        style={{
-                          top: `${pct}%`,
-                          right: 6,
-                          width: 22, height: 22,
-                          background: ITEM_COLORS[idx % ITEM_COLORS.length],
-                          transform: "translateY(-50%)",
-                          cursor: "grab",
-                        }}
-                        title={`${item.name} — arrastra para ajustar`}
-                      >
-                        {idx + 1}
-                      </div>
-                    );
-                  })}
+              {/* Resaltado de color por ítem — franja translúcida sobre la línea del
+                  ítem y su valor, mismo color que su fila a la derecha. La caja
+                  interna replica el recuadro real de la foto (object-contain) para
+                  que la franja caiga sobre el contenido, no sobre las bandas negras
+                  cuando la foto no llena el panel. Se arrastra para corregir. */}
+              {!drawMode && imgNatural && (
+                <div className="absolute inset-0 z-[5] flex items-center justify-center pointer-events-none">
+                  <div
+                    ref={imgBoxRef}
+                    className="relative"
+                    style={{
+                      width: "auto", height: "auto",
+                      maxWidth: "100%", maxHeight: "100%",
+                      aspectRatio: `${imgNatural.w} / ${imgNatural.h}`,
+                      transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`,
+                      transformOrigin: "center center",
+                    }}
+                  >
+                    {(() => {
+                      const pcts = bill.items.map((it, i) => bandPctFor(it, i, bill.items.length));
+                      return bill.items.map((item, idx) => {
+                        const pct = pcts[idx];
+                        const h = bandHeightPct(pct, idx, pcts);
+                        const isDragging = markerDrag?.itemId === item.id;
+                        return (
+                          <div
+                            key={item.id}
+                            onPointerDown={(e) => onBandPointerDown(e, item, pct)}
+                            onPointerMove={onBandPointerMove}
+                            onPointerUp={(e) => onBandPointerUp(e, item)}
+                            onPointerCancel={(e) => onBandPointerUp(e, item)}
+                            className={`absolute left-0 right-0 pointer-events-auto touch-none select-none transition-opacity ${isDragging ? "opacity-90 ring-2 ring-white" : "opacity-55"}`}
+                            style={{
+                              top: `${pct}%`,
+                              height: `${h}%`,
+                              transform: "translateY(-50%)",
+                              background: ITEM_COLORS[idx % ITEM_COLORS.length],
+                              mixBlendMode: "multiply",
+                              cursor: "grab",
+                            }}
+                            title={`${item.name} — arrastra para ajustar`}
+                          />
+                        );
+                      });
+                    })()}
+                  </div>
                 </div>
               )}
               {/* Toolbar overlay */}
