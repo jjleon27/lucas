@@ -154,8 +154,6 @@ export default function SplitPage() {
   const [drawMode, setDrawMode] = useState(false); // false = pan, true = draw
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
-  const imgBoxRef = useRef<HTMLDivElement>(null); // caja que replica el recuadro real de la foto (object-contain)
-  const imgElRef = useRef<HTMLImageElement>(null);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const imgTransformRef = useRef({ scale: 1, x: 0, y: 0 });
   const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
@@ -163,7 +161,6 @@ export default function SplitPage() {
   // Resaltado de color por ítem sobre la foto (franja translúcida, arrastrable)
   const [markerDrag, setMarkerDrag] = useState<{ itemId: number; startY: number; startPct: number } | null>(null);
   const [markerPreview, setMarkerPreview] = useState<Record<number, number>>({}); // itemId -> % mientras se arrastra
-  const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null); // tamaño real de la foto, para alinear la franja con el contenido (no con el panel)
   const panStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const drawingRef = useRef(false);
   const vDivRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -211,7 +208,7 @@ export default function SplitPage() {
 
   async function handleFile(file: File) {
     setLoading(true);
-    setAdvItems(new Set()); setAdvOpen(null); setImgNatural(null);
+    setAdvItems(new Set()); setAdvOpen(null);
     try {
       const today = new Date().toISOString().split("T")[0];
       let b = await createBill({ date: today });
@@ -224,7 +221,7 @@ export default function SplitPage() {
 
   async function handleManual() {
     setLoading(true);
-    setAdvItems(new Set()); setAdvOpen(null); setImgNatural(null);
+    setAdvItems(new Set()); setAdvOpen(null);
     try {
       const b = await createBill({ date: new Date().toISOString().split("T")[0] });
       setBill(b); setStep(2);
@@ -809,17 +806,6 @@ export default function SplitPage() {
     return () => ro.disconnect();
   }, [step, leftW, bill?.image_url]);
 
-  // Si la foto viene de caché del navegador, <img onLoad> puede no disparar
-  // (ya estaba "complete" antes de que React conectara el listener) — sin esto
-  // imgNatural se queda null para siempre y el resaltado de color nunca aparece.
-  useEffect(() => {
-    if (step !== 2 || !bill?.image_url) return;
-    const el = imgElRef.current;
-    if (el && el.complete && el.naturalWidth > 0) {
-      setImgNatural({ w: el.naturalWidth, h: el.naturalHeight });
-    }
-  }, [step, bill?.image_url]);
-
   const applyTransform = (scale: number, x: number, y: number) => {
     imgTransformRef.current = { scale, x, y };
     setImgScale(scale); setImgPan({ x, y });
@@ -931,15 +917,6 @@ export default function SplitPage() {
     if (markerPreview[item.id] !== undefined) return markerPreview[item.id];
     return item.position_y ?? defaultBandPct(idx, total);
   }
-  // Grosor de cada franja según el espacio hasta sus vecinas, para que no se
-  // encimen cuando hay muchas líneas ni queden muy angostas cuando hay pocas.
-  function bandHeightPct(pct: number, idx: number, allPcts: number[]): number {
-    const prev = idx > 0 ? allPcts[idx - 1] : Math.max(0, pct - 12);
-    const next = idx < allPcts.length - 1 ? allPcts[idx + 1] : Math.min(100, pct + 12);
-    const gap = Math.max(0.5, Math.min(pct - prev, next - pct));
-    return Math.max(2.5, Math.min(7, gap * 0.8));
-  }
-
   function onBandPointerDown(e: React.PointerEvent, item: BillItem, startPct: number) {
     e.stopPropagation();
     e.preventDefault();
@@ -947,13 +924,12 @@ export default function SplitPage() {
     setMarkerDrag({ itemId: item.id, startY: e.clientY, startPct });
   }
   function onBandPointerMove(e: React.PointerEvent) {
-    if (!markerDrag || !imgBoxRef.current) return;
+    if (!markerDrag || !imgContainerRef.current) return;
     e.stopPropagation();
-    const rect = imgBoxRef.current.getBoundingClientRect();
+    const rect = imgContainerRef.current.getBoundingClientRect();
+    const scale = imgTransformRef.current.scale || 1;
     if (rect.height <= 0) return;
-    // getBoundingClientRect ya refleja el zoom actual (scale), así que el
-    // delta en pantalla se convierte directo a % del contenido de la imagen.
-    const deltaPct = ((e.clientY - markerDrag.startY) / rect.height) * 100;
+    const deltaPct = ((e.clientY - markerDrag.startY) / (rect.height * scale)) * 100;
     const next = Math.max(0, Math.min(100, markerDrag.startPct + deltaPct));
     setMarkerPreview((prev) => ({ ...prev, [markerDrag.itemId]: next }));
   }
@@ -1816,13 +1792,11 @@ export default function SplitPage() {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                ref={imgElRef}
                 src={resolveBackendUrl(bill.image_url)}
                 alt="Boleta"
                 className="absolute inset-0 w-full h-full object-contain pointer-events-none"
                 style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
                 draggable={false}
-                onLoad={(e) => setImgNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
               />
               <canvas
                 ref={canvasRef}
@@ -1838,61 +1812,39 @@ export default function SplitPage() {
                   interna replica el recuadro real de la foto (object-contain) para
                   que la franja caiga sobre el contenido, no sobre las bandas negras
                   cuando la foto no llena el panel. Se arrastra para corregir. */}
-              {/* Si todavía no tenemos las dimensiones reales de la foto (onLoad
-                  no disparó a tiempo, imagen de caché, etc.) igual mostramos las
-                  franjas usando el panel completo — mejor una aproximada que
-                  ninguna. En cuanto imgNatural llega, se realinean solas. */}
-              {!drawMode && (
-                <div className="absolute inset-0 z-[5] flex items-center justify-center pointer-events-none">
-                  <div
-                    ref={imgBoxRef}
-                    className="relative"
-                    style={imgNatural ? {
-                      width: "auto", height: "auto",
-                      maxWidth: "100%", maxHeight: "100%",
-                      aspectRatio: `${imgNatural.w} / ${imgNatural.h}`,
-                      transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`,
-                      transformOrigin: "center center",
-                    } : {
-                      width: "100%", height: "100%",
-                      transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`,
-                      transformOrigin: "center center",
-                    }}
-                  >
-                    {(() => {
-                      const pcts = bill.items.map((it, i) => bandPctFor(it, i, bill.items.length));
-                      return bill.items.map((item, idx) => {
-                        const pct = pcts[idx];
-                        const h = bandHeightPct(pct, idx, pcts);
-                        const isDragging = markerDrag?.itemId === item.id;
-                        return (
-                          <div
-                            key={item.id}
-                            onPointerDown={(e) => onBandPointerDown(e, item, pct)}
-                            onPointerMove={onBandPointerMove}
-                            onPointerUp={(e) => onBandPointerUp(e, item)}
-                            onPointerCancel={(e) => onBandPointerUp(e, item)}
-                            className={`absolute left-0 right-0 pointer-events-auto touch-none select-none transition-opacity border-y-2 ${isDragging ? "ring-2 ring-white" : ""}`}
-                            style={{
-                              top: `${pct}%`,
-                              height: `${h}%`,
-                              minHeight: 10,
-                              transform: "translateY(-50%)",
-                              background: ITEM_COLORS[idx % ITEM_COLORS.length],
-                              borderColor: ITEM_COLORS[idx % ITEM_COLORS.length],
-                              opacity: isDragging ? 0.85 : 0.55,
-                              // sin mix-blend-mode: acá el color/imagen viven en stacking
-                              // contexts distintos (por los transform de padres) y el blend
-                              // no alcanzaba a mezclarse con la foto — quedaba invisible.
-                              // Opacidad plana sí se ve siempre, sea cual sea el fondo.
-                              cursor: "grab",
-                            }}
-                            title={`${item.name} — arrastra para ajustar`}
-                          />
-                        );
-                      });
-                    })()}
-                  </div>
+              {/* Franjas de color por ítem, mismo color que su fila a la derecha.
+                  Posicionadas simple: % del panel completo (mismo sistema de
+                  coordenadas que usa el pan/zoom de la imagen), sin depender de
+                  medir la foto — así no hay forma de que queden en 0px. */}
+              {!drawMode && bill.items.length > 0 && (
+                <div
+                  className="absolute inset-0 z-[15] pointer-events-none"
+                  style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
+                >
+                  {bill.items.map((item, idx) => {
+                    const pct = bandPctFor(item, idx, bill.items.length);
+                    const isDragging = markerDrag?.itemId === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        onPointerDown={(e) => onBandPointerDown(e, item, pct)}
+                        onPointerMove={onBandPointerMove}
+                        onPointerUp={(e) => onBandPointerUp(e, item)}
+                        onPointerCancel={(e) => onBandPointerUp(e, item)}
+                        className="absolute left-0 right-0 pointer-events-auto touch-none select-none"
+                        style={{
+                          top: `${pct}%`,
+                          height: 26,
+                          transform: "translateY(-50%)",
+                          background: ITEM_COLORS[idx % ITEM_COLORS.length],
+                          opacity: isDragging ? 0.95 : 0.7,
+                          boxShadow: isDragging ? "0 0 0 2px white" : "none",
+                          cursor: "grab",
+                        }}
+                        title={`${item.name} — arrastra para ajustar`}
+                      />
+                    );
+                  })}
                 </div>
               )}
               {/* Toolbar overlay */}
