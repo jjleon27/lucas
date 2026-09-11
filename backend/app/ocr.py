@@ -1341,6 +1341,43 @@ def _find_plausible_total(ocr_text: str, items_sum: float) -> Optional[int]:
 
 
 
+def _prep_receipt_image(image_bytes: bytes) -> tuple[str, Optional[int], Optional[int], bytes]:
+    """Normaliza una foto de boleta para mandarla a un modelo de visión:
+    corrige rotación EXIF, redimensiona (sube menos pesado, sin perder los
+    ~2048px que OpenAI usa igual internamente para detail:high), sube
+    contraste/nitidez (fix legibilidad de cantidades) y codifica a data URL.
+
+    Devuelve (data_url, upright_w, upright_h, send_bytes) — upright_w/h son
+    las dimensiones reales orientadas hacia arriba (post EXIF-transpose), el
+    marco de referencia del que son % los bbox_* que devuelve el modelo;
+    None si no se pudo determinar (se usa el fallback de bytes originales).
+    `send_bytes` son los bytes JPEG realmente enviados (o los originales si
+    el preprocesamiento falló) — algunos callers los necesitan para leer las
+    dimensiones reales del header (fallback de vision_transcribe).
+    Compartido por `vision_parse` (prompt JSON completo, boletas + cartolas)
+    y `vision_parse_bill` (prompt de texto liviano, solo para split de
+    cuentas) — mismo preprocesamiento, prompts/parsers separados.
+    """
+    upright_w: Optional[int] = None
+    upright_h: Optional[int] = None
+    try:
+        from PIL import ImageEnhance, ImageOps
+        img_pil = Image.open(io.BytesIO(image_bytes))
+        img_pil = ImageOps.exif_transpose(img_pil)  # fix iPhone rotation
+        img_pil = img_pil.convert("RGB")
+        upright_w, upright_h = img_pil.size
+        img_pil = _resize_for_vision(img_pil, max_side=2000)
+        img_pil = ImageEnhance.Contrast(img_pil).enhance(1.8)
+        img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
+        buf = io.BytesIO()
+        img_pil.save(buf, format="JPEG", quality=95)
+        send_bytes = buf.getvalue()
+    except Exception:
+        send_bytes = image_bytes
+    b64 = base64.b64encode(send_bytes).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}", upright_w, upright_h, send_bytes
+
+
 def vision_parse(
     image_bytes: bytes, *, db=None, user_id=None,
 ) -> Optional[ParseResult]:
@@ -1384,42 +1421,8 @@ def vision_parse(
         # which is why "ChatGPT con la misma imagen" used to read items Lucas
         # could not. Single-pass vision_json with the receipt prompt is what
         # ChatGPT itself does behind the scenes, so we match that.
-        # Normalise to JPEG: apply EXIF rotation (iPhone uploads arrive sideways
-        # otherwise), downscale (cuts upload time on full-res iPhone photos —
-        # OpenAI caps detail:high to ~2048px server-side regardless, so this
-        # doesn't buy tile-count savings, just faster transfer), THEN boost
-        # contrast/sharpness so digit quantities stay legible (order matters:
-        # sharpening after the resize, not before, per the qty-legibility fix).
-        # Ancho/alto REALES de la foto tal como queda orientada hacia arriba
-        # (post EXIF-transpose) — es el marco de referencia del que son % los
-        # bbox_x0/y0/x1/y1 que devuelve el modelo. Se guarda y se manda al
-        # frontend para que calcule el recuadro object-fit:contain contra ESTOS
-        # números, no contra `naturalWidth/naturalHeight` medido por el
-        # navegador — esos dos valores pueden no coincidir si el navegador
-        # interpreta el EXIF de forma distinta a Pillow (visto en boletas de
-        # iPhone reales: el bloque de ítems terminaba comprimido/desalineado
-        # en la foto, consistente con un ancho/alto invertidos en algún punto
-        # del camino). Con un único origen de verdad (el backend) el cálculo
-        # del frontend es correcto sin importar esa discrepancia.
-        upright_w: Optional[int] = None
-        upright_h: Optional[int] = None
-        try:
-            from PIL import ImageEnhance, ImageOps
-            img_pil = Image.open(io.BytesIO(image_bytes))
-            img_pil = ImageOps.exif_transpose(img_pil)  # fix iPhone rotation
-            img_pil = img_pil.convert("RGB")
-            upright_w, upright_h = img_pil.size
-            img_pil = _resize_for_vision(img_pil, max_side=2000)
-            img_pil = ImageEnhance.Contrast(img_pil).enhance(1.8)
-            img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
-            buf = io.BytesIO()
-            img_pil.save(buf, format="JPEG", quality=95)
-            send_bytes = buf.getvalue()
-        except Exception:
-            send_bytes = image_bytes
+        data_url, upright_w, upright_h, send_bytes = _prep_receipt_image(image_bytes)
         mime = "image/jpeg"
-        b64 = base64.b64encode(send_bytes).decode("ascii")
-        data_url = f"data:{mime};base64,{b64}"
 
         def _call_vision(user_msg: str, *, model: str | None = None) -> str:
             """Send the image + a user message to the vision model and return raw text."""
@@ -1695,6 +1698,177 @@ def vision_parse(
         )
     except Exception as e:  # noqa: BLE001
         print(f"[ocr] vision_parse failed: {e}")
+        import traceback; traceback.print_exc()
+        return None
+
+
+# ---------- Bill-split OCR: prompt de texto liviano (más rápido, más preciso) ----------
+# `vision_parse` (arriba) usa un prompt JSON con MUCHOS campos (bbox por ítem,
+# IVA/neto, categoría, cuotas, bank_hint — necesarios para /upload, que también
+# lee cartolas bancarias multi-transacción). Para el split de cuentas (siempre
+# UNA boleta con ítems) probamos en vivo (2026-09-11, boleta real "Bar
+# Autóctono", 17 ítems con 7 líneas casi idénticas "Promo Alto del Carmen
+# 35°") que ese JSON complejo hacía que el modelo se saltara ítems Y fuera más
+# lento. Con un prompt de texto plano MÍNIMO el mismo modelo lee las 17 líneas
+# exactas, en ~4-5s — y un primer intento de "simplificar" este prompt
+# agregándole reglas explícitas (no dividir nombres cortados en dos líneas,
+# no agrupar repetidos, etc.) volvió a empeorar la lectura: más reglas, peor
+# resultado, aunque sea texto y no JSON. La versión que sí funciona (3/3
+# corridas idénticas y correctas, temperature=0) es la de abajo — deliberada
+# y radicalmente corta. NO agregar más instrucciones a esto sin volver a
+# probar contra una boleta difícil real primero. Ver docs/PLAN_split_v3.md.
+#
+# CATEGORY y CURRENCY no se piden: no se usan en ningún lado del flujo de
+# bill-split (bill.total_amount sale de sumar BillItem.line_total, no de
+# esto; Bill no tiene columna category). AMOUNT sí se mantiene — es la única
+# señal que se usa para decidir si hay que reintentar (ver más abajo).
+#
+# Por eso el split usa su propio prompt/parser/función — no comparte
+# `_RECEIPT_PROMPT`/`vision_parse` con /upload, así no se toca su manejo de
+# cartolas/cuotas/bank_hint (que sigue igual, sin cambios en este commit).
+_RECEIPT_PROMPT_BILL = """Lee esta boleta y devuelve, en orden, una línea por cada ítem con:
+cantidad | nombre | valor total de esa línea
+
+Al final agrega en su propia línea: MERCHANT: nombre del local, DATE: fecha (YYYY-MM-DD), AMOUNT: total cobrado."""
+
+
+def _parse_bill_text(raw_text: str) -> Optional[dict]:
+    """Parsea la respuesta de texto plano de `_RECEIPT_PROMPT_BILL` a un dict
+    {merchant, date, amount, items: [{name, quantity, line_total}]}.
+
+    El prompt es deliberadamente mínimo (ver comentario arriba) y no le fuerza
+    un formato rígido al modelo más allá de "cantidad | nombre | total" por
+    ítem — en la práctica el header (MERCHANT/DATE/AMOUNT) a veces sale en
+    líneas separadas y a veces en una sola línea separado por comas, así que
+    esos 3 campos se buscan con una regex sobre el texto completo (no por
+    posición de línea) en vez de asumir una estructura exacta. Cualquier
+    línea con 2+ "|" se trata como ítem. Devuelve None si no se pudo extraer
+    nada útil (ni AMOUNT ni ningún ítem)."""
+    import re as _re
+
+    out: dict = {"merchant": "", "date": None, "amount": 0.0, "items": []}
+
+    m = _re.search(r"MERCHANT:\s*([^,\n]+)", raw_text, _re.IGNORECASE)
+    if m:
+        out["merchant"] = m.group(1).strip()[:200]
+    m = _re.search(r"DATE:\s*([^,\n]+)", raw_text, _re.IGNORECASE)
+    if m:
+        v = m.group(1).strip()
+        out["date"] = None if v.lower() in ("null", "none", "") else v
+    m = _re.search(r"AMOUNT:\s*([\d.,]+)", raw_text, _re.IGNORECASE)
+    if m:
+        out["amount"] = _to_float(m.group(1))
+
+    for line in raw_text.splitlines():
+        s = line.strip()
+        parts = s.split("|")
+        if len(parts) < 3:
+            continue
+        try:
+            qty = int(_re.sub(r"[^\d]", "", parts[0]) or "1")
+        except Exception:
+            qty = 1
+        name = parts[1].strip()
+        if not name:
+            continue
+        line_total = _to_float(parts[2])
+        out["items"].append({"name": name[:200], "quantity": max(1, qty), "line_total": line_total})
+
+    if out["amount"] <= 0 and not out["items"]:
+        return None
+    return out
+
+
+def vision_parse_bill(
+    image_bytes: bytes, *, db=None, user_id=None,
+) -> Optional[ParseResult]:
+    """Igual que `vision_parse` pero solo para el split de cuentas (una boleta,
+    nunca una cartola con varias transacciones): prompt de texto plano en vez
+    de JSON (ver `_RECEIPT_PROMPT_BILL` arriba, y el porqué en el comentario
+    de esa sección) — medido más rápido Y más confiable en boletas difíciles
+    (líneas repetidas) con el modelo rápido configurado.
+
+    Mismo reintento-por-descuadre que `vision_parse`: si la suma de ítems no
+    cuadra con AMOUNT (umbral 6%), reintenta con `openai_vision_model_fallback`
+    antes de rendirse — un ítem faltante en una división de cuentas real es
+    plata mal repartida entre amigos, así que esto se mantiene sin importar
+    cuán confiable midió el modelo rápido en las pruebas.
+
+    No pide bbox por ítem (position_y/bbox_* quedan None) — el frontend ya
+    tiene un fallback de posición pareja por índice (`defaultBandPct`) más
+    arrastre manual para corregir, y pedir bbox fue justamente una de las
+    cosas que hacía más lento y menos preciso al modelo rápido en las pruebas.
+    """
+    if not ai_provider.is_available():
+        return None
+    try:
+        data_url, upright_w, upright_h, _ = _prep_receipt_image(image_bytes)
+
+        def _call(model: str) -> str:
+            try:
+                resp = ai_provider.vision_text(
+                    system_prompt=_RECEIPT_PROMPT_BILL,
+                    user_text="Lee esta boleta y responde en el formato indicado.",
+                    image_data_url=data_url,
+                    model=model,
+                    temperature=0.0,
+                    purpose="parse_bill",
+                    user_id=user_id,
+                    db=db,
+                )
+                return resp.text if resp and resp.text else ""
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[ocr] vision_text (bill) failed: {_exc}")
+                return ""
+
+        raw = _call(settings.openai_vision_model_bill)
+        parsed = _parse_bill_text(raw) if raw else None
+        if parsed is None:
+            print("[ocr] vision_parse_bill: respuesta vacía/no parseable")
+            return None
+
+        # line_total ya es el total de ESA línea (el prompt pide "valor total
+        # de esa línea", no precio unitario) — NO multiplicar por quantity de
+        # nuevo, ya la incluye. (Bug real encontrado en pruebas 2026-09-11:
+        # duplicaba la cantidad acá, inflaba la suma y disparaba
+        # reescalamientos innecesarios en boletas que en realidad leía bien.)
+        items_sum = sum(it["line_total"] for it in parsed["items"])
+        amount = float(parsed["amount"] or 0)
+        if parsed["items"] and amount > 0 and items_sum > 0:
+            diff = abs(items_sum - amount)
+            if diff / amount > 0.06:
+                print(f"[ocr] retry bill (escalando a {settings.openai_vision_model_fallback}): "
+                      f"items sum {int(items_sum)} vs amount {int(amount)} (diff={int(diff)})")
+                raw2 = _call(model=settings.openai_vision_model_fallback)
+                parsed2 = _parse_bill_text(raw2) if raw2 else None
+                if parsed2 is not None:
+                    parsed = parsed2
+
+        items = [
+            ParsedItem(
+                name=it["name"],
+                price=round(it["line_total"] / it["quantity"]) if it["quantity"] else it["line_total"],
+                quantity=it["quantity"],
+            )
+            for it in parsed["items"]
+        ]
+        try:
+            parsed_date = _parse_date(parsed["date"]) if parsed["date"] else date.today()
+        except Exception:
+            parsed_date = date.today()
+
+        receipt = ParsedReceipt(
+            amount=float(parsed["amount"] or sum(i.price * i.quantity for i in items)),
+            date=parsed_date,
+            merchant=parsed["merchant"] or "",
+            category="Otros",  # no se usa en el flujo de bill-split (ver comentario del prompt)
+            currency="CLP",    # ídem — bill.currency se fija al crear la boleta, no desde OCR
+            is_income=False,
+            items=items,
+        )
+        return ParseResult(transactions=[receipt], image_width=upright_w, image_height=upright_h)
+    except Exception as e:  # noqa: BLE001
+        print(f"[ocr] vision_parse_bill failed: {e}")
         import traceback; traceback.print_exc()
         return None
 

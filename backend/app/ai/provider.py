@@ -153,6 +153,45 @@ class OpenAIProvider(LLMProvider):
             provider=self.name,
         )
 
+    def vision_text(self, system_prompt: str, user_text: str, image_data_url: str,
+                    *, model=None, temperature=0.0, purpose: str = "parse"):
+        """Image input → plain text out (no JSON extraction).
+
+        Mismo request que vision_json pero sin el paso de extraer un bloque
+        JSON — se usa cuando le pedimos al modelo texto plano estructurado por
+        líneas en vez de JSON. Verificado empíricamente (boletas reales,
+        2026-09-11): con receipts complejas (líneas repetidas), forzar JSON
+        hace que el modelo lea MÁS lento y se salte ítems más seguido que
+        cuando se le pide una lista de texto simple — de ahí este método
+        separado en vez de reusar vision_json con un prompt distinto.
+        """
+        from openai import OpenAI
+        vision_model = model or settings.openai_vision_model
+        client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
+        _kw = {}
+        if not vision_model.startswith(("gpt-5", "o1", "o3", "o4")):
+            _kw["temperature"] = temperature
+        resp = client.chat.completions.create(
+            model=vision_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
+                ]},
+            ],
+            **_kw,
+        )
+        usage = getattr(resp, "usage", None)
+        raw = (resp.choices[0].message.content or "").strip()
+        return LLMResponse(
+            text=raw,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            model=vision_model,
+            provider=self.name,
+        )
+
     def vision_transcribe(self, image_data_url: str, *, model=None, temperature=0.0,
                           image_long_side: int = 0) -> "LLMResponse":
         """Image → plain text transcription only. No JSON, no structure.
@@ -414,6 +453,31 @@ def vision_json(
                                 model=model, temperature=temperature)
     except Exception as e:  # noqa: BLE001
         print(f"[ai.provider] {prov.name} vision_json failed: {e}")
+        return None
+    _log_usage(db, user_id, resp, purpose)
+    return resp
+
+
+def vision_text(
+    system_prompt: str,
+    user_text: str,
+    image_data_url: str,
+    *,
+    model: Optional[str] = None,
+    temperature: float = 0.0,
+    purpose: str = "parse",
+    user_id: Optional[int] = None,
+    db=None,
+) -> Optional[LLMResponse]:
+    """Vision-in, texto plano-out (sin extracción de JSON). Ver OpenAIProvider.vision_text."""
+    prov = _pick_provider()
+    if prov is None or not hasattr(prov, "vision_text"):
+        return None
+    try:
+        resp = prov.vision_text(system_prompt, user_text, image_data_url,
+                                model=model, temperature=temperature)
+    except Exception as e:  # noqa: BLE001
+        print(f"[ai.provider] {prov.name} vision_text failed: {e}")
         return None
     _log_usage(db, user_id, resp, purpose)
     return resp

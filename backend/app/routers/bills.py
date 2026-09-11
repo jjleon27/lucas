@@ -301,8 +301,14 @@ async def bill_ocr(
     current: UserOut = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Upload receipt image → run OCR → populate bill items. Replaces existing items."""
-    from ..ocr import vision_parse
+    """Upload receipt image → run OCR → populate bill items. Replaces existing items.
+
+    Usa `vision_parse_bill` (prompt de texto liviano) en vez de `vision_parse`
+    (el de /upload, JSON completo para boletas+cartolas) — medido más rápido
+    Y más confiable para este caso (siempre una sola boleta con ítems). Ver
+    comentario en ocr.py junto a `_RECEIPT_PROMPT_BILL`.
+    """
+    from ..ocr import vision_parse_bill
     from .. import storage
 
     bill = _get_bill(bill_id, current.id, db)
@@ -311,7 +317,7 @@ async def bill_ocr(
     image_url = storage.save_image(raw, filename)
     bill.image_url = image_url
 
-    parsed = vision_parse(raw, user_id=current.id, db=db)
+    parsed = vision_parse_bill(raw, user_id=current.id, db=db)
     if parsed is None or not parsed.transactions:
         db.commit()
         return _bill_out(bill)

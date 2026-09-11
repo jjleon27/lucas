@@ -31,8 +31,9 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
-    openai_vision_model: str = "gpt-4o"  # receipt/boleta OCR — 2-8s/img. Probado 2026-09-11 contra gpt-4.1 (92.7% eval) y gpt-5/gpt-5-mini (lentos, se equivocan igual en boletas difíciles): gpt-4o quedó en 88.9% de eval pero el usuario lo eligió tras ver el trade-off real (menos preciso en general a cambio de similar velocidad). Sigue teniendo la red de seguridad de openai_vision_model_fallback.
-    openai_vision_model_fallback: str = "gpt-5-mini"  # escalation target when the fast model's read doesn't reconcile (missed/misread items on hard receipts — bar tabs with many repeated line items) — slow but careful, only pays the cost on the receipts that actually need it
+    openai_vision_model: str = "gpt-4o"  # /upload (recibos + cartolas, prompt JSON completo) — 2-8s/img. gpt-4o elegido 2026-09-11 tras comparar con gpt-4.1/gpt-5/gpt-5-mini (ver docs/PLAN_split_v3.md).
+    openai_vision_model_bill: str = "gpt-4.1-mini"  # /bills/{id}/ocr (split de cuentas, prompt de texto liviano — ver _RECEIPT_PROMPT_BILL en ocr.py). Probado 2026-09-11: 4-5s, 3/3 corridas exactas en la boleta más difícil del set (17 ítems, 7 líneas repetidas) — mejor que gpt-4o/gpt-4.1/gpt-5.x con el MISMO prompt liviano.
+    openai_vision_model_fallback: str = "gpt-5-mini"  # escalation target (ambos flujos) when the fast model's read doesn't reconcile (missed/misread items on hard receipts — bar tabs with many repeated line items) — slow but careful, only pays the cost on the receipts that actually need it
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5-20251001"
