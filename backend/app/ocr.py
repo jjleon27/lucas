@@ -1402,13 +1402,14 @@ def vision_parse(
         b64 = base64.b64encode(send_bytes).decode("ascii")
         data_url = f"data:{mime};base64,{b64}"
 
-        def _call_vision(user_msg: str) -> str:
+        def _call_vision(user_msg: str, *, model: str | None = None) -> str:
             """Send the image + a user message to the vision model and return raw text."""
             try:
                 _resp = ai_provider.vision_json(
                     system_prompt=_RECEIPT_PROMPT,
                     user_text=user_msg,
                     image_data_url=data_url,
+                    model=model,
                     temperature=0.0,
                     purpose="parse",
                     user_id=user_id,
@@ -1547,8 +1548,15 @@ def vision_parse(
         if data is None:
             return None
 
-        # One retry on mismatch: if items exist but their sum is off by >15%
-        # from the printed total, ask the model to re-read with a corrective msg.
+        # One retry on mismatch: if items exist but their sum is off from the
+        # printed total, escalate to the careful/slow model (openai_vision_model
+        # is the fast default; a single missing/misread line on a long receipt
+        # — e.g. a 21-item bar tab with several repeated "Promo X" rows — can be
+        # a small % of the total, easy to miss with a tight threshold, and the
+        # fast model re-asking ITSELF rarely catches its own mistake, so the
+        # retry uses a different, more careful model rather than repeating the
+        # same question to the same model. Threshold lowered 10%→6% so a single
+        # missed item on a long, multi-item receipt is more likely to trigger it.
         if txs:
             _first = txs[0]
             _items_preview = _parse_items_from_tx(_first)
@@ -1557,18 +1565,23 @@ def vision_parse(
                 _items_sum_preview = sum(i.price * i.quantity for i in _items_preview)
                 if _items_sum_preview > 0:
                     _diff = abs(_items_sum_preview - _amount_preview)
-                    if _diff / _amount_preview > 0.10:
+                    if _diff / _amount_preview > 0.06:
                         print(
-                            f"[ocr] retry: items sum {int(_items_sum_preview)} vs total "
-                            f"{int(_amount_preview)} (diff={int(_diff)})"
+                            f"[ocr] retry (escalating to {settings.openai_vision_model_fallback}): "
+                            f"items sum {int(_items_sum_preview)} vs total {int(_amount_preview)} "
+                            f"(diff={int(_diff)})"
                         )
                         _retry_msg = (
                             f"Tu extracción anterior no cuadra: items suman {int(_items_sum_preview)} "
                             f"pero el total impreso es {int(_amount_preview)}. "
-                            f"Diferencia: {int(_diff)}. Vuelve a leer la imagen enfocándote en las "
-                            "cantidades y precios unitarios de cada línea. Devuelve el mismo JSON corregido."
+                            f"Diferencia: {int(_diff)}. Vuelve a leer la imagen con cuidado — probablemente "
+                            "falta un ítem completo (revisa líneas repetidas o promociones que se parecen "
+                            "entre sí) o una cantidad/precio está mal. Devuelve el mismo JSON corregido, "
+                            "con TODOS los ítems de la boleta."
                         )
-                        _retry_text = _call_vision(_retry_msg)
+                        _retry_text = _call_vision(
+                            _retry_msg, model=settings.openai_vision_model_fallback
+                        )
                         if _retry_text:
                             _retry_data, _retry_txs = _parse_payload(_retry_text)
                             if _retry_data is not None and _retry_txs:
