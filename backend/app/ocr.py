@@ -1624,21 +1624,36 @@ def vision_parse(
         return None
 
 
-# ---------- Bill-split OCR: prompt de texto liviano (más rápido, más preciso) ----------
+# ---------- Bill-split OCR: lectura libre + reformateo barato ----------
 # `vision_parse` (arriba) usa un prompt JSON con MUCHOS campos (bbox por ítem,
 # IVA/neto, categoría, cuotas, bank_hint — necesarios para /upload, que también
 # lee cartolas bancarias multi-transacción). Para el split de cuentas (siempre
-# UNA boleta con ítems) probamos en vivo (2026-09-11, boleta real "Bar
-# Autóctono", 17 ítems con 7 líneas casi idénticas "Promo Alto del Carmen
-# 35°") que ese JSON complejo hacía que el modelo se saltara ítems Y fuera más
-# lento. Con un prompt de texto plano MÍNIMO el mismo modelo lee las 17 líneas
-# exactas, en ~4-5s — y un primer intento de "simplificar" este prompt
-# agregándole reglas explícitas (no dividir nombres cortados en dos líneas,
-# no agrupar repetidos, etc.) volvió a empeorar la lectura: más reglas, peor
-# resultado, aunque sea texto y no JSON. La versión que sí funciona (3/3
-# corridas idénticas y correctas, temperature=0) es la de abajo — deliberada
-# y radicalmente corta. NO agregar más instrucciones a esto sin volver a
-# probar contra una boleta difícil real primero. Ver docs/PLAN_split_v3.md.
+# UNA boleta con ítems) el pipeline pasó por 3 etapas hoy (2026-09-11):
+#   1. JSON completo → el modelo se saltaba ítems en boletas con líneas
+#      repetidas (boleta real "Bar Autóctono", 17 ítems, 7 líneas casi
+#      idénticas) y era más lento.
+#   2. Texto plano pero con un formato fijo "cantidad | nombre | total" →
+#      mejor, pero SIGUE siendo una restricción de formato: en otra boleta
+#      real ("Bar La Providencia", columna de precios impresa desalineada de
+#      los nombres) el modelo confundía qué precio iba con qué ítem. Se
+#      probó pedirle explícitamente que emparejara por orden, que verificara
+#      su propia suma — nada lo arregló.
+#   3. **Lectura totalmente libre** (sin pedirle NINGÚN formato — el modelo
+#      responde como quiera: tabla markdown, lista con viñetas, numerada,
+#      lo que le salga) — verificado 3/3 exacto en la misma boleta donde
+#      el formato fijo fallaba. Pedirle CUALQUIER estructura, por mínima
+#      que parezca, le cuesta precisión en boletas visualmente difíciles.
+# El costo de la lectura libre: la respuesta no es parseable directo (cada
+# llamada elige un formato distinto). Se resuelve con un SEGUNDO paso barato
+# — sin ver la foto, solo texto — que reordena la respuesta ya correcta a
+# nuestro formato fijo (`_REFORMAT_PROMPT_BILL`, `gpt-4.1-nano`, ~2-3s,
+# costo mínimo porque no es una llamada de visión). Este segundo paso nunca
+# lee la boleta ni decide valores — solo reformatea texto que ya está bien,
+# así que no puede reintroducir el problema de la etapa 2.
+#
+# NO agregar restricciones de formato al prompt de LECTURA (`_RECEIPT_PROMPT_BILL`)
+# sin volver a probar contra una boleta difícil real primero — ver
+# docs/PLAN_split_v3.md para el historial completo de intentos.
 #
 # CATEGORY y CURRENCY no se piden: no se usan en ningún lado del flujo de
 # bill-split (bill.total_amount sale de sumar BillItem.line_total, no de
@@ -1648,12 +1663,23 @@ def vision_parse(
 # Por eso el split usa su propio prompt/parser/función — no comparte
 # `_RECEIPT_PROMPT`/`vision_parse` con /upload, así no se toca su manejo de
 # cartolas/cuotas/bank_hint (que sigue igual, sin cambios en este commit).
-_RECEIPT_PROMPT_BILL = """Lee esta boleta y devuelve, en orden, una línea por cada ítem con:
-cantidad | nombre | valor total de esa línea
+_RECEIPT_PROMPT_BILL = (
+    "Dame en texto esta boleta, con el nombre del local, la fecha, los "
+    "items en ese orden con su cantidad y valor, y el total del consumo "
+    "(sin la propina sugerida si la hay)."
+)
 
-Si hay una línea de descuento, inclúyela con valor negativo.
+_REFORMAT_PROMPT_BILL = """Convierte el texto que te paso (ya correcto, no cambies ningún valor) a líneas con este formato exacto, una por PRODUCTO, sin encabezado ni texto extra:
+cantidad|nombre|total_de_esa_línea_sin_signos_de_pesos_ni_puntos
 
-Al final agrega en su propia línea: MERCHANT: nombre del local, DATE: fecha (YYYY-MM-DD), AMOUNT: total del consumo (si hay una propina sugerida aparte, no la incluyas en AMOUNT)."""
+NO incluyas como si fuera un producto la línea de "Total"/"Consumo"/subtotal
+— esa NO es un ítem, va aparte en AMOUNT más abajo. Si una línea no trae
+cantidad explícita (p.ej. un descuento), usa 1.
+
+Al final agrega estas 3 líneas con los datos reales que encuentres en el texto:
+MERCHANT: nombre del local que aparece en el texto (o vacío si no aparece)
+DATE: fecha que aparece en el texto, o null si no aparece
+AMOUNT: el consumo/total (número, sin la propina sugerida)"""
 
 
 def _parse_bill_text(raw_text: str) -> Optional[dict]:
@@ -1672,7 +1698,12 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
 
     out: dict = {"merchant": "", "date": None, "amount": 0.0, "items": []}
 
-    m = _re.search(r"MERCHANT:\s*([^,\n]+)", raw_text, _re.IGNORECASE)
+    # El nombre del local puede traer comas de verdad (una dirección), así
+    # que el límite de captura no es la coma — es la siguiente etiqueta
+    # conocida (DATE:/AMOUNT:) o el final del texto. Si el modelo llegó a
+    # juntar MERCHANT y DATE en una sola línea sin nombre real, esto corta
+    # justo ahí en vez de comerse "DATE: ..." como si fuera el nombre.
+    m = _re.search(r"MERCHANT:\s*([^\n]*?)(?=\s*(?:DATE:|AMOUNT:|$))", raw_text, _re.IGNORECASE)
     if m:
         out["merchant"] = m.group(1).strip()[:200]
     m = _re.search(r"DATE:\s*([^,\n]+)", raw_text, _re.IGNORECASE)
@@ -1722,16 +1753,20 @@ def vision_parse_bill(
     image_bytes: bytes, *, db=None, user_id=None,
 ) -> Optional[ParseResult]:
     """Igual que `vision_parse` pero solo para el split de cuentas (una boleta,
-    nunca una cartola con varias transacciones): prompt de texto plano en vez
-    de JSON (ver `_RECEIPT_PROMPT_BILL` arriba, y el porqué en el comentario
-    de esa sección) — medido más rápido Y más confiable en boletas difíciles
-    (líneas repetidas) con el modelo rápido configurado.
+    nunca una cartola con varias transacciones). Dos pasos (ver comentario
+    completo junto a `_RECEIPT_PROMPT_BILL` arriba):
+      1. Lectura LIBRE de la foto — sin pedirle ningún formato — es lo que
+         midió mejor precisión en boletas visualmente difíciles.
+      2. Reformateo barato (texto, sin ver la foto, `gpt-4.1-nano`) de esa
+         respuesta ya correcta a nuestro formato fijo parseable. Nunca lee la
+         boleta ni decide valores, solo reordena texto — no puede reintroducir
+         el problema de precisión que tenía pedir un formato en el paso 1.
 
     Mismo reintento-por-descuadre que `vision_parse`: si la suma de ítems no
-    cuadra con AMOUNT (umbral 6%), reintenta con `openai_vision_model_fallback`
-    antes de rendirse — un ítem faltante en una división de cuentas real es
-    plata mal repartida entre amigos, así que esto se mantiene sin importar
-    cuán confiable midió el modelo rápido en las pruebas.
+    cuadra con AMOUNT (umbral 6%), reintenta el par lectura+reformateo con
+    `openai_vision_model_fallback` antes de rendirse — un ítem faltante en una
+    división de cuentas real es plata mal repartida entre amigos, así que esto
+    se mantiene sin importar cuán confiable midió el modelo rápido en pruebas.
 
     No pide bbox por ítem (position_y/bbox_* quedan None) — el frontend ya
     tiene un fallback de posición pareja por índice (`defaultBandPct`) más
@@ -1743,11 +1778,12 @@ def vision_parse_bill(
     try:
         data_url, upright_w, upright_h, _ = _prep_receipt_image(image_bytes)
 
-        def _call(model: str) -> str:
+        def _read(model: str) -> str:
+            """Paso 1: lectura libre de la foto, sin pedirle formato."""
             try:
                 resp = ai_provider.vision_text(
                     system_prompt=_RECEIPT_PROMPT_BILL,
-                    user_text="Lee esta boleta y responde en el formato indicado.",
+                    user_text="Lee la boleta.",
                     image_data_url=data_url,
                     model=model,
                     temperature=0.0,
@@ -1760,8 +1796,34 @@ def vision_parse_bill(
                 print(f"[ocr] vision_text (bill) failed: {_exc}")
                 return ""
 
-        raw = _call(settings.openai_vision_model_bill)
-        parsed = _parse_bill_text(raw) if raw else None
+        def _reformat(free_text: str) -> str:
+            """Paso 2: reordena la lectura libre (ya correcta) a nuestro
+            formato fijo — texto plano, no ve la imagen, barato y rápido."""
+            try:
+                resp = ai_provider.chat_completion(
+                    messages=[
+                        {"role": "system", "content": _REFORMAT_PROMPT_BILL},
+                        {"role": "user", "content": free_text},
+                    ],
+                    model="gpt-4.1-mini",  # nano confundía la línea de "Total" con un ítem más (visto en pruebas 2026-09-11) — mini es igual de barato/rápido para texto puro (no ve la foto) y no tuvo ese problema
+                    temperature=0.0,
+                    purpose="parse_bill_reformat",
+                    user_id=user_id,
+                    db=db,
+                )
+                return resp.text if resp and resp.text else ""
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[ocr] chat_completion (reformat bill) failed: {_exc}")
+                return ""
+
+        def _read_and_structure(model: str) -> Optional[dict]:
+            free_text = _read(model)
+            if not free_text:
+                return None
+            structured = _reformat(free_text)
+            return _parse_bill_text(structured) if structured else None
+
+        parsed = _read_and_structure(settings.openai_vision_model_bill)
         if parsed is None:
             print("[ocr] vision_parse_bill: respuesta vacía/no parseable")
             return None
@@ -1778,8 +1840,7 @@ def vision_parse_bill(
             if diff / amount > 0.06:
                 print(f"[ocr] retry bill (escalando a {settings.openai_vision_model_fallback}): "
                       f"items sum {int(items_sum)} vs amount {int(amount)} (diff={int(diff)})")
-                raw2 = _call(model=settings.openai_vision_model_fallback)
-                parsed2 = _parse_bill_text(raw2) if raw2 else None
+                parsed2 = _read_and_structure(settings.openai_vision_model_fallback)
                 if parsed2 is not None:
                     parsed = parsed2
 
