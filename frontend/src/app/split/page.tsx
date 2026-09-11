@@ -89,6 +89,22 @@ function itemColor(idx: number): string {
   return `hsl(${hue.toFixed(1)}, 65%, 87%)`;
 }
 
+// Variante "marcador resaltador" del mismo hue que itemColor(idx) — misma
+// identidad de color que la fila de la lista, pero pensada para leerse sobre
+// una FOTO real (papel crema, luz tenue, textura de mesa) en vez de sobre una
+// tarjeta de UI blanca: mucho más saturada y de luminosidad media (como tinta
+// de marcador de verdad) en vez de un pastel casi blanco que se pierde contra
+// el papel. Solo se usa en la banda sobre la foto — itemColor(idx) sigue
+// igual para las filas de la lista (ahí sí funciona bien).
+function itemHighlightColor(idx: number): string {
+  const hue = (idx * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)}, 85%, 55%)`;
+}
+function itemHighlightBorderColor(idx: number): string {
+  const hue = (idx * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)}, 90%, 34%)`;
+}
+
 function StepDots({ step }: { step: number }) {
   return (
     <div className="flex items-center justify-center gap-2 mb-4">
@@ -1925,8 +1941,9 @@ export default function SplitPage() {
                           width,
                           height,
                           transform: "translateY(-50%)",
-                          background: itemColor(idx),
-                          opacity: isDragging ? 0.95 : 0.6,
+                          background: itemHighlightColor(idx),
+                          border: `2px solid ${itemHighlightBorderColor(idx)}`,
+                          opacity: isDragging ? 0.85 : 0.45,
                           boxShadow: isDragging ? "0 0 0 2px white" : "none",
                           cursor: "grab",
                         }}
