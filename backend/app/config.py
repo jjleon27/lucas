@@ -31,8 +31,8 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
-    openai_vision_model: str = "gpt-4.1"  # receipt/boleta OCR — 2-4s/img (10-18x faster than gpt-5-mini's ~15-45s), 81.4% acc vs 91.5%; user chose speed 2026-09-11
-    openai_vision_model_fallback: str = "gpt-5-mini"  # escalation target when gpt-4.1's read doesn't reconcile (missed/misread items on hard receipts — bar tabs with many repeated line items) — slow but careful, only pays the cost on the receipts that actually need it
+    openai_vision_model: str = "gpt-4o"  # receipt/boleta OCR — 2-8s/img. Probado 2026-09-11 contra gpt-4.1 (92.7% eval) y gpt-5/gpt-5-mini (lentos, se equivocan igual en boletas difíciles): gpt-4o quedó en 88.9% de eval pero el usuario lo eligió tras ver el trade-off real (menos preciso en general a cambio de similar velocidad). Sigue teniendo la red de seguridad de openai_vision_model_fallback.
+    openai_vision_model_fallback: str = "gpt-5-mini"  # escalation target when the fast model's read doesn't reconcile (missed/misread items on hard receipts — bar tabs with many repeated line items) — slow but careful, only pays the cost on the receipts that actually need it
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-haiku-4-5-20251001"
