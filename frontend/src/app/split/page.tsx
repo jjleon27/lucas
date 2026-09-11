@@ -568,15 +568,20 @@ export default function SplitPage() {
       showError("El ítem no tiene precio");
       return;
     }
-    const unit_price = Math.round(item.line_total / n);
+    // Reparte el total exacto entre los N ítems — si no cae parejo, el
+    // último absorbe el resto (mismo patrón que ya se usa para la propina)
+    // en vez de redondear cada uno por separado, que perdía $1-2 CLP del
+    // total original cada vez que no dividía exacto.
+    const base = Math.floor(item.line_total / n);
+    const remainder = Math.round(item.line_total - base * n);
     setBusy(true);
     try {
       // Borra el ítem original y crea N ítems separados — uno por unidad.
       // El usuario quiere ver "Completo $4.000" repetido N veces, no qty=N.
       await deleteItem(bill.id, item.id);
       const results = await Promise.all(
-        Array.from({ length: n }, () =>
-          addItem(bill.id, { name: item.name, qty: 1, unit_price })
+        Array.from({ length: n }, (_, i) =>
+          addItem(bill.id, { name: item.name, qty: 1, unit_price: i === n - 1 ? base + remainder : base })
         )
       );
       const b = results[results.length - 1];
@@ -591,7 +596,7 @@ export default function SplitPage() {
         });
       }
       setSplitChoice(null);
-      showSuccess(`Dividido en ${n} × ${clp(unit_price)}`);
+      showSuccess(`Dividido en ${n} × ${clp(base)}`);
     } catch (e: unknown) {
       showError(e instanceof Error ? e.message : "Error");
     } finally {

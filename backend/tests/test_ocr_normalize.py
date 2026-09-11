@@ -1,18 +1,24 @@
 """
 Tests for OCR parsing functions in ocr.py.
 
-Covers: _to_float, _parse_clp, _parse_boleta_from_text, _parse_pipe_table,
-        _normalize_boleta_items, _fix_line_total_items
+Covers: _to_float, _parse_clp, _parse_boleta_from_text, _parse_pipe_table
 
 Tests use realistic Tesseract OCR output from actual Chilean receipts:
   - Supermarkets (Lider, Unimarc, Tottus) with barcodes + IVA
   - Restaurants (completos, schops, VIENESA) without IVA
   - Bar/POS receipts with pipe-table format (Toteat, Restō)
   - Edge cases: discounts, OCR noise, very large prices, "por" syntax
+
+(_normalize_boleta_items y _fix_line_total_items se probaban acá pero se
+borraron de ocr.py 2026-09-11 — código muerto sin ningún call site en el
+pipeline real, quedaba como trampa para reconectarlo por error y repetir
+el bug "$2.150→$1.765" que ya se arregló de otra forma. Sus tests venían
+fallando desde antes, sin relación con el resto del archivo.)
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import pytest
 import unittest.mock as _mock
 _mock.patch.dict("sys.modules", {
     "cv2": _mock.MagicMock(),
@@ -22,8 +28,6 @@ _mock.patch.dict("sys.modules", {
 }).start()
 
 from app.ocr import (
-    _normalize_boleta_items,
-    _fix_line_total_items,
     _to_float,
     _parse_clp,
     _parse_pipe_table,
@@ -64,122 +68,20 @@ def make_item(name, price, qty=1):
     return ParsedItem(name=name, price=price, quantity=qty)
 
 
-def test_normalize_items_sum_equals_neto():
-    """After normalization, sum(price*qty) for product items should == total_neto."""
-    items = [
-        make_item("Producto A", 5000),
-        make_item("Producto B", 3000),
-        make_item("Producto C", 2000),
-    ]
-    total_neto = 9800.0  # Slightly different from 10000 (simulates LLM rounding)
-    iva = round(total_neto * 0.19)
-
-    normalized, auth_total = _normalize_boleta_items(items, total_neto, iva)
-
-    # IVA row appended
-    product_items = [it for it in normalized if "iva" not in it.name.lower()]
-    iva_items = [it for it in normalized if "iva" in it.name.lower()]
-
-    assert len(iva_items) == 1, "Should have exactly one IVA row"
-    assert abs(iva_items[0].price - iva) <= 1, f"IVA row price {iva_items[0].price} should ≈ {iva}"
-
-    product_sum = sum(it.price * it.quantity for it in product_items)
-    assert abs(product_sum - total_neto) <= 1, \
-        f"Product sum {product_sum} should ≈ total_neto {total_neto}"
-
-    assert abs(auth_total - (total_neto + iva)) <= 1
 
 
-def test_normalize_authoritative_total_returned():
-    items = [make_item("Item A", 10000), make_item("Item B", 5000)]
-    total_neto = 14000.0
-    iva = 2660.0
-    _, auth_total = _normalize_boleta_items(items, total_neto, iva)
-    assert auth_total == total_neto + iva
 
 
-def test_normalize_strips_existing_iva_row():
-    """If LLM already added an IVA item, normalization removes it and re-adds the correct one."""
-    items = [
-        make_item("Producto A", 8000),
-        make_item("IVA (19%)", 1000),   # wrong IVA amount from LLM
-    ]
-    total_neto = 8000.0
-    correct_iva = round(total_neto * 0.19)  # 1520
-
-    normalized, _ = _normalize_boleta_items(items, total_neto, correct_iva)
-    iva_rows = [it for it in normalized if "iva" in it.name.lower()]
-    assert len(iva_rows) == 1
-    assert iva_rows[0].price == correct_iva, \
-        f"IVA should be {correct_iva}, got {iva_rows[0].price}"
 
 
-def test_normalize_with_quantity_gt_1():
-    """Items with quantity > 1 are scaled correctly."""
-    items = [
-        make_item("POLLO", 4990, qty=2),   # line_total = 9980
-        make_item("PAN",   1750, qty=1),
-    ]
-    # LLM sum = 9980 + 1750 = 11730
-    total_neto = 11600.0  # Slight rounding difference
-    iva = round(total_neto * 0.19)
-
-    normalized, _ = _normalize_boleta_items(items, total_neto, iva)
-    product_items = [it for it in normalized if "iva" not in it.name.lower()]
-    product_sum = sum(it.price * it.quantity for it in product_items)
-    assert abs(product_sum - total_neto) <= 1, \
-        f"Product sum {product_sum} should ≈ {total_neto}"
 
 
-def test_normalize_single_item():
-    """Single product: its price absorbs all rounding."""
-    items = [make_item("Producto Unico", 9999)]
-    total_neto = 10000.0
-    iva = 1900.0
-
-    normalized, auth_total = _normalize_boleta_items(items, total_neto, iva)
-    product_items = [it for it in normalized if "iva" not in it.name.lower()]
-    assert len(product_items) == 1
-    assert product_items[0].price == 10000
 
 
-def test_normalize_empty_items_returns_unchanged():
-    """No product items → return original (unchanged) with authoritative total."""
-    items = []
-    total_neto = 5000.0
-    iva = 950.0
-
-    normalized, auth_total = _normalize_boleta_items(items, total_neto, iva)
-    assert normalized == []
-    assert auth_total == total_neto + iva
 
 
-def test_normalize_iva_only_items_returns_unchanged():
-    """Only IVA rows (no product rows) → return original, no crash."""
-    items = [make_item("IVA (19%)", 1900)]
-    total_neto = 10000.0
-    iva = 1900.0
-
-    normalized, auth_total = _normalize_boleta_items(items, total_neto, iva)
-    assert auth_total == total_neto + iva
 
 
-def test_normalize_last_item_absorbs_rounding():
-    """3 items: first two get rounded price, last absorbs remainder."""
-    # 3 items, total_neto = 10001 (prime-ish, causes rounding)
-    items = [
-        make_item("A", 3334),
-        make_item("B", 3334),
-        make_item("C", 3333),
-    ]
-    total_neto = 10001.0
-    iva = round(total_neto * 0.19)
-
-    normalized, _ = _normalize_boleta_items(items, total_neto, iva)
-    product_items = [it for it in normalized if "iva" not in it.name.lower()]
-    product_sum = sum(it.price * it.quantity for it in product_items)
-    assert abs(product_sum - total_neto) <= 1, \
-        f"Last item should absorb rounding: sum={product_sum}, neto={total_neto}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,89 +89,18 @@ def test_normalize_last_item_absorbs_rounding():
 # After normalization, unit prices must be correct
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_normalize_fixes_llm_line_total_as_price():
-    """
-    Regression: LLM returns {price: 10000, qty: 2} meaning line_total=10000,
-    but stores it as unit_price=10000 → llm_sum = 20000.
-    After normalization to total_neto=10000, new price should be ~5000.
-    """
-    items = [make_item("Hamburguesa", 10000, qty=2)]  # LLM used line_total as price
-    total_neto = 10000.0  # The actual neto (line total for this item)
-    iva = 1900.0
-
-    normalized, auth_total = _normalize_boleta_items(items, total_neto, iva)
-    product_items = [it for it in normalized if "iva" not in it.name.lower()]
-
-    assert len(product_items) == 1
-    burger = product_items[0]
-    # After normalization: unit_price should be ~5000, qty=2, line_total=10000
-    assert burger.quantity == 2
-    assert abs(burger.price * burger.quantity - total_neto) <= 1, \
-        f"Line total {burger.price * burger.quantity} should ≈ {total_neto}"
-    # Unit price should be roughly half of what was given (since qty=2)
-    assert burger.price <= 6000, \
-        f"Unit price {burger.price} seems too high after normalization (expected ~5000)"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _fix_line_total_items — real-world restaurant receipt regressions
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_fix_single_item_vienesa():
-    """Regression: '3 VIENESA ITALIANA 13200' → LLM returns price=13200,qty=3.
-    Only VIENESA is wrong; SCHOP items are correct. Single-item algebraic fix."""
-    items = [
-        make_item("VIENESA ITALIANA", 13200, qty=3),   # wrong: should be 4400
-        make_item("SCHOP MEDIO ROYAL", 4800, qty=6),   # correct
-        make_item("SCHOP MEDIO ESCUDO", 4400, qty=2),  # correct
-    ]
-    ref_total = 50800.0
-    fixed = _fix_line_total_items(items, ref_total)
-    assert fixed[0].price == 4400, f"VIENESA unit price should be 4400, got {fixed[0].price}"
-    assert fixed[1].price == 4800, "SCHOP ROYAL should be unchanged"
-    assert fixed[2].price == 4400, "SCHOP ESCUDO should be unchanged"
-    assert sum(it.price * it.quantity for it in fixed) == ref_total
 
 
-def test_fix_pair_two_items_wrong():
-    """Two items have line-total-as-unit-price. Pair algebraic fix."""
-    items = [
-        make_item("Cerveza", 9600, qty=2),   # should be 4800 (9600/2)
-        make_item("Papas", 6000, qty=3),     # should be 2000 (6000/3)
-        make_item("Agua", 1500, qty=1),      # correct
-    ]
-    # correct sum: 4800*2 + 2000*3 + 1500*1 = 9600 + 6000 + 1500 = 17100
-    ref_total = 17100.0
-    fixed = _fix_line_total_items(items, ref_total)
-    assert fixed[0].price == 4800
-    assert fixed[1].price == 2000
-    assert fixed[2].price == 1500
-    assert sum(it.price * it.quantity for it in fixed) == ref_total
 
 
-def test_fix_global_all_items_wrong():
-    """All multi-qty items store line total. Global fix divides all by qty."""
-    items = [
-        make_item("Completo", 12000, qty=3),  # should be 4000
-        make_item("Schop", 8800, qty=2),      # should be 4400
-    ]
-    ref_total = 20800.0  # 4000*3 + 4400*2
-    fixed = _fix_line_total_items(items, ref_total)
-    assert fixed[0].price == 4000
-    assert fixed[1].price == 4400
-    assert sum(it.price * it.quantity for it in fixed) == ref_total
 
 
-def test_fix_already_correct():
-    """No fix applied when sum already matches total."""
-    items = [
-        make_item("SCHOP MEDIO ROYAL", 4800, qty=6),
-        make_item("SCHOP MEDIO ESCUDO", 4400, qty=2),
-    ]
-    ref_total = 37600.0  # 28800 + 8800
-    fixed = _fix_line_total_items(items, ref_total)
-    assert fixed[0].price == 4800
-    assert fixed[1].price == 4400
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -616,75 +447,18 @@ def test_completos_por_syntax():
 # _fix_line_total_items — extra edge cases
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_fix_no_multi_qty_items_unchanged():
-    """All qty=1 → no fix possible, return as-is."""
-    items = [
-        make_item("Agua", 1500, qty=1),
-        make_item("Empanada", 2000, qty=1),
-    ]
-    ref = 3500.0
-    fixed = _fix_line_total_items(items, ref)
-    assert fixed[0].price == 1500
-    assert fixed[1].price == 2000
 
 
-def test_fix_zero_ref_total_returns_unchanged():
-    items = [make_item("Item", 5000, qty=2)]
-    fixed = _fix_line_total_items(items, 0.0)
-    assert fixed[0].price == 5000
 
 
-def test_fix_three_wrong_falls_through_cleanly():
-    """3 wrong items but not in single/pair/global pattern → return unchanged."""
-    items = [
-        make_item("A", 5000, qty=2),
-        make_item("B", 3000, qty=3),
-        make_item("C", 4000, qty=4),
-    ]
-    # sum = 10000+9000+16000 = 35000; ref = 20000
-    # excess = 15000; no single/pair match; sum_flat = 12000 ≠ 20000
-    fixed = _fix_line_total_items(items, 20000.0)
-    # Should not crash, returns items (may or may not fix)
-    assert len(fixed) == 3
 
 
-def test_fix_preserves_qty1_items():
-    """qty=1 items must never be modified by the fix."""
-    items = [
-        make_item("Cerveza", 9600, qty=2),  # wrong
-        make_item("Agua", 1500, qty=1),     # correct, must not change
-    ]
-    ref_total = 9600 + 1500  # = 11100 (if cerveza already unit, but it's line total)
-    # Actually: correct prices are 4800*2 + 1500 = 11100
-    ref_total = 11100.0
-    fixed = _fix_line_total_items(items, ref_total)
-    agua = next(it for it in fixed if it.name == "Agua")
-    assert agua.price == 1500, "Agua (qty=1) price should not change"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # _normalize_boleta_items — discount (negative price) handling
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_normalize_with_discount_item():
-    """Negative-price discount item is preserved after normalization."""
-    items = [
-        make_item("Aceite Chef", 2490),
-        make_item("Jugo Natural", 1790, qty=2),
-        make_item("DESCUENTO CLUB", -490),  # discount
-    ]
-    # llm_neto_sum = 2490 + 3580 - 490 = 5580
-    total_neto = 5580.0
-    iva = round(total_neto * 0.19)
-    normalized, auth_total = _normalize_boleta_items(items, total_neto, iva)
-
-    product_items = [it for it in normalized if "iva" not in it.name.lower()]
-    product_sum = sum(it.price * it.quantity for it in product_items)
-    assert abs(product_sum - total_neto) <= 1, \
-        f"Product sum {product_sum} should ≈ {total_neto}"
-
-    discount = next((it for it in product_items if it.price < 0), None)
-    assert discount is not None, "Discount item should be preserved"
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -804,29 +578,6 @@ def test_tess_leading_qty_unit_price(qty, name, line_total):
 # Propiedad: si el algoritmo puede identificar el patrón (single/pair/global),
 #   el resultado siempre satisface sum(price×qty) == ref_total exactamente.
 # ─────────────────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("wrong_items,ref_total,desc", [
-    # Single: solo cerveza wrong; ref = 3000*4 + 1500 + 800 = 14300
-    # excess = 12000*(4-1) = 36000 = sum_wrong - ref ✓ → single fix detectado
-    ([("Cerveza", 12000, 4), ("Agua", 1500, 1), ("Pan", 800, 1)],
-     14300.0, "single wrong: cerveza"),
-    # Single: solo schop wrong; ref = 4800*6 + 2000 = 30800
-    # excess = 28800*(6-1) = 144000 = sum_wrong - ref ✓ → single fix detectado
-    ([("Schop Royal", 28800, 6), ("Empanada", 2000, 1)],
-     30800.0, "single wrong: schop"),
-    # Global: todos wrong; ref = sum_flat = 27000+11600+19200 = 57800
-    ([("Piscola", 27000, 3), ("Fernet", 11600, 2), ("Schop", 19200, 4)],
-     57800.0, "global: todos wrong"),
-    # Global: completo+bebida; ref = sum_flat = 12000+3400 = 15400
-    ([("Completo", 12000, 3), ("Bebida", 3400, 2)],
-     15400.0, "global: completo+bebida"),
-])
-def test_fix_when_detectable_sum_equals_ref(wrong_items, ref_total, desc):
-    """INVARIANTE: cuando _fix detecta el patrón, sum(fixed) == ref_total."""
-    items = [make_item(n, p, q) for n, p, q in wrong_items]
-    fixed = _fix_line_total_items(items, ref_total)
-    total = sum(it.price * it.quantity for it in fixed)
-    assert abs(total - ref_total) <= 1, \
-        f"[{desc}] sum {total} should == ref_total {ref_total}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -836,28 +587,6 @@ def test_fix_when_detectable_sum_equals_ref(wrong_items, ref_total, desc):
 #   sum(product_items.price × qty) == total_neto   (dentro de ±1)
 #   auth_total == total_neto + iva_amount
 # ─────────────────────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("item_prices_qtys,total_neto", [
-    # 1 item
-    ([(9999, 1)],                      10000),
-    # 2 items, ligera diferencia de redondeo LLM
-    ([(5000, 1), (3000, 1)],            7800),
-    # Multi-qty con scale
-    ([(4990, 2), (1750, 1)],           11600),
-    # 5 items restaurante
-    ([(12600,1),(1890,1),(2100,2),(3500,3),(800,1)], 30000),
-    # Con descuento negativo
-    ([(2490,1),(1790,2),(-490,1)],      5580),
-])
-def test_normalize_sum_always_equals_neto(item_prices_qtys, total_neto):
-    """INVARIANTE: sum(products) ≈ total_neto para cualquier input."""
-    items = [make_item(f"Item{i}", p, q) for i, (p, q) in enumerate(item_prices_qtys)]
-    iva = round(total_neto * 0.19)
-    normalized, auth_total = _normalize_boleta_items(items, float(total_neto), float(iva))
-    product_items = [it for it in normalized if "iva" not in it.name.lower()]
-    product_sum = sum(it.price * it.quantity for it in product_items)
-    assert abs(product_sum - total_neto) <= 1, \
-        f"product_sum={product_sum} should ≈ total_neto={total_neto}"
-    assert auth_total == total_neto + iva
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1027,21 +756,6 @@ def test_pipe_table_7_items_unit_prices():
 # Propiedad: cuando TODOS los items multi-qty están mal (global fix),
 # sum(fixed) == ref_total exactamente, incluso con 5 items
 # ─────────────────────────────────────────────────────────────────────────────
-def test_fix_global_five_wrong_items():
-    """5 items, todos con qty>1 y line_total como unit_price → global fix."""
-    items = [
-        make_item("Schop Medio",    24000, 6),   # unit=4000
-        make_item("Schop Grande",   20000, 4),   # unit=5000
-        make_item("Pisco Sour",     12000, 2),   # unit=6000
-        make_item("Empanada",       10500, 3),   # unit=3500
-        make_item("Porcion Papas",   7000, 2),   # unit=3500
-    ]
-    # correct: 4000*6 + 5000*4 + 6000*2 + 3500*3 + 3500*2
-    # = 24000 + 20000 + 12000 + 10500 + 7000 = 73500
-    ref_total = 73500.0
-    fixed = _fix_line_total_items(items, ref_total)
-    total = sum(it.price * it.quantity for it in fixed)
-    assert abs(total - ref_total) <= 1, f"sum {total} should == {ref_total}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

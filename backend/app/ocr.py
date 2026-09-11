@@ -1224,84 +1224,6 @@ def _extract_boleta_totals(image_bytes: bytes, text: Optional[str] = None) -> di
     return result
 
 
-def _normalize_boleta_items(
-    items: list[ParsedItem],
-    total_neto: float,
-    iva_amount: float,
-) -> tuple[list[ParsedItem], float]:
-    """
-    Ground-truth normalization for Chilean supermarket boletas.
-
-    The LLM's individual item prices are best-effort (it can confuse barcodes
-    with prices). But the printed SUMMARY rows (TOTAL NETO, IVA) are large,
-    unambiguous, and reliably read. This function:
-
-      1. Strips any IVA/tax rows the LLM may have added to `items`.
-      2. Proportionally scales product neto prices so their sum == `total_neto`.
-         The last item absorbs any rounding remainder (±1 CLP).
-      3. Appends an authoritative IVA item with the exact printed `iva_amount`.
-      4. Returns the normalised items and the authoritative total
-         (total_neto + iva_amount).
-
-    If the LLM gave no product items, items are returned unchanged.
-    """
-    # Step 1: separate product rows from IVA rows
-    iva_names = {"iva", "i.v.a.", "i.v.a", "tax", "impuesto", "iva (19%)"}
-    product_items = [it for it in items if it.name.strip().lower() not in iva_names]
-
-    if not product_items:
-        # Nothing to normalise — return original list with authoritative total
-        return items, total_neto + iva_amount
-
-    # Step 2: scale product prices to match total_neto
-    llm_neto = sum(it.price * it.quantity for it in product_items)
-    if llm_neto > 0:
-        scale = total_neto / llm_neto
-        normalised: list[ParsedItem] = []
-        running = 0.0
-        for i, it in enumerate(product_items):
-            _pos = dict(position_y=it.position_y, bbox_x0=it.bbox_x0, bbox_y0=it.bbox_y0,
-                       bbox_x1=it.bbox_x1, bbox_y1=it.bbox_y1)
-            if i < len(product_items) - 1:
-                new_price = round(it.price * scale)
-                normalised.append(ParsedItem(name=it.name, price=new_price, quantity=it.quantity, **_pos))
-                running += new_price * it.quantity
-            else:
-                # Last item absorbs rounding remainder
-                remainder = round(total_neto - running)
-                unit_price = round(remainder / it.quantity) if it.quantity > 1 else remainder
-                normalised.append(ParsedItem(name=it.name, price=unit_price, quantity=it.quantity, **_pos))
-    else:
-        normalised = product_items
-
-    # Step 3: append authoritative IVA row (sin posición propia — es una fila
-    # agregada, no una línea impresa en la boleta)
-    normalised.append(ParsedItem(name="IVA (19%)", price=round(iva_amount), quantity=1))
-
-    # Step 4: authoritative total
-    auth_total = total_neto + iva_amount
-    return normalised, auth_total
-
-
-def _fix_line_total_items(items: list[ParsedItem], ref_total: float) -> list[ParsedItem]:
-    """No-op: kept for backwards compat. The new prompt asks the model for
-    qty/unit_price/line_total explicitly, so algebraic guessing is no longer
-    needed (and was causing regressions).
-    """
-    return items
-
-
-def _fix_unit_as_total_items(
-    items: list[ParsedItem],
-    ref_total: float,
-    *,
-    tolerance: float = 0.03,
-) -> list[ParsedItem]:
-    """No-op: see _fix_line_total_items. Kept as no-op to preserve signature."""
-    return items
-
-
-
 def _items_look_plausible(items: list, items_sum: float) -> bool:
     """True when items appear to have real CLP restaurant prices (not scaled garbage).
 
@@ -1729,6 +1651,8 @@ def vision_parse(
 _RECEIPT_PROMPT_BILL = """Lee esta boleta y devuelve, en orden, una línea por cada ítem con:
 cantidad | nombre | valor total de esa línea
 
+Si hay una línea de descuento, inclúyela con valor negativo.
+
 Al final agrega en su propia línea: MERCHANT: nombre del local, DATE: fecha (YYYY-MM-DD), AMOUNT: total cobrado."""
 
 
@@ -1764,15 +1688,23 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
         parts = s.split("|")
         if len(parts) < 3:
             continue
-        try:
-            qty = int(_re.sub(r"[^\d]", "", parts[0]) or "1")
-        except Exception:
+        qty_raw = parts[0].strip()
+        if qty_raw.startswith("-"):
+            # Línea de descuento: el modelo a veces repite el valor negativo
+            # en la columna de cantidad ("-990 | Descuento | -990") — ahí la
+            # cantidad real es 1, no 990 (el "-" no es señal de cantidad).
             qty = 1
+        else:
+            try:
+                qty = int(_re.sub(r"[^\d]", "", qty_raw) or "1")
+            except Exception:
+                qty = 1
+        qty = max(1, min(qty, 999))  # mismo límite que ItemAdd/ItemPatch (ítems a mano)
         name = parts[1].strip()
         if not name:
             continue
         line_total = _to_float(parts[2])
-        out["items"].append({"name": name[:200], "quantity": max(1, qty), "line_total": line_total})
+        out["items"].append({"name": name[:200], "quantity": qty, "line_total": line_total})
 
     if out["amount"] <= 0 and not out["items"]:
         return None
@@ -1849,6 +1781,7 @@ def vision_parse_bill(
                 name=it["name"],
                 price=round(it["line_total"] / it["quantity"]) if it["quantity"] else it["line_total"],
                 quantity=it["quantity"],
+                line_total=it["line_total"],  # total real leído — bills.py lo usa tal cual, no qty*price
             )
             for it in parsed["items"]
         ]

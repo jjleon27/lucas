@@ -217,6 +217,13 @@ class ParsedItem(BaseModel):
     name: str
     price: float
     quantity: int = 1
+    # Total real de la línea, cuando la fuente ya lo conoce exacto (p.ej.
+    # vision_parse_bill, que le pide al modelo el total de línea directo, no
+    # un precio unitario). Si viene, el caller debe usarlo tal cual en vez de
+    # recalcular qty*price — evita perder 1 CLP cuando line_total no es
+    # divisible exacto por qty (round(line_total/qty) redondea el unitario,
+    # y volver a multiplicar por qty no siempre reconstruye el original).
+    line_total: Optional[float] = None
     # Recuadro estimado por el modelo de vision (0-100 = % del ancho/alto de la
     # imagen) que envuelve la línea de este ítem (nombre + precio) en la boleta.
     # Se usa para marcar el ítem con su color sobre la foto al revisar el split.

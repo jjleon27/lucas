@@ -342,7 +342,11 @@ async def bill_ocr(
     for it in (tx_data.items or []):
         qty = max(int(it.quantity or 1), 1)
         unit_price = round(float(it.price or 0), 2)
-        line_total = round(qty * unit_price, 2)
+        # Si la fuente ya nos dio el total real de la línea (vision_parse_bill),
+        # usarlo tal cual — recalcular qty*unit_price pierde 1 CLP cuando la
+        # línea original no se dividía exacto por la cantidad (unit_price ya
+        # viene redondeado).
+        line_total = round(float(it.line_total), 2) if it.line_total is not None else round(qty * unit_price, 2)
         if line_total == 0:
             continue
         db.add(BillItem(
