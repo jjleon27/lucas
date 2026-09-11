@@ -168,4 +168,37 @@ de 21 ítems (Bar Autóctono):
    la lectura línea por línea de boletas largas, no los campos de posición).
 
 Todo commiteado, deployado, verificado con tests + eval + curl a prod.
-Pendiente: confirmación visual del usuario con la boleta larga real.
+
+### Iteración 2026-09-11 (cont. 2) — tap-to-spotlight: fin de "adivinar por color"
+El usuario confirmó que el TOTAL de la boleta de 21 ítems estaba bien (la
+sospecha de ítems duplicados era un falso positivo mío), pero insistió en
+algo más de fondo: incluso con bboxes exactos y colores sin repetir, en una
+boleta larga (bar, poca luz) es difícil emparejar a simple vista "qué color
+pastel de la lista es cuál banda en la foto". Pidió explícitamente que la
+banda sombreada en la foto sea inconfundiblemente el mismo ítem que se toca
+en la lista — no solo del mismo color, sino literalmente señalado.
+
+**Fix (con Claude Fable 5.1, delegado)**: en vez de seguir afinando el
+parecido de color, se agregó una interacción nueva — tocar el nombre/precio
+de un ítem en la lista de la derecha:
+- hace zoom + pan automático de la foto centrando el bbox exacto de ese
+  ítem (12-18% de alto del panel objetivo, clamp 1x-4x igual que el
+  pinch-zoom manual), reusando `imgBox` (mismo cálculo de `object-fit:contain`
+  de la iteración anterior) y `applyTransform`
+- esa banda queda a opacidad 100% + borde blanco + pulso; TODAS las demás
+  caen a opacidad 0.08 — cero ambigüedad, ya no depende de distinguir tonos
+- tocar el mismo ítem de nuevo, tocar la foto directamente, o cambiar de
+  paso, vuelve la foto a la vista normal (1x)
+
+Matemática del transform verificada a mano (offset del centro del bbox
+respecto al centro del contenedor × scale + translate = 0,0 → queda centrado).
+Bug de borde encontrado y corregido en el camino: en touchscreens el
+`touchstart` de una banda igual burbujea al contenedor pese al
+`stopPropagation` del pointerdown — sin una bandera (`bandInteractionRef`),
+arrastrar la banda del ítem spotlighted habría cerrado el spotlight a mitad
+de arrastre (regresión del gesto de ajuste manual ya existente).
+
+No se tocó backend, `itemColor`, `imgBox`, ni el flujo de arrastre de
+`position_y`. Build verificado, revisado línea por línea, commiteado,
+pusheado y deployado a prod (`98b7c5b`).
+Pendiente: confirmación visual del usuario en su iPhone con la boleta larga real.
