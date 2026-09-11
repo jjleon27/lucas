@@ -466,3 +466,50 @@ cuadrar la suma con el total ahí.
 Commiteado (`6b27df3`), pusheado, deployado, pytest verificado (mismas 11
 fallas pre-existentes). Pendiente: confirmación del usuario probando en su
 iPhone con boletas reales variadas.
+
+### Iteración 2026-09-11 (cont. 9) — auditoría con panel de 3 expertos
+El usuario pidió una auditoría completa del split de cuentas con un panel
+de expertos, insistiendo en no agregar código/restricciones innecesarias.
+Se lanzaron 3 agentes en paralelo: backend (plata/seguridad), frontend
+(estado/render), integración en vivo (correr tests + probar el flujo
+completo real). Resumen: el flujo completo funciona de punta a punta, sin
+problemas de seguridad, sin regresiones del revert del spotlight. Se
+confirmaron y arreglaron 4 problemas reales:
+
+1. **"÷ dividir en N" perdía plata por redondeo** ($10.000/3 = 3×$3.333 =
+   $9.999, $1 perdido sin registro). Fix: el último ítem absorbe el resto
+   exacto (mismo patrón ya usado para la propina).
+2. **El OCR también perdía plata por el mismo tipo de redondeo** al
+   reconstruir `line_total` desde un `unit_price` ya redondeado. Fix:
+   `ParsedItem.line_total` opcional — cuando `vision_parse_bill` lo provee,
+   `bill_ocr` lo usa tal cual en vez de recalcular. No afecta a /upload.
+3. **Línea de descuento no se capturaba** (ej. Lider: "Desp. Food $990" sin
+   su "-$990" de descuento) — la suma quedaba $990 alta, bajo el umbral de
+   reintento, pasaba sin avisar. Fix: una sola frase agregada al prompt
+   ("si hay una línea de descuento, inclúyela con valor negativo") —
+   probada contra la boleta más difícil (17 ítems) para confirmar que NO
+   reintroduce el bug de ítems saltados antes de aplicarla. Efecto
+   secundario encontrado: el modelo a veces repite el valor negativo en la
+   columna de cantidad — se corrige en el parser (no en el prompt).
+4. **Código muerto peligroso**: `_normalize_boleta_items` (la función que
+   causó el bug "$2.150→$1.765") seguía en `ocr.py` sin ningún call site
+   real. Se borró junto con `_fix_line_total_items`/`_fix_unit_as_total_items`
+   (ya no-ops). Se limpiaron sus 21 tests en `test_ocr_normalize.py` (con
+   AST para no arrastrar nada de los tests vecinos que sí siguen vigentes).
+   Efecto colateral bueno: 8 de las 11 fallas "pre-existentes" de todo el
+   día eran justo estos tests muertos — pytest bajó de 11 a 3 fallas (las 3
+   restantes, en `test_ocr_integration.py`, sin relación, confirmado).
+
+Todo re-probado en 5 boletas reales sin regresiones. Commiteado (`750c76b`),
+pusheado, deployado.
+
+### Iteración 2026-09-11 (cont. 10) — investigación GitHub para el color de bandas (pendiente de ejecutar)
+El usuario pidió investigar en GitHub formas rápidas/baratas de resolver el
+posicionamiento de las bandas de color sobre la foto, sin perder la
+velocidad ya conseguida — explícitamente "no cambies nada ni ejecutes aún".
+Contexto: ya se confirmó empíricamente (dos veces) que pedirle al modelo
+una posición por ítem en el prompt liviano no da una posición real — solo
+reparte 0-100 parejo por índice (mismo resultado que ya calcula el
+frontend gratis, sin gastar tokens ni arriesgar la precisión de ítems).
+Pendiente: resultado de la investigación de GitHub, aún no realizada al
+momento de este commit.
