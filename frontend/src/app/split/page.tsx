@@ -155,6 +155,7 @@ export default function SplitPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const imgBoxRef = useRef<HTMLDivElement>(null); // caja que replica el recuadro real de la foto (object-contain)
+  const imgElRef = useRef<HTMLImageElement>(null);
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const imgTransformRef = useRef({ scale: 1, x: 0, y: 0 });
   const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
@@ -807,6 +808,17 @@ export default function SplitPage() {
     ro.observe(container);
     return () => ro.disconnect();
   }, [step, leftW, bill?.image_url]);
+
+  // Si la foto viene de caché del navegador, <img onLoad> puede no disparar
+  // (ya estaba "complete" antes de que React conectara el listener) — sin esto
+  // imgNatural se queda null para siempre y el resaltado de color nunca aparece.
+  useEffect(() => {
+    if (step !== 2 || !bill?.image_url) return;
+    const el = imgElRef.current;
+    if (el && el.complete && el.naturalWidth > 0) {
+      setImgNatural({ w: el.naturalWidth, h: el.naturalHeight });
+    }
+  }, [step, bill?.image_url]);
 
   const applyTransform = (scale: number, x: number, y: number) => {
     imgTransformRef.current = { scale, x, y };
@@ -1804,6 +1816,7 @@ export default function SplitPage() {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
+                ref={imgElRef}
                 src={resolveBackendUrl(bill.image_url)}
                 alt="Boleta"
                 className="absolute inset-0 w-full h-full object-contain pointer-events-none"
@@ -1825,15 +1838,23 @@ export default function SplitPage() {
                   interna replica el recuadro real de la foto (object-contain) para
                   que la franja caiga sobre el contenido, no sobre las bandas negras
                   cuando la foto no llena el panel. Se arrastra para corregir. */}
-              {!drawMode && imgNatural && (
+              {/* Si todavía no tenemos las dimensiones reales de la foto (onLoad
+                  no disparó a tiempo, imagen de caché, etc.) igual mostramos las
+                  franjas usando el panel completo — mejor una aproximada que
+                  ninguna. En cuanto imgNatural llega, se realinean solas. */}
+              {!drawMode && (
                 <div className="absolute inset-0 z-[5] flex items-center justify-center pointer-events-none">
                   <div
                     ref={imgBoxRef}
                     className="relative"
-                    style={{
+                    style={imgNatural ? {
                       width: "auto", height: "auto",
                       maxWidth: "100%", maxHeight: "100%",
                       aspectRatio: `${imgNatural.w} / ${imgNatural.h}`,
+                      transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`,
+                      transformOrigin: "center center",
+                    } : {
+                      width: "100%", height: "100%",
                       transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`,
                       transformOrigin: "center center",
                     }}
@@ -1851,13 +1872,19 @@ export default function SplitPage() {
                             onPointerMove={onBandPointerMove}
                             onPointerUp={(e) => onBandPointerUp(e, item)}
                             onPointerCancel={(e) => onBandPointerUp(e, item)}
-                            className={`absolute left-0 right-0 pointer-events-auto touch-none select-none transition-opacity ${isDragging ? "opacity-90 ring-2 ring-white" : "opacity-55"}`}
+                            className={`absolute left-0 right-0 pointer-events-auto touch-none select-none transition-opacity border-y-2 ${isDragging ? "ring-2 ring-white" : ""}`}
                             style={{
                               top: `${pct}%`,
                               height: `${h}%`,
+                              minHeight: 10,
                               transform: "translateY(-50%)",
                               background: ITEM_COLORS[idx % ITEM_COLORS.length],
-                              mixBlendMode: "multiply",
+                              borderColor: ITEM_COLORS[idx % ITEM_COLORS.length],
+                              opacity: isDragging ? 0.85 : 0.55,
+                              // sin mix-blend-mode: acá el color/imagen viven en stacking
+                              // contexts distintos (por los transform de padres) y el blend
+                              // no alcanzaba a mezclarse con la foto — quedaba invisible.
+                              // Opacidad plana sí se ve siempre, sea cual sea el fondo.
                               cursor: "grab",
                             }}
                             title={`${item.name} — arrastra para ajustar`}
