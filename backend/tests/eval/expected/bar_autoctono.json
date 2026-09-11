@@ -1,0 +1,32 @@
+{
+  "image": "bar_autoctono.jpeg",
+  "source": "Foto real de comanda Toteat, Bar Autóctono. 6 comensales, mesero pide por separado y hay varias líneas repetidas (4x 'Promo Alto del Carmen 35°' a 6.400, 2x 'Promo Vodka Stolichnaya' a 6.000) más 3 líneas modificador '+Coca X' a $0. Caso de regresión: con gpt-4.1 (rápido) la primera pasada se saltó 1 ítem completo (sum 67.900 vs 74.300, diff 8.6%) — el retry-por-descuadre (umbral 6%) debe disparar y escalar a gpt-5-mini para sacar los 17 ítems completos.",
+  "currency": "CLP",
+  "merchant_contains": "aut",
+  "date": "2026-09-10",
+  "amount": 74300,
+  "item_count": 17,
+  "item_count_max": 17,
+  "items_subtotal": 74300,
+  "items_lenient": false,
+  "items": [
+    {"name": "Promo Vodka Stolichnaya", "quantity": 1, "line_total": 6000},
+    {"name": "Schop Austral Calafate 500cc", "quantity": 1, "line_total": 4500},
+    {"name": "Schop Austral Calafate 500cc", "quantity": 1, "line_total": 4500},
+    {"name": "Promo Alto del Carmen 35°", "quantity": 1, "line_total": 6400},
+    {"name": "Ginger Ale", "quantity": 1, "line_total": 2000},
+    {"name": "Schop Royal Guard 500cc", "quantity": 1, "line_total": 4500},
+    {"name": "Ginger Ale", "quantity": 1, "line_total": 2000},
+    {"name": "Promo Alto del Carmen 35°", "quantity": 1, "line_total": 6400},
+    {"name": "Promo Alto del Carmen 35°", "quantity": 1, "line_total": 6400},
+    {"name": "Promo Alto del Carmen 35°", "quantity": 1, "line_total": 6400},
+    {"name": "Promo Vodka Stolichnaya", "quantity": 1, "line_total": 6000},
+    {"name": "Promo Alto del Carmen 35°", "quantity": 1, "line_total": 6400},
+    {"name": "+Coca Cola", "quantity": 1, "line_total": 0},
+    {"name": "Promo Alto del Carmen 35°", "quantity": 1, "line_total": 6400},
+    {"name": "+Coca Zero", "quantity": 1, "line_total": 0},
+    {"name": "Promo Alto del Carmen 35°", "quantity": 1, "line_total": 6400},
+    {"name": "+Coca Zero", "quantity": 1, "line_total": 0}
+  ],
+  "notes": "REGRESIÓN a proteger 2026-09-11: no debe faltar ningún ítem (17 exactos), la suma de items debe dar 74.300 (= 'Total General Mesa'/'Consumo Cliente', NO 'Total c/propina' 81.730 — la propina sugerida no se cobra por default). Si el modelo rápido (gpt-4.1) se equivoca, el retry-por-descuadre debe escalar a gpt-5-mini y corregirlo — no basta con que el resultado final cuadre, el mecanismo de escalamiento es justamente lo que se está protegiendo aquí."
+}
