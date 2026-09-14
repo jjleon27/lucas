@@ -36,6 +36,29 @@ def _new_bill(client, h, other_person):
     return client.get(f"/bills/{bid}", headers=h).json()
 
 
+def test_set_payers_resets_previous_selection(client, h, other_person):
+    """Bug real en prod (2026-09-14): elegir "pagó Pedro", arrepentirse y
+    cambiar a "pagué yo" dejaba el paid_amount viejo de Pedro pegado (nunca
+    se reseteaba a 0) — el balance final mostraba a Pedro como si hubiera
+    pagado dos veces, y el usuario terminaba "debiéndole" a alguien que en
+    realidad no pagó nada. set-payers debe reemplazar el reparto completo,
+    no solo actualizar a quien viene en el pedido."""
+    b = _new_bill(client, h, other_person)
+    bid = b["id"]
+    me = next(p for p in b["participants"] if p["is_me"])
+    pedro = next(p for p in b["participants"] if not p["is_me"])
+    # 1ro: "pagó Pedro"
+    client.post(f"/bills/{bid}/set-payers", json=[{"participant_id": pedro["id"], "paid_amount": 20000}],
+                headers=h)
+    # se arrepiente: "pagué yo"
+    r = client.post(f"/bills/{bid}/set-payers", json=[{"participant_id": me["id"], "paid_amount": 20000}],
+                     headers=h)
+    assert r.status_code == 200, r.text
+    parts = {p["id"]: p for p in r.json()["participants"]}
+    assert parts[pedro["id"]]["paid_amount"] == 0       # el pago viejo de Pedro se resetea
+    assert parts[me["id"]]["paid_amount"] == 20000
+
+
 def test_finalize_default_equal_shares_works(client, h, other_person):
     """add_item siembra shares equitativas; finalizar sin tocar nada debe andar."""
     b = _new_bill(client, h, other_person)

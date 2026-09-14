@@ -586,12 +586,22 @@ def set_payers(
     current: UserOut = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Record who actually paid and how much."""
+    """Record who actually paid y cuánto. Reemplaza el reparto de pago
+    completo cada vez que se llama — no un patch parcial. Bug real
+    encontrado en prod (2026-09-14): antes solo ACTUALIZABA a quien venía
+    en `payload`, sin resetear al resto — si el usuario elegía "pagó Neb",
+    se arrepentía y cambiaba a "pagué yo", el `paid_amount` viejo de Neb
+    quedaba pegado para siempre (nunca se reseteaba a 0), y el balance
+    final mostraba a Neb como si hubiera pagado dos veces — el usuario
+    terminaba "debiéndole" a alguien que en realidad no pagó nada."""
     bill = _get_bill(bill_id, current.id, db)
     valid_pids = {p.id: p for p in bill.participants}
     for entry in payload:
         if entry.participant_id not in valid_pids:
             raise HTTPException(400, f"Participant {entry.participant_id} not in bill")
+    for p in bill.participants:
+        p.paid_amount = 0.0
+    for entry in payload:
         valid_pids[entry.participant_id].paid_amount = entry.paid_amount
     db.commit()
     db.refresh(bill)
