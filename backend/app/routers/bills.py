@@ -471,10 +471,12 @@ def patch_item(
     if payload.position_y is not None:
         item.position_y = payload.position_y
         # Corrección manual (arrastre) — el bbox real que traía (si lo
-        # traía) ya no describe esta posición, así que se limpia: el
-        # frontend cae a la altura estimada por hueco a los vecinos en vez
-        # de mostrar una caja de alto real desalineada de la nueva posición.
+        # traía) ya no describe esta posición, así que se limpia entero: el
+        # frontend cae al tamaño estimado por hueco a los vecinos en vez de
+        # mostrar una caja de tamaño real desalineada de la nueva posición.
+        item.bbox_x0 = None
         item.bbox_y0 = None
+        item.bbox_x1 = None
         item.bbox_y1 = None
     item.line_total = round(item.qty * item.unit_price, 2)
     _recalc_total(bill)

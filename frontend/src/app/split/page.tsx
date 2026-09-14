@@ -2304,11 +2304,25 @@ export default function SplitPage() {
                     const total = bill.items.length;
                     const pct = bandPctFor(item, idx, total);
                     const isDragging = markerDrag?.itemId === item.id;
-                    // La banda cubre todo el ancho de la foto (mismo color exacto
-                    // que la fila de la derecha, itemColor(idx) en ambos lados) —
-                    // ya no le pedimos al modelo el ancho del bloque de ítems.
-                    const left = imgBox.offsetX;
-                    const width = imgBox.width;
+                    // Ancho de la banda: cuando el servicio de posición encontró un
+                    // match confiable, usa el ancho REAL de esa línea de texto
+                    // (bbox_x0/x1, en % de la foto) — el nombre+valor de CADA ítem
+                    // tiene un largo distinto, así que ya no tiene sentido una
+                    // banda de ancho fijo a todo el ancho de la foto (eso era lo
+                    // que hacía que a veces pareciera sombrear "otro texto": la
+                    // banda entera, aunque bien centrada en Y, tapaba de lado a
+                    // lado columnas que no eran del ítem). Con un margen chico de
+                    // legibilidad y un mínimo para que siempre sea tocable. Sin
+                    // match (mismo caso que la altura: reparto parejo o corrección
+                    // manual) cae a todo el ancho, como antes.
+                    const hasBboxX = item.bbox_x0 != null && item.bbox_x1 != null;
+                    const PAD_X = 2; // puntos porcentuales de margen a cada lado
+                    const MIN_WIDTH_PCT = 14; // ancho mínimo, % del ancho de la foto
+                    const x0 = hasBboxX ? Math.max(0, (item.bbox_x0 as number) - PAD_X) : 0;
+                    const x1raw = hasBboxX ? Math.min(100, (item.bbox_x1 as number) + PAD_X) : 100;
+                    const widthPct = hasBboxX ? Math.max(MIN_WIDTH_PCT, x1raw - x0) : 100;
+                    const left = imgBox.offsetX + (x0 / 100) * imgBox.width;
+                    const width = (widthPct / 100) * imgBox.width;
                     // Alto de la banda: cuando el servicio de posición encontró un
                     // match confiable, usa el alto REAL de esa línea de texto
                     // (bbox_y0/y1, en % de la foto) — así la banda cubre
