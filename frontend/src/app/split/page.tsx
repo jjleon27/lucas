@@ -2456,6 +2456,15 @@ function SplitPageInner({
             <div className="bg-indigo-600 rounded-2xl px-5 py-6 text-white text-center">
               <p className="text-sm opacity-80 mb-1">Tu gasto personal</p>
               <p className="text-4xl font-extrabold">{clp(finalized ? myShare : (bill.participants.find((p) => p.is_me)?.owes_amount || previewMyShare))}</p>
+              {/* Lo que YO consumí (arriba) puede ser distinto de lo que YO pagué
+                  (acá) — si pagué el total de la cuenta, esto lo deja explícito en
+                  vez de dejarlo implícito en los números de abajo, que era
+                  confuso ("¿de dónde sale que le debo tanto a esta persona?"). */}
+              {(() => {
+                const mePart = bill.participants.find((p) => p.is_me);
+                if (!mePart || mePart.paid_amount <= 0) return null;
+                return <p className="text-xs mt-1 opacity-70">Pagaste en total {clp(mePart.paid_amount)}</p>;
+              })()}
               {finalized && (
                 <p className="text-sm mt-2 opacity-80">
                   {bill.transaction_id ? "Guardado en Lucas ✓" : "División guardada ✓ (sin gasto)"}
@@ -2488,17 +2497,31 @@ function SplitPageInner({
               </div>
             )}
 
-            {/* Per-person owes/paid summary */}
+            {/* Per-person owes/paid summary — antes solo mostraba el neto
+                ("le debes $X a Fulano"), sin decir de dónde salía ese número.
+                Ahora cada persona muestra su consumo Y lo que pagó por
+                separado, así el resultado final se puede verificar a ojo
+                (consumo - pago = lo que debe o le deben) en vez de tener que
+                confiar en el cálculo a ciegas. */}
             <div className="bg-white rounded-2xl shadow-sm divide-y divide-slate-100">
               {bill.participants.filter((p) => !p.is_me).map((p) => {
                 const diff = p.owes_amount - p.paid_amount;
-                if (Math.abs(diff) < 1) return null;
+                if (Math.abs(diff) < 1 && p.paid_amount < 1) return null;
                 return (
                   <div key={p.id} className="flex items-center gap-3 px-4 py-3">
                     <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ background: p.color }}>{initials(p.name)}</div>
-                    <p className="flex-1 text-sm text-slate-700">
-                      {diff > 0 ? <><span className="font-semibold">{p.name}</span> te debe {clp(diff)}</> : <>Le debes {clp(-diff)} a <span className="font-semibold">{p.name}</span></>}
-                    </p>
+                    <div className="flex-1">
+                      <p className="text-sm text-slate-700">
+                        {Math.abs(diff) < 1
+                          ? <><span className="font-semibold">{p.name}</span> — pagó lo justo</>
+                          : diff > 0
+                            ? <><span className="font-semibold">{p.name}</span> te debe {clp(diff)}</>
+                            : <>Le debes {clp(-diff)} a <span className="font-semibold">{p.name}</span></>}
+                      </p>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Consumió {clp(p.owes_amount)}{p.paid_amount > 0 ? ` · pagó ${clp(p.paid_amount)}` : ""}
+                      </p>
+                    </div>
                   </div>
                 );
               })}
