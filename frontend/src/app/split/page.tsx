@@ -1855,13 +1855,22 @@ export default function SplitPage() {
                   {/* Grilla fija de referencia: NO gira ni hace zoom con la foto
                       (es hermana del <img>, fuera de su transform) — sirve para
                       ver, mientras se gira o se acerca, si el texto de la
-                      boleta va quedando paralelo a estas líneas. */}
+                      boleta va quedando paralelo a estas líneas. Dos niveles:
+                      líneas finas cada 5% para tener referencia densa, y
+                      líneas gruesas/brillantes cada 25% que se ven incluso de
+                      lejos o sobre foto clara. */}
                   <div className="absolute inset-0 pointer-events-none">
-                    {[10, 20, 30, 40, 50, 60, 70, 80, 90].map((p) => (
-                      <div key={`h${p}`} className="absolute left-0 right-0 border-t border-lime-400/40" style={{ top: `${p}%` }} />
+                    {Array.from({ length: 19 }, (_, i) => (i + 1) * 5).map((p) => (
+                      <div key={`h${p}`} className="absolute left-0 right-0 border-t border-lime-300/60" style={{ top: `${p}%` }} />
                     ))}
                     {[25, 50, 75].map((p) => (
-                      <div key={`v${p}`} className="absolute top-0 bottom-0 border-l border-lime-400/25" style={{ left: `${p}%` }} />
+                      <div key={`hmaj${p}`} className="absolute left-0 right-0 border-t-2 border-lime-300" style={{ top: `${p}%` }} />
+                    ))}
+                    {Array.from({ length: 9 }, (_, i) => (i + 1) * 10).map((p) => (
+                      <div key={`v${p}`} className="absolute top-0 bottom-0 border-l border-lime-300/45" style={{ left: `${p}%` }} />
+                    ))}
+                    {[25, 50, 75].map((p) => (
+                      <div key={`vmaj${p}`} className="absolute top-0 bottom-0 border-l-2 border-lime-300/90" style={{ left: `${p}%` }} />
                     ))}
                   </div>
                   {!straightening && (
