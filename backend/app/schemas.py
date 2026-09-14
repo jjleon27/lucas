@@ -224,14 +224,16 @@ class ParsedItem(BaseModel):
     # divisible exacto por qty (round(line_total/qty) redondea el unitario,
     # y volver a multiplicar por qty no siempre reconstruye el original).
     line_total: Optional[float] = None
-    # Recuadro estimado por el modelo de vision (0-100 = % del ancho/alto de la
-    # imagen) que envuelve la línea de este ítem (nombre + precio) en la boleta.
-    # Se usa para marcar el ítem con su color sobre la foto al revisar el split.
-    # Best-effort — el usuario puede corregir la posición arrastrando.
-    bbox_x0: Optional[float] = None
+    # Alto REAL (0-100 = % del alto de la imagen) de la línea de este ítem en
+    # la boleta. Se usa para marcar el ítem con su color sobre la foto al
+    # revisar el split. Best-effort — el usuario puede corregir arrastrando.
     bbox_y0: Optional[float] = None
-    bbox_x1: Optional[float] = None
     bbox_y1: Optional[float] = None
+    # Uno o más tramos horizontales REALES (0-100 = % del ancho) — nombre+
+    # cantidad por un lado, precio por otro, cuando hay un hueco en blanco
+    # grande entre columnas (nunca un solo tramo ancho que sombrearía
+    # también ese hueco como una barra sólida). Cada tramo es [x0, x1].
+    segments: list[list[float]] = []
     # Centro vertical del bbox (derivado) — se mantiene por compatibilidad con
     # el arrastre existente, que solo reposiciona el centro, no cambia el tamaño.
     position_y: Optional[float] = None

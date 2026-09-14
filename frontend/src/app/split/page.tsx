@@ -3,7 +3,7 @@
  * Split — 5-step bill-splitting flow
  * 1 Capture → 2 Revisar → 3 Asignar → 4 ¿Quién pagó? → 5 Resumen
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, createPerson, getToken, resolveBackendUrl } from "@/lib/api";
 import { Camera, Plus, Minus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw, RotateCcw, AlertTriangle } from "lucide-react";
@@ -15,7 +15,12 @@ interface BillItemShare { participant_id: number; weight: number; units: number 
 interface BillItem {
   id: number; name: string; qty: number; unit_price: number; line_total: number;
   position_y: number | null;
-  bbox_x0: number | null; bbox_y0: number | null; bbox_x1: number | null; bbox_y1: number | null;
+  bbox_y0: number | null; bbox_y1: number | null;
+  // Uno o más tramos horizontales reales [x0,x1] (% del ancho de la foto) —
+  // nombre+cantidad por un lado, precio por otro, cuando hay un hueco en
+  // blanco grande entre columnas (nunca un solo tramo que sombrearía
+  // también ese hueco). [] o null = sin estimar (ancho completo por defecto).
+  segments: [number, number][] | null;
   // El nombre+valor que dijo el modelo de visión no aparece en el texto real
   // de la foto (Tesseract, gratis) — probable alucinación. Solo informativo,
   // nunca bloquea nada — el usuario corrige si hace falta.
@@ -26,7 +31,7 @@ interface Bill {
   id: number; merchant: string; date: string; total_amount: number; tip_amount: number;
   currency: string; image_url: string; status: "draft" | "assigned" | "finalized";
   // Ancho/alto reales de la foto (orientada hacia arriba, post EXIF-transpose
-  // en el backend) — el marco de referencia del que bbox_x0/y0/x1/y1 son %.
+  // en el backend) — el marco de referencia del que bbox_y0/y1/segments son %.
   // Se usan para el cálculo object-fit:contain en vez de naturalWidth/Height
   // medido por el navegador (puede interpretar el EXIF distinto a Pillow).
   // null en boletas viejas o si el OCR no corrió — ahí se cae a imgNatural.
@@ -1255,7 +1260,7 @@ export default function SplitPage() {
   //
   // El ancho/alto usado para la proporción viene de `bill.image_width/height`
   // (calculado por el backend con Pillow al procesar la foto para OCR —  el
-  // MISMO marco de referencia del que bbox_x0/y0/x1/y1 son %) cuando está
+  // MISMO marco de referencia del que bbox_y0/y1/segments son %) cuando está
   // disponible, y solo cae a `imgNatural` (medido por el navegador via
   // <img>.naturalWidth/Height) si el backend no lo mandó (boleta vieja, o
   // ítem agregado a mano sin OCR). Motivo: se detectó que las bandas de color
@@ -2576,25 +2581,28 @@ export default function SplitPage() {
                     const total = bill.items.length;
                     const pct = bandPctFor(item, idx, total);
                     const isDragging = markerDrag?.itemId === item.id;
-                    // Ancho de la banda: cuando el servicio de posición encontró un
-                    // match confiable, usa el ancho REAL de esa línea de texto
-                    // (bbox_x0/x1, en % de la foto) — el nombre+valor de CADA ítem
-                    // tiene un largo distinto, así que ya no tiene sentido una
-                    // banda de ancho fijo a todo el ancho de la foto (eso era lo
-                    // que hacía que a veces pareciera sombrear "otro texto": la
-                    // banda entera, aunque bien centrada en Y, tapaba de lado a
-                    // lado columnas que no eran del ítem). Con un margen chico de
-                    // legibilidad y un mínimo para que siempre sea tocable. Sin
-                    // match (mismo caso que la altura: reparto parejo o corrección
-                    // manual) cae a todo el ancho, como antes.
-                    const hasBboxX = item.bbox_x0 != null && item.bbox_x1 != null;
+                    // Tramos horizontales de la banda: cuando el servicio de
+                    // posición encontró un match confiable, `segments` trae uno o
+                    // más tramos REALES (nombre+cantidad por un lado, precio por
+                    // otro) — NUNCA un solo recuadro que una ambos de punta a
+                    // punta, porque entre columnas suele haber un hueco en blanco
+                    // grande (boleta con nombre a la izquierda y precio pegado al
+                    // borde derecho) y sombrear ese hueco como si fuera texto se
+                    // ve como una barra sólida gigante que además parece tapar
+                    // "otro texto" de la boleta. Cada tramo se dibuja como su
+                    // propia banda, con un margen chico de legibilidad y un
+                    // mínimo para que siempre sea tocable. Sin match (reparto
+                    // parejo o corrección manual) cae a un solo tramo de ancho
+                    // completo, como antes.
                     const PAD_X = 2; // puntos porcentuales de margen a cada lado
-                    const MIN_WIDTH_PCT = 14; // ancho mínimo, % del ancho de la foto
-                    const x0 = hasBboxX ? Math.max(0, (item.bbox_x0 as number) - PAD_X) : 0;
-                    const x1raw = hasBboxX ? Math.min(100, (item.bbox_x1 as number) + PAD_X) : 100;
-                    const widthPct = hasBboxX ? Math.max(MIN_WIDTH_PCT, x1raw - x0) : 100;
-                    const left = imgBox.offsetX + (x0 / 100) * imgBox.width;
-                    const width = (widthPct / 100) * imgBox.width;
+                    const MIN_WIDTH_PCT = 8; // ancho mínimo por tramo, % del ancho de la foto
+                    const rawSegments = item.segments && item.segments.length > 0 ? item.segments : [[0, 100] as [number, number]];
+                    const segments = rawSegments.map(([sx0, sx1]) => {
+                      const x0 = Math.max(0, sx0 - PAD_X);
+                      const x1raw = Math.min(100, sx1 + PAD_X);
+                      const widthPct = Math.max(MIN_WIDTH_PCT, x1raw - x0);
+                      return { left: imgBox.offsetX + (x0 / 100) * imgBox.width, width: (widthPct / 100) * imgBox.width };
+                    });
                     // Alto de la banda: cuando el servicio de posición encontró un
                     // match confiable, usa el alto REAL de esa línea de texto
                     // (bbox_y0/y1, en % de la foto) — así la banda cubre
@@ -2618,27 +2626,31 @@ export default function SplitPage() {
                       : Math.min(26, Math.max(10, minGapPct * 1.6 * imgBox.height / 100));
                     const top = imgBox.offsetY + (pct / 100) * imgBox.height;
                     return (
-                      <div
-                        key={item.id}
-                        onPointerDown={(e) => onBandPointerDown(e, item, pct)}
-                        onPointerMove={onBandPointerMove}
-                        onPointerUp={(e) => onBandPointerUp(e, item)}
-                        onPointerCancel={(e) => onBandPointerUp(e, item)}
-                        className="absolute pointer-events-auto touch-none select-none rounded-sm"
-                        style={{
-                          top,
-                          left,
-                          width,
-                          height,
-                          transform: "translateY(-50%)",
-                          background: itemHighlightColor(idx),
-                          border: `2px solid ${itemHighlightBorderColor(idx)}`,
-                          opacity: isDragging ? 0.85 : 0.45,
-                          boxShadow: isDragging ? "0 0 0 2px white" : "none",
-                          cursor: "grab",
-                        }}
-                        title={`${item.name} — arrastra para ajustar`}
-                      />
+                      <Fragment key={item.id}>
+                        {segments.map((seg, segIdx) => (
+                          <div
+                            key={segIdx}
+                            onPointerDown={(e) => onBandPointerDown(e, item, pct)}
+                            onPointerMove={onBandPointerMove}
+                            onPointerUp={(e) => onBandPointerUp(e, item)}
+                            onPointerCancel={(e) => onBandPointerUp(e, item)}
+                            className="absolute pointer-events-auto touch-none select-none rounded-sm"
+                            style={{
+                              top,
+                              left: seg.left,
+                              width: seg.width,
+                              height,
+                              transform: "translateY(-50%)",
+                              background: itemHighlightColor(idx),
+                              border: `2px solid ${itemHighlightBorderColor(idx)}`,
+                              opacity: isDragging ? 0.85 : 0.45,
+                              boxShadow: isDragging ? "0 0 0 2px white" : "none",
+                              cursor: "grab",
+                            }}
+                            title={`${item.name} — arrastra para ajustar`}
+                          />
+                        ))}
+                      </Fragment>
                     );
                   })}
                 </div>

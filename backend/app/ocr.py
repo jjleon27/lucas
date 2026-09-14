@@ -119,7 +119,7 @@ class ParseResult:
     bank_hint: str = ""
     account_type_hint: str = ""          # "debit" | "credit" | ""
     # Ancho/alto reales de la foto, orientada hacia arriba (post EXIF-transpose)
-    # — el marco de referencia del que bbox_x0/y0/x1/y1 son %. Ver nota en
+    # — el marco de referencia del que bbox_y0/y1/segments son %. Ver nota en
     # vision_parse(). None si no se pudo determinar (Tesseract-only fallback).
     image_width: Optional[int] = None
     image_height: Optional[int] = None
@@ -1870,11 +1870,11 @@ def _suspect_items(items: list[ParsedItem], ocr_lines: list[str]) -> list[bool]:
 
 
 def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str]:
-    """Best-effort: rellena `position_y` y, cuando hay match, la caja REAL
-    de la línea de texto (`bbox_x0/y0/x1/y1`, % del ancho/alto de la foto —
-    para que la banda de color en el frontend se dibuje del tamaño exacto
-    del ítem, ni más angosta ni más ancha, en vez de un tamaño inventado)
-    llamando al servicio interno aislado `services/ocr_position` (Tesseract,
+    """Best-effort: rellena `position_y`, el alto real (`bbox_y0/y1`) y uno o
+    más tramos horizontales reales (`segments`, % del ancho de la foto —
+    nombre+cantidad por un lado, precio por otro, sin sombrear el hueco en
+    blanco de por medio) llamando al servicio interno aislado
+    `services/ocr_position` (Tesseract,
     probado a varias escalas y variantes de contraste hasta encontrar la
     que mejor lee ESTA foto en particular, + emparejamiento por orden — ver
     ese servicio para el detalle). Le manda la foto SIN el contraste/
@@ -1918,10 +1918,9 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
         # que se envió) — no por nombre, que puede repetirse entre ítems.
         for it, r in zip(items, results):
             it.position_y = r.get("position_y")
-            it.bbox_x0 = r.get("bbox_x0")
             it.bbox_y0 = r.get("bbox_y0")
-            it.bbox_x1 = r.get("bbox_x1")
             it.bbox_y1 = r.get("bbox_y1")
+            it.segments = [[s["x0"], s["x1"]] for s in r.get("segments") or []]
         return payload.get("ocr_lines") or []
     except Exception as _exc:  # noqa: BLE001
         print(f"[ocr] servicio de posición no disponible ({_exc}) — reparto parejo")

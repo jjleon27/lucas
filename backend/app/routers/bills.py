@@ -130,8 +130,8 @@ def _bill_out(bill: Bill) -> dict:
             "unit_price": it.unit_price,
             "line_total": it.line_total,
             "position_y": it.position_y,
-            "bbox_x0": it.bbox_x0, "bbox_y0": it.bbox_y0,
-            "bbox_x1": it.bbox_x1, "bbox_y1": it.bbox_y1,
+            "bbox_y0": it.bbox_y0, "bbox_y1": it.bbox_y1,
+            "segments": it.segments or [],
             "needs_review": it.needs_review,
             "shares": [
                 {"participant_id": s.participant_id, "weight": s.weight, "units": s.units}
@@ -357,8 +357,8 @@ async def bill_ocr(
             unit_price=unit_price,
             line_total=line_total,
             position_y=it.position_y,
-            bbox_x0=it.bbox_x0, bbox_y0=it.bbox_y0,
-            bbox_x1=it.bbox_x1, bbox_y1=it.bbox_y1,
+            bbox_y0=it.bbox_y0, bbox_y1=it.bbox_y1,
+            segments=it.segments or None,
             needs_review=it.needs_review,
         ))
 
@@ -472,14 +472,14 @@ def patch_item(
         item.unit_price = payload.unit_price
     if payload.position_y is not None:
         item.position_y = payload.position_y
-        # Corrección manual (arrastre) — el bbox real que traía (si lo
-        # traía) ya no describe esta posición, así que se limpia entero: el
-        # frontend cae al tamaño estimado por hueco a los vecinos en vez de
-        # mostrar una caja de tamaño real desalineada de la nueva posición.
-        item.bbox_x0 = None
+        # Corrección manual (arrastre) — el bbox/segmentos reales que traía
+        # (si traía) ya no describen esta posición, así que se limpian
+        # enteros: el frontend cae al tamaño estimado por hueco a los
+        # vecinos en vez de mostrar una caja desalineada de la nueva
+        # posición.
         item.bbox_y0 = None
-        item.bbox_x1 = None
         item.bbox_y1 = None
+        item.segments = None
     item.line_total = round(item.qty * item.unit_price, 2)
     _recalc_total(bill)
     db.commit()

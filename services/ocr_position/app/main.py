@@ -48,17 +48,24 @@ class PositionRequest(BaseModel):
     items: list[str]      # nombres de ítem en el mismo orden en que aparecen en la boleta
 
 
+class Segment(BaseModel):
+    x0: float
+    x1: float
+
+
 class ItemPosition(BaseModel):
     name: str
     position_y: Optional[float] = None  # 0-100 (centro vertical), o null si no hay match confiable
-    # Caja REAL de la línea de texto emparejada (0-100 = % del alto/ancho de
-    # la foto) — permite que la banda de color en el frontend se dibuje del
-    # tamaño exacto del texto (nombre+valor) en vez de un tamaño inventado o
-    # siempre a todo el ancho de la foto.
-    bbox_x0: Optional[float] = None
+    # Alto REAL de la línea de texto emparejada (0-100 = % del alto de la foto).
     bbox_y0: Optional[float] = None
-    bbox_x1: Optional[float] = None
     bbox_y1: Optional[float] = None
+    # Uno o más tramos horizontales REALES (0-100 = % del ancho de la foto) —
+    # nombre+cantidad por un lado, precio por otro, cuando hay un hueco en
+    # blanco grande entre columnas (no un solo tramo que sombrearía también
+    # ese hueco, como una barra sólida). Permite que la banda de color en el
+    # frontend se dibuje solo sobre el texto real, en tantos bloques como
+    # haga falta.
+    segments: list[Segment] = []
 
 
 class PositionResponse(BaseModel):
@@ -106,18 +113,21 @@ def _tesseract_lines(img: Image.Image) -> list[dict]:
         left, width = data["left"][i], data["width"][i]
         entry = lines.setdefault(key, {
             "words": [], "top": top, "bottom": top + height, "left": left, "right": left + width,
+            "word_spans": [],  # (x0%, x1%) de CADA palabra — para separar en bloques (ver _row_segments)
         })
         entry["words"].append(txt)
         entry["top"] = min(entry["top"], top)
         entry["bottom"] = max(entry["bottom"], top + height)
         entry["left"] = min(entry["left"], left)
         entry["right"] = max(entry["right"], left + width)
+        entry["word_spans"].append((left / w * 100, (left + width) / w * 100))
     ordered = sorted(lines.values(), key=lambda e: e["top"])
     return [
         {
             "text": " ".join(e["words"]),
             "y0": e["top"] / h * 100, "y1": e["bottom"] / h * 100,
             "x0": e["left"] / w * 100, "x1": e["right"] / w * 100,
+            "word_spans": e["word_spans"],
         }
         for e in ordered
     ]
@@ -127,20 +137,47 @@ _ROW_OVERLAP_MIN = 0.6  # fracción mínima de traslape vertical para considerar
 _ROW_SEARCH_WINDOW = 6  # cuántas líneas mirar a cada lado (ordenadas por altura)
 
 
-def _expand_to_full_row(lines: list[dict], idx: int) -> dict:
+_WORD_CLUSTER_GAP = 8.0  # % del ancho de la foto — huecos más chicos se fusionan (espacio normal entre palabras); más grandes quedan separados (columna en blanco entre nombre y precio)
+
+
+def _cluster_word_spans(word_spans: list[tuple[float, float]], gap: float) -> list[tuple[float, float]]:
+    """Junta palabras (x0,x1) en bloques contiguos — separa en bloques
+    DISTINTOS solo cuando el hueco entre una palabra y la siguiente supera
+    `gap`. Medido en boletas reales: el espacio normal entre palabras de un
+    mismo bloque es ~3-5% del ancho de la foto; el hueco en blanco entre la
+    columna de nombre y la de precio es ~40% — hay margen de sobra para
+    separarlos con un solo umbral fijo, sin depender del idioma/formato."""
+    if not word_spans:
+        return []
+    spans = sorted(word_spans)
+    clusters = [list(spans[0])]
+    for x0, x1 in spans[1:]:
+        if x0 - clusters[-1][1] <= gap:
+            clusters[-1][1] = max(clusters[-1][1], x1)
+        else:
+            clusters.append([x0, x1])
+    return [(c[0], c[1]) for c in clusters]
+
+
+def _row_segments(lines: list[dict], idx: int) -> dict:
     """Tesseract a veces separa la cantidad y/o el precio del nombre del
-    ítem en bloques de texto DISTINTOS cuando hay mucho espacio en blanco
-    entre columnas (común en boletas con columnas bien separadas: cantidad
-    a la izquierda, nombre al medio, precio pegado al borde derecho) — el
-    nombre matchea bien, pero la caja queda angosta, sin la cantidad ni el
-    valor. Se agranda el ancho para cubrir toda la fila física: se busca,
-    cerca en el orden de lectura, cualquier otra línea que comparta CASI LA
-    MISMA ALTURA en la foto (traslape vertical ≥60%) y se une su ancho.
-    Es geométrico — no depende del idioma, mayúsculas, largo del nombre/
-    valor, ni de si hay descuento u otro formato — así generaliza a
-    cualquier boleta sin reglas por caso."""
+    ítem en bloques de texto DISTINTOS (líneas separadas) cuando hay mucho
+    espacio en blanco entre columnas — el nombre matchea bien, pero antes
+    la caja quedaba angosta, sin la cantidad ni el valor. Se junta el texto
+    de toda la fila física: se busca, cerca en el orden de lectura,
+    cualquier otra línea que comparta CASI LA MISMA ALTURA en la foto
+    (traslape vertical ≥60%).
+
+    A diferencia de un solo bbox ancho (que sombrearía TAMBIÉN el hueco en
+    blanco de por medio, como una barra sólida gigante), se agrupan las
+    palabras individuales en BLOQUES separados por hueco real
+    (`_cluster_word_spans`) — así la banda de color en el frontend sombrea
+    literalmente el texto (nombre+cantidad por un lado, precio por otro),
+    no el espacio vacío entre columnas. Es geométrico — no depende del
+    idioma, mayúsculas, largo del nombre/valor, ni de si hay descuento u
+    otro formato — así generaliza a cualquier boleta sin reglas por caso."""
     base = lines[idx]
-    x0, x1 = base["x0"], base["x1"]
+    word_spans = list(base["word_spans"])
     lo = max(0, idx - _ROW_SEARCH_WINDOW)
     hi = min(len(lines), idx + _ROW_SEARCH_WINDOW + 1)
     for j in range(lo, hi):
@@ -152,9 +189,9 @@ def _expand_to_full_row(lines: list[dict], idx: int) -> dict:
         inter = max(0.0, bottom - top)
         union = max(base["y1"], other["y1"]) - min(base["y0"], other["y0"])
         if union > 0 and inter / union >= _ROW_OVERLAP_MIN:
-            x0 = min(x0, other["x0"])
-            x1 = max(x1, other["x1"])
-    return {**base, "x0": x0, "x1": x1}
+            word_spans.extend(other["word_spans"])
+    segments = _cluster_word_spans(word_spans, _WORD_CLUSTER_GAP)
+    return {**base, "segments": segments}
 
 
 def _match_items_to_lines(items: list[str], lines: list[dict]) -> list[Optional[dict]]:
@@ -178,7 +215,7 @@ def _match_items_to_lines(items: list[str], lines: list[dict]) -> list[Optional[
             if ratio > best_ratio:
                 best_ratio, best_idx = ratio, idx
         if best_idx >= 0 and best_ratio >= MIN_SIMILARITY:
-            results.append(_expand_to_full_row(lines, best_idx))
+            results.append(_row_segments(lines, best_idx))
             last_idx = best_idx
         else:
             results.append(None)
@@ -306,8 +343,8 @@ def position(req: PositionRequest) -> PositionResponse:
             items_out.append(ItemPosition(
                 name=name,
                 position_y=round((m["y0"] + m["y1"]) / 2, 1),
-                bbox_x0=round(m["x0"], 1), bbox_x1=round(m["x1"], 1),
                 bbox_y0=round(m["y0"], 1), bbox_y1=round(m["y1"], 1),
+                segments=[Segment(x0=round(s[0], 1), x1=round(s[1], 1)) for s in m["segments"]],
             ))
     return PositionResponse(items=items_out, ocr_lines=[l["text"] for l in lines])
 

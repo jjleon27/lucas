@@ -82,6 +82,11 @@ def _migrate_schema() -> None:
         # visión no aparece en el texto real de la foto (Tesseract) —
         # probable alucinación, se marca para que el usuario la revise.
         "ALTER TABLE bill_items ADD COLUMN needs_review BOOLEAN NOT NULL DEFAULT FALSE",
+        # bill_items.segments — uno o más tramos horizontales [[x0,x1], ...]
+        # reales del texto del ítem (nombre+cantidad, precio...), reemplaza
+        # bbox_x0/bbox_x1 (un solo tramo no alcanza para no sombrear el
+        # hueco en blanco entre columnas — ver services/ocr_position).
+        "ALTER TABLE bill_items ADD COLUMN segments JSON",
     ]
     with engine.connect() as conn:
         for stmt in stmts:

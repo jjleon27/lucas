@@ -230,7 +230,7 @@ class Bill(Base):
     currency = Column(String(8), default="CLP", nullable=False)
     image_url = Column(String(1024), default="", nullable=False)
     # Ancho/alto reales de la foto, orientada hacia arriba (post EXIF-transpose)
-    # — el marco de referencia del que bbox_x0/y0/x1/y1 (en BillItem) son %.
+    # — el marco de referencia del que bbox_y0/y1/segments (en BillItem) son %.
     # El frontend los usa para el cálculo object-fit:contain en vez de confiar
     # en naturalWidth/naturalHeight medido por el navegador (que puede
     # interpretar el EXIF distinto a Pillow). None si no viene de OCR.
@@ -275,13 +275,20 @@ class BillItem(Base):
     # Centro vertical (0-100 = % de la altura de la imagen) donde está esta línea.
     # Editable a mano arrastrando el marcador (solo mueve el centro). Null = sin marcar.
     position_y = Column(Float, nullable=True)
-    # Recuadro real (0-100 = % del ancho/alto de la imagen) que envuelve el nombre
-    # + precio de este ítem, estimado por el modelo de OCR. Null = sin estimar
-    # (se usa un tamaño por defecto en el frontend).
-    bbox_x0 = Column(Float, nullable=True)
+    # Alto real (0-100 = % del alto de la imagen) de la línea de este ítem,
+    # estimado por el OCR. Null = sin estimar (se usa un tamaño por defecto
+    # en el frontend).
     bbox_y0 = Column(Float, nullable=True)
-    bbox_x1 = Column(Float, nullable=True)
     bbox_y1 = Column(Float, nullable=True)
+    # Uno o más tramos horizontales reales [[x0,x1], ...] (0-100 = % del
+    # ancho) — nombre+cantidad por un lado, precio por otro, en vez de un
+    # solo recuadro ancho que sombrearía también el hueco en blanco entre
+    # columnas. Null/vacío = sin estimar (ancho completo por defecto).
+    segments = Column(JSON, nullable=True)
+    # bbox_x0/bbox_x1 — columnas viejas, ya no se escriben (reemplazadas por
+    # `segments`, que soporta más de un tramo horizontal). Se dejan en la
+    # tabla sin declarar acá para no perder los datos históricos ni migrar
+    # con un DROP COLUMN innecesario.
     # True cuando el nombre+precio leído por el modelo de visión no aparece
     # en el texto real de la foto (Tesseract, gratis) — probable alucinación.
     # Solo informativo: nunca bloquea nada, el usuario corrige si hace falta.
