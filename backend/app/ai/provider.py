@@ -164,12 +164,27 @@ class OpenAIProvider(LLMProvider):
         hace que el modelo lea MÁS lento y se salte ítems más seguido que
         cuando se le pide una lista de texto simple — de ahí este método
         separado en vez de reusar vision_json con un prompt distinto.
+
+        `reasoning_effort="low"` en modelos gpt-5 (medido en vivo,
+        2026-09-14, boleta real de 22 ítems): sin fijarlo, el modelo gasta
+        ~2000 tokens de "pensamiento" interno invisible en una respuesta de
+        ~260 tokens visibles — eso es lo que tardaba (22.5s), no el tamaño
+        de imagen ni el prompt (probado por separado, ninguno de los dos
+        explicaba la demora). Con "low": 14.5s (-36%), misma lectura, sigue
+        marcando honestamente el texto que no logra leer ("[Ilegible]").
+        Se probó también "none" (4.8s, -79%) pero cambia de comportamiento:
+        empieza a INVENTAR con confianza en vez de admitir que no puede leer
+        algo (un ítem pasó de "[Ilegible]" a un nombre y precio inventados)
+        — inaceptable para leer montos de dinero, se descarta pese a ser
+        más rápido. "low" es el punto donde no se vio ese efecto.
         """
         from openai import OpenAI
         vision_model = model or settings.openai_vision_model
         client = OpenAI(api_key=settings.openai_api_key, timeout=90.0)
         _kw = {}
-        if not vision_model.startswith(("gpt-5", "o1", "o3", "o4")):
+        if vision_model.startswith("gpt-5"):
+            _kw["reasoning_effort"] = "low"
+        elif not vision_model.startswith(("o1", "o3", "o4")):
             _kw["temperature"] = temperature
         resp = client.chat.completions.create(
             model=vision_model,
