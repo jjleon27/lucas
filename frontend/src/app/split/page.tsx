@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, createPerson, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw, RotateCcw } from "lucide-react";
+import { Camera, Plus, Minus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw, RotateCcw } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -169,6 +169,16 @@ export default function SplitPage() {
   // sincronía con la foto — se vuelve a mostrar ya alineado tras el commit.
   const [fineAngle, setFineAngle] = useState(0);
   const [straightening, setStraightening] = useState(false);
+  // Zoom/pan de la foto (para acercarse antes de recortar/girar) — misma
+  // mecánica ya probada del panel de revisión del paso 2 (pinch + arrastre,
+  // solo activo con >1x de zoom para no pelear con el arrastre del
+  // recuadro de recorte), pero con su propio estado: son dos fotos y
+  // momentos distintos (esta es la foto recién elegida, sin subir).
+  const [cropZoom, setCropZoom] = useState(1);
+  const [cropPan, setCropPan] = useState({ x: 0, y: 0 });
+  const cropZoomRef = useRef({ scale: 1, x: 0, y: 0 });
+  const cropPinchRef = useRef<{ dist: number; scale: number } | null>(null);
+  const cropPanStartRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const cropContainerRef = useRef<HTMLDivElement>(null);
   const cropDragRef = useRef<{ mode: "move" | "nw" | "ne" | "sw" | "se"; startX: number; startY: number; startRect: { x: number; y: number; w: number; h: number } } | null>(null);
 
@@ -275,6 +285,12 @@ export default function SplitPage() {
 
   // ── Step 1 ────────────────────────────────────────────────────
 
+  function resetCropZoomPan() {
+    cropZoomRef.current = { scale: 1, x: 0, y: 0 };
+    setCropZoom(1);
+    setCropPan({ x: 0, y: 0 });
+  }
+
   function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     e.target.value = ""; // permite volver a elegir la misma foto después
@@ -284,6 +300,7 @@ export default function SplitPage() {
     setCropRect({ x: 5, y: 5, w: 90, h: 90 });
     setFineAngle(0);
     setStraightening(false);
+    resetCropZoomPan();
   }
 
   function clearCropState() {
@@ -291,6 +308,7 @@ export default function SplitPage() {
     setCropFile(null);
     setFineAngle(0);
     setStraightening(false);
+    resetCropZoomPan();
   }
 
   // Si el navegador no puede mostrar la foto (ej. HEIC fuera de Safari/iOS),
@@ -341,6 +359,78 @@ export default function SplitPage() {
   }
   function onCropPointerUp() { cropDragRef.current = null; }
 
+  // Zoom/pan de la foto para acercarse antes de recortar/girar. Todo por
+  // Pointer Events (igual que el recuadro de recorte) en vez de touch+mouse
+  // por separado (como el panel del paso 2) — mezclar los dos sistemas de
+  // eventos sobre la misma zona arriesgaba que un toque en una esquina del
+  // recuadro también disparara el pan de la foto por debajo. Con Pointer
+  // Events, el propio recuadro ya hace stopPropagation en su handler y
+  // nunca llega a estos; touch, mouse y lápiz quedan cubiertos por igual.
+  // El arrastre de UN puntero solo mueve la foto cuando ya está con zoom
+  // (>1x) — a 1x, un solo puntero siempre es el arrastre del recuadro.
+  const cropActivePointers = useRef<Map<number, { x: number; y: number }>>(new Map());
+  function applyCropZoom(scale: number, x: number, y: number) {
+    cropZoomRef.current = { scale, x, y };
+    setCropZoom(scale);
+    setCropPan({ x, y });
+  }
+  function zoomCropBy(delta: number) {
+    const { x, y } = cropZoomRef.current;
+    const next = Math.min(4, Math.max(1, cropZoomRef.current.scale + delta));
+    next === 1 ? applyCropZoom(1, 0, 0) : applyCropZoom(next, x, y);
+  }
+  function onCropImgPointerDown(e: React.PointerEvent) {
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    cropActivePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pts = Array.from(cropActivePointers.current.values());
+    if (pts.length === 2) {
+      const dx = pts[0].x - pts[1].x, dy = pts[0].y - pts[1].y;
+      cropPinchRef.current = { dist: Math.hypot(dx, dy), scale: cropZoomRef.current.scale };
+      cropPanStartRef.current = null;
+    } else if (pts.length === 1 && cropZoomRef.current.scale > 1) {
+      cropPanStartRef.current = { x: e.clientX, y: e.clientY, px: cropZoomRef.current.x, py: cropZoomRef.current.y };
+    }
+  }
+  function onCropImgPointerMove(e: React.PointerEvent) {
+    if (!cropActivePointers.current.has(e.pointerId)) return;
+    cropActivePointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pts = Array.from(cropActivePointers.current.values());
+    if (pts.length === 2 && cropPinchRef.current) {
+      const dx = pts[0].x - pts[1].x, dy = pts[0].y - pts[1].y;
+      const ratio = Math.hypot(dx, dy) / cropPinchRef.current.dist;
+      const next = Math.min(4, Math.max(1, cropPinchRef.current.scale * ratio));
+      const { x, y } = cropZoomRef.current;
+      next === 1 ? applyCropZoom(1, 0, 0) : applyCropZoom(next, x, y);
+    } else if (pts.length === 1 && cropPanStartRef.current) {
+      const dx = e.clientX - cropPanStartRef.current.x, dy = e.clientY - cropPanStartRef.current.y;
+      applyCropZoom(cropZoomRef.current.scale, cropPanStartRef.current.px + dx, cropPanStartRef.current.py + dy);
+    }
+  }
+  function onCropImgPointerUp(e: React.PointerEvent) {
+    cropActivePointers.current.delete(e.pointerId);
+    if (cropActivePointers.current.size < 2) cropPinchRef.current = null;
+    if (cropActivePointers.current.size === 0) cropPanStartRef.current = null;
+  }
+
+  // Traduce un punto en % del CONTENEDOR (0-100, el marco donde se dibuja
+  // el recuadro de recorte) al píxel real correspondiente en la foto
+  // ORIGINAL — invierte el transform CSS de zoom/pan (mismo álgebra que
+  // aplica el navegador: transform-origin al centro, scale y luego
+  // translate) para que recortar dé la región que el usuario ve en
+  // pantalla, no la que habría sin zoom/pan.
+  function containerPctToNatural(
+    fxPct: number, fyPct: number,
+    containerW: number, containerH: number,
+    naturalW: number, naturalH: number,
+  ): { nx: number; ny: number } {
+    const { scale, x: panX, y: panY } = cropZoomRef.current;
+    const qx = (fxPct / 100) * containerW, qy = (fyPct / 100) * containerH;
+    const ox = containerW / 2, oy = containerH / 2;
+    const px = ox + (qx - ox - panX) / scale;
+    const py = oy + (qy - oy - panY) / scale;
+    return { nx: (px / containerW) * naturalW, ny: (py / containerH) * naturalH };
+  }
+
   function loadImageEl(url: string): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
       const el = new Image();
@@ -364,12 +454,19 @@ export default function SplitPage() {
     try {
       const img = await loadImageEl(url);
       // naturalWidth/Height del <img> ya vienen orientados según EXIF (igual
-      // que lo que se ve en pantalla) — se recorta sobre esas dimensiones y
-      // el canvas exporta un JPEG plano sin rotación pendiente.
-      const sx = (rect.x / 100) * img.naturalWidth;
-      const sy = (rect.y / 100) * img.naturalHeight;
-      const sw = (rect.w / 100) * img.naturalWidth;
-      const sh = (rect.h / 100) * img.naturalHeight;
+      // que lo que se ve en pantalla). El recuadro de recorte está en % del
+      // CONTENEDOR — si la foto tiene zoom/pan aplicado, eso ya no mapea
+      // 1:1 a la foto original, así que se traduce con la misma
+      // transformación que usó el navegador para mostrarla
+      // (containerPctToNatural) — así se recorta justo lo que el usuario
+      // vio en pantalla, con zoom o sin él.
+      const containerEl = cropContainerRef.current;
+      const cw = containerEl?.clientWidth || img.naturalWidth;
+      const ch = containerEl?.clientHeight || img.naturalHeight;
+      const p0 = containerPctToNatural(rect.x, rect.y, cw, ch, img.naturalWidth, img.naturalHeight);
+      const p1 = containerPctToNatural(rect.x + rect.w, rect.y + rect.h, cw, ch, img.naturalWidth, img.naturalHeight);
+      const sx = Math.min(p0.nx, p1.nx), sy = Math.min(p0.ny, p1.ny);
+      const sw = Math.abs(p1.nx - p0.nx), sh = Math.abs(p1.ny - p0.ny);
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(sw));
       canvas.height = Math.max(1, Math.round(sh));
@@ -413,6 +510,7 @@ export default function SplitPage() {
       setCropFile(rotated);
       setCropUrl(URL.createObjectURL(rotated));
       setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+      resetCropZoomPan();
     } catch {
       showError("No se pudo girar la foto");
     } finally {
@@ -451,6 +549,7 @@ export default function SplitPage() {
       setCropFile(rotated);
       setCropUrl(URL.createObjectURL(rotated));
       setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+      resetCropZoomPan();
     } catch {
       showError("No se pudo enderezar la foto");
     } finally {
@@ -1704,9 +1803,34 @@ export default function SplitPage() {
           <div className="space-y-6">
             {cropFile && cropUrl ? (
               <div className="space-y-4">
-                <p className="text-sm text-slate-600">
-                  Recorta la foto para dejar solo el texto de la boleta — así se lee mejor y las etiquetas de color caen en el lugar correcto.
-                </p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-slate-600">
+                    Recorta la foto para dejar solo el texto de la boleta — usa la grilla como referencia para que el texto quede derecho.
+                  </p>
+                  <div className="shrink-0 flex items-center gap-1">
+                    <button
+                      type="button" disabled={rotating} onClick={() => zoomCropBy(-0.5)}
+                      className="w-8 h-8 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
+                      aria-label="Alejar"
+                    >
+                      <Minus size={15} />
+                    </button>
+                    <button
+                      type="button" onClick={resetCropZoomPan}
+                      className="text-xs text-slate-500 w-10 text-center tabular-nums"
+                      aria-label="Restablecer zoom"
+                    >
+                      {Math.round(cropZoom * 100)}%
+                    </button>
+                    <button
+                      type="button" disabled={rotating} onClick={() => zoomCropBy(0.5)}
+                      className="w-8 h-8 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
+                      aria-label="Acercar"
+                    >
+                      <Plus size={15} />
+                    </button>
+                  </div>
+                </div>
                 <div
                   ref={cropContainerRef}
                   className="relative select-none touch-none rounded-xl overflow-hidden bg-slate-900 mx-auto"
@@ -1717,8 +1841,29 @@ export default function SplitPage() {
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={cropUrl} alt="" className="w-full block" draggable={false} onError={onCropImgError}
-                    style={{ transform: `rotate(${fineAngle}deg)` }}
+                    onPointerDown={onCropImgPointerDown}
+                    onPointerMove={onCropImgPointerMove}
+                    onPointerUp={onCropImgPointerUp}
+                    onPointerCancel={onCropImgPointerUp}
+                    style={{
+                      transform: `translate(${cropPan.x}px, ${cropPan.y}px) scale(${cropZoom}) rotate(${fineAngle}deg)`,
+                      transformOrigin: "center center",
+                      touchAction: "none",
+                      cursor: cropZoom > 1 ? "grab" : "default",
+                    }}
                   />
+                  {/* Grilla fija de referencia: NO gira ni hace zoom con la foto
+                      (es hermana del <img>, fuera de su transform) — sirve para
+                      ver, mientras se gira o se acerca, si el texto de la
+                      boleta va quedando paralelo a estas líneas. */}
+                  <div className="absolute inset-0 pointer-events-none">
+                    {[10, 20, 30, 40, 50, 60, 70, 80, 90].map((p) => (
+                      <div key={`h${p}`} className="absolute left-0 right-0 border-t border-lime-400/40" style={{ top: `${p}%` }} />
+                    ))}
+                    {[25, 50, 75].map((p) => (
+                      <div key={`v${p}`} className="absolute top-0 bottom-0 border-l border-lime-400/25" style={{ left: `${p}%` }} />
+                    ))}
+                  </div>
                   {!straightening && (
                     <div
                       className="absolute border-2 border-white cursor-move"
