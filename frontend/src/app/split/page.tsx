@@ -786,7 +786,6 @@ function SplitPageInner({
     try {
       let updated: Bill;
       if (existing) {
-        if (existing.is_me) return;
         updated = await removeParticipant(bill.id, existing.id);
       } else {
         updated = await addParticipant(bill.id, pid);
@@ -2189,7 +2188,7 @@ function SplitPageInner({
                     const inBill = bill.participants.some((bp) => bp.person_id === p.id);
                     return (
                       <div key={p.id} className="relative">
-                        <Avatar name={p.name} color={p.color} selected={inBill} locked={!!p.is_me} onClick={() => toggleParticipant(p.id)} />
+                        <Avatar name={p.name} color={p.color} selected={inBill} onClick={() => toggleParticipant(p.id)} />
                         {p.is_me && <span className="absolute -top-1 -right-1 bg-indigo-600 text-white text-[8px] font-bold px-1 rounded-full">Yo</span>}
                       </div>
                     );

@@ -416,8 +416,13 @@ def remove_participant(
     ).first()
     if not p:
         raise HTTPException(404, "Participant not found")
-    if p.person.is_me:
-        raise HTTPException(400, "Cannot remove yourself from the bill")
+    # "Yo" se puede sacar igual que cualquier otra persona — pedido explícito
+    # del usuario (a veces paga o registra la cuenta sin haber consumido
+    # nada). El resto del código ya maneja bien que "yo" no esté en
+    # bill.participants: my_share cae a 0.0 (`me_p.owes_amount if me_p else
+    # 0.0`), finalize no crea gasto propio si no hay me_participant, y
+    # _assign_equal reparte entre quien quede sin asumir que "yo" está —
+    # nunca dependió de este bloqueo para funcionar.
     db.delete(p)
     db.flush()
     _assign_equal(bill, db)
