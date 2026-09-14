@@ -1648,9 +1648,20 @@ export default function SplitPage() {
           <div className="space-y-6">
             {cropFile && cropUrl ? (
               <div className="space-y-4">
-                <p className="text-sm text-slate-600 text-center">
-                  Recorta la foto para dejar solo el texto de la boleta — así se lee mejor y las etiquetas de color caen en el lugar correcto.
-                </p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-slate-600">
+                    Recorta la foto para dejar solo el texto de la boleta — así se lee mejor y las etiquetas de color caen en el lugar correcto.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={rotating}
+                    onClick={rotateCropImage}
+                    className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
+                    aria-label="Girar foto"
+                  >
+                    {rotating ? <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" /> : <RotateCw size={18} />}
+                  </button>
+                </div>
                 <div
                   ref={cropContainerRef}
                   className="relative select-none touch-none rounded-xl overflow-hidden bg-slate-900 mx-auto"
@@ -1660,15 +1671,6 @@ export default function SplitPage() {
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={cropUrl} alt="" className="w-full block" draggable={false} onError={onCropImgError} />
-                  <button
-                    type="button"
-                    disabled={rotating}
-                    onClick={rotateCropImage}
-                    className="absolute top-2 right-2 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center disabled:opacity-40"
-                    aria-label="Girar foto"
-                  >
-                    {rotating ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <RotateCw size={18} />}
-                  </button>
                   <div
                     className="absolute border-2 border-white cursor-move"
                     style={{
