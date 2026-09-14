@@ -1750,6 +1750,38 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
     return out
 
 
+def _populate_positions(items: list[ParsedItem], data_url: str) -> None:
+    """Best-effort: rellena `position_y` en cada ítem llamando al servicio
+    interno aislado `services/ocr_position` (Tesseract + emparejamiento por
+    orden — ver ese servicio para el detalle). Es opcional por diseño: si el
+    servicio no está configurado (`OCR_POSITION_URL` sin definir, p.ej. en
+    dev local), falla, tarda más del límite corto, o no encuentra match para
+    algún ítem, esos `position_y` simplemente quedan en None — el frontend
+    ya cae al reparto parejo (`defaultBandPct`) en ese caso. Nunca lanza,
+    nunca bloquea la subida de la boleta por esto."""
+    import os
+    url = os.environ.get("OCR_POSITION_URL")
+    if not url or not items:
+        return
+    try:
+        import httpx
+        b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
+        resp = httpx.post(
+            f"{url.rstrip('/')}/position",
+            json={"image_b64": b64, "items": [it.name for it in items]},
+            timeout=4.0,
+        )
+        if resp.status_code != 200:
+            return
+        results = resp.json().get("items", [])
+        # Emparejar por POSICIÓN en la lista (mismo orden, misma longitud
+        # que se envió) — no por nombre, que puede repetirse entre ítems.
+        for it, r in zip(items, results):
+            it.position_y = r.get("position_y")
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[ocr] servicio de posición no disponible ({_exc}) — reparto parejo")
+
+
 def vision_parse_bill(
     image_bytes: bytes, *, db=None, user_id=None,
 ) -> Optional[ParseResult]:
@@ -1854,6 +1886,7 @@ def vision_parse_bill(
             )
             for it in parsed["items"]
         ]
+        _populate_positions(items, data_url)
         try:
             parsed_date = _parse_date(parsed["date"]) if parsed["date"] else date.today()
         except Exception:

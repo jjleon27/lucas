@@ -1,18 +1,40 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": null,
-  "buildCommand": "npm run build",
-  "outputDirectory": "frontend/out",
   "cleanUrls": true,
   "trailingSlash": false,
-  "functions": {
-    "api/index.py": {
-      "includeFiles": "backend/**",
-      "maxDuration": 180
+  "services": {
+    "web": {
+      "root": ".",
+      "buildCommand": "npm run build",
+      "outputDirectory": "frontend/out"
+    },
+    "api": {
+      "root": ".",
+      "entrypoint": "api.index:app",
+      "functions": {
+        "api/index.py": {
+          "includeFiles": "backend/**",
+          "maxDuration": 180
+        }
+      },
+      "bindings": [
+        {
+          "type": "service",
+          "service": "ocr_position",
+          "format": "url",
+          "env": "OCR_POSITION_URL"
+        }
+      ]
+    },
+    "ocr_position": {
+      "root": "services/ocr_position",
+      "runtime": "container",
+      "entrypoint": "Dockerfile.vercel"
     }
   },
   "rewrites": [
-    { "source": "/api", "destination": "/api/index" },
-    { "source": "/api/(.*)", "destination": "/api/index" }
+    { "source": "/api", "destination": { "service": "api" } },
+    { "source": "/api/(.*)", "destination": { "service": "api" } },
+    { "source": "/(.*)", "destination": { "service": "web" } }
   ]
 }

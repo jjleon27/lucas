@@ -1,16 +1,16 @@
 # SESSION STATE
-*Auto-guardado por hook Stop · 2026-09-11 06:45:26*
+*Auto-guardado por hook Stop · 2026-09-13 22:16:22*
 
 ## Presión de contexto
-- Tool uses esta sesión: **1143** — 🔴 MUY ALTA — posible compactación pronto
+- Tool uses esta sesión: **1380** — 🔴 MUY ALTA — posible compactación pronto
 
 ## Última petición del usuario
-pero no pues, si chatgpt pudo entonces deberiamos poder pues! elpoblema debe ser en el prompt o en el modelo...evalua
+da gual cree nueva cuenta
 
 ## Último trabajo del asistente
-Listo, guardado. Retomando el tema de colores — así quedó la investigación:
+**Resumen de lo que encontré:**
 
-**El plan**: usar **Tesseract** (ya viene instalado en el proyecto, grati
+1. **Login/signup funcionan bien ahora** — probé con una cuenta de prueba (no la tuya) directo en producción: signup 
 
 ## Archivos modificados esta sesión
 - `/Users/kako2/.claude/projects/-Users-kako2-Documents-lucas/memory/MEMORY.md`
@@ -63,6 +63,9 @@ Listo, guardado. Retomando el tema de colores — así quedó la investigación:
 - `frontend/src/components/TransactionList.tsx`
 - `frontend/src/lib/api.ts`
 - `package.json`
+- `services/ocr_position/Dockerfile.vercel`
+- `services/ocr_position/app/main.py`
+- `services/ocr_position/requirements.txt`
 - `vercel.json`
 
 ## Cómo continuar en la próxima sesión

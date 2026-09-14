@@ -632,3 +632,86 @@ $135.000 exacto en 3 corridas seguidas). Queda un caso residual chico
 pierde en el reformateo) documentado como límite conocido, no se sigue
 puliendo para no arriesgar lo que ya funciona. Commiteado (`817277d`),
 pusheado, deployado.
+
+### Iteración 2026-09-11/12 (cont. 14) — posición real de bandas: servicio Tesseract aislado + migración a Vercel Services
+
+El usuario insistió en que las sombras de color deben caer SOBRE el texto
+real del ítem en la foto, no en cualquier parte ("etiquetas movibles").
+Se probó primero pedirle a la IA de visión coordenadas/bbox directamente
+en el prompt — descartado: en ítems repetidos (ej. "Promo Alto del
+Carmen" x7) el modelo devuelve posiciones inventadas, uniformemente
+espaciadas, no lectura real (confirmado también por investigación externa
+sobre el mismo problema en Gemini/OpenAI). También se probó pedirle a la
+IA que coloreara la foto directamente (`gpt-image-1` edit) — descartado
+de inmediato: alucina datos reales de la boleta (año, hora, total,
+nombre del local todos cambiados en la imagen generada) — inaceptable en
+una app financiera.
+
+**Solución real**: un microservicio interno aislado
+(`services/ocr_position/`) que corre Tesseract (OCR clásico, gratis, con
+cajas de texto reales por línea) sobre la misma foto, y empareja cada
+nombre de ítem (ya leído bien por la IA, en orden) contra las líneas de
+Tesseract por similitud de texto (`difflib.SequenceMatcher`), buscando
+siempre HACIA ADELANTE desde la última línea usada — sin límite de
+ventana (una boleta real trae 15-20 líneas de encabezado antes del primer
+ítem; una ventana angosta nunca llegaba a él). El backend llama a este
+servicio de forma best-effort (`_populate_positions` en
+`backend/app/ocr.py`) — si falla, tarda, o no hay match confiable, la
+posición queda `null` y el frontend cae al reparto parejo que ya existía
+(nunca bloquea la subida de la boleta).
+
+**Costo real, no anticipado**: para desplegar un servicio en Docker en
+Vercel hubo que migrar TODO `vercel.json` de la config clásica al modelo
+de **Vercel Services** (tres servicios: `web`, `api`, `ocr_position`),
+confirmado con el usuario antes de proceder ("Sí, migrar igual, con
+cuidado, probando antes de reemplazar producción"). Problemas resueltos
+uno a uno (detalle completo en el historial de commits): sintaxis de
+`entrypoint` para Python (`api.index:app`, ruta de módulo con punto, no
+de archivo), CLI local desactualizada (subida a 59.16.0), caché de build
+viejo, variables de entorno escaseadas a "Production" únicamente
+(preexistente, no causado por la migración). Verificado en preview real
+vía `vercel curl`/`vercel logs -j` (Deployment Protection bloquea curl
+directo; estos comandos de la CLI sí tienen acceso). El usuario promovió
+a producción él mismo (`vercel --prod --yes`, bloqueado para mí por el
+clasificador de modo automático).
+
+Resultado: bandas de color ahora caen sobre la línea real del ítem en la
+mayoría de los casos (ej. Lider Quilicura, incluida la línea de
+descuento negativa, quedó exacta). Precisión de Tesseract sobre fotos de
+recibo térmico es inherentemente parcial (~60% de caracteres correctos
+según investigación externa, confirmado en vivo: "Bar Autóctono" leído
+como "har M Loctond") — el emparejamiento por orden + umbral de similitud
+absorbe bastante de ese ruido, pero no hay garantía de 100% de ítems
+posicionados; los que no calzan caen al reparto parejo, no rompen nada.
+
+### Iteración 2026-09-12/13 (cont. 15) — 401 post-deploy (transitorio) + overlap de bandas
+
+**401 al iniciar sesión reportado justo después de promover a
+producción.** Investigado a fondo: `/api/auth/signup` y `/api/auth/login`
+probados directo por curl con form-encoded (mi primer intento usó JSON,
+dio 422 engañoso) — la lógica del login es correcta, 401 real solo para
+credenciales realmente inválidas. `vercel logs -j` mostró varios 401 en
+endpoints protegidos (`/api/bills`, `/api/accounts`) — esperado sin
+sesión. Se hizo login/signup limpio desde la UI real en Chrome con una
+cuenta de prueba descartable, limpiando `localStorage` antes — ambos 200,
+JWT válido, llegó a `/dashboard` sin problema. Conclusión: el 401 del
+usuario fue lo más probable un bundle de frontend cacheado del momento
+exacto de transición del deploy — no se pudo reproducir ni confirmar una
+causa real ligada a la migración. Se le pidió reintentar tras hard
+refresh; no llegó confirmación antes de que reportara el siguiente
+problema (overlap de bandas).
+
+**Overlap de bandas (Bar La Providencia, 13 ítems)**: la altura de cada
+banda de color quedó fija en 26px desde el rediseño del prompt libre —
+`bbox_y0`/`bbox_y1` (de donde salía antes la altura real) ya no lo produce
+el backend, así que `hasYBbox` daba siempre `false`. Con el servicio de
+Tesseract ubicando ítems reales muy cerca entre sí, 26px fijos alcanzaba
+para pisar al vecino. Fix general (sin tocar el backend): la altura de
+cada banda se calcula ahora a partir de la distancia real (en %) hasta el
+ítem anterior/siguiente vía `bandPctFor` — la misma función que ya resuelve
+tanto posición real de Tesseract como reparto parejo, así que el fix
+cubre ambos casos sin distinguirlos. Acotado a `[10px, 26px]`, usando 80%
+del hueco disponible como margen. Build verificado, commiteado
+(`f40c9c8`), pusheado, deployado a producción (`vercel --prod --yes`,
+esta vez SIN bloqueo del clasificador). `curl /api/health` OK
+post-deploy.
