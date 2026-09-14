@@ -1212,3 +1212,41 @@ nueva de un proveedor**: el entorno local puede tener una versión distinta a
 la pineada en `requirements.txt` — verificar SIEMPRE la versión realmente
 pineada (no solo lo que hay instalado localmente) antes de dar por buena una
 prueba local de un parámetro de API nuevo.
+
+---
+
+## Cont. 24 (2026-09-14) — sacar el reintento completo (ejecución del plan de Fable, por fin)
+
+El plan de Fable de la sección anterior (evaluación arquitectónica del pipeline)
+quedó recomendado pero SIN ejecutar mientras se atendían otros pedidos del
+usuario (participantes, saldo combinado, limpieza de storage) — el usuario
+volvió a probar una boleta grande, siguió tardando 30-70s+, y con razón
+reclamó que se estaba parchando en vez de resolver de fondo.
+
+Log real de producción (bill 147) confirmó exactamente lo que Fable ya había
+encontrado: reintento disparado por "descuadre=8.0%", dio el mismo resultado
+que el original — la 3ra vez que pasaba lo mismo con la misma clase de
+boleta en el mismo día.
+
+**Ejecutado**: se sacó el bloque de reintento completo de `vision_parse_bill`
+(`backend/app/ocr.py`) — `_evaluate` volvió a su forma simple (arma ítems,
+pide posición, marca `needs_review`), sin `ocr_lines`/`rel`/`n_suspect` que
+solo existían para sostener la comparación del reintento. `needs_review`
+(gratis, por ítem) queda como única red de seguridad, tal como recomendaba
+Fable.
+
+**También se probó y se revirtió** una segunda palanca del mismo plan
+(acotar el escalado de CLAHE en `services/ocr_position` cuando los ítems sin
+emparejar son nombres repetidos entre sí): mejoró el caso de 23 ítems que la
+motivó, pero rompió `bar_autoctono` rotado (17/17 → 8/17) porque el cap
+cortaba ANTES de darle una oportunidad al enderezado (deskew), un problema
+geométrico distinto y no relacionado a la repetición de nombres. Se revirtió
+por completo al confirmar la regresión con el eval — no se envía nada sin
+validar, aunque cueste una ganancia de velocidad extra.
+
+**Validación** (3 corridas del eval real, no 1 — por la varianza de ±6 puntos
+que el propio Fable ya había medido): 87.6% / 83.6% / 86.9%, media 86.0%
+(vs ~87.7% del baseline con reintento — diferencia de 1.7 puntos, dentro del
+ruido). Las 27 corridas de boleta (9 fotos × 3) dieron **0 reintentos y
+ninguna pasó de 14.5s** — antes, el peor caso llegaba a 78-89s. Desplegado y
+verificado (health check).
