@@ -1056,3 +1056,29 @@ y `ponzano_madrid` (fallaron en la 2da corrida pero no en la 1ra — más eviden
 inestabilidad, no determinismo perfecto del modelo a temperature=0), y explorar las
 palancas de velocidad (tamaño de imagen a visión, keep-alive HTTP hacia
 `services/ocr_position`) con los tiempos ya instrumentados.
+
+**Addendum mismo día — boletas reales del usuario (`/Users/kako2/Downloads/Boletas`)**:
+26 fotos reales chilenas (varias son fotos más limpias de boletas ya en el eval set —
+útiles sin re-etiquetar; otras genuinamente nuevas). Hallazgos:
+
+- **Metodológico, importante**: las pruebas locales de esta sesión corrían con
+  `OCR_POSITION_URL` sin configurar (`.env` local no lo trae) — el chequeo de
+  alucinaciones nunca se activaba. Se levantó el servicio localmente
+  (`uvicorn app.main:app --port 8811`) para probar el pipeline COMPLETO como en
+  producción. Con eso confirmado: la foto de "Plateada" (2 fotos distintas de la
+  misma boleta física) da ~33% de confianza de Tesseract en ambas — el límite de
+  calidad de imagen documentado antes es real y reproducible, no una casualidad de
+  una sola foto.
+- 3 boletas nuevas simples (Sushi Plop, Fabimfood, Sand.Cheese/Pollo Jr) funcionaron
+  perfecto de punta a punta (montos, ítems, posición).
+- Boleta de 22+ ítems con nombres repetidos (Stolichnaya/Michelada/Schop x3-4 veces):
+  **89 segundos** con reintento — confirma que velocidad es un problema real en
+  boletas grandes, no solo percepción. Position matching solo emparejó ~6 de 28 tras
+  el reintento (forward-search se queda corto con tantos repetidos).
+- Implementada la palanca de velocidad de menor riesgo del plan de Fable: cliente
+  HTTP reusado (keep-alive) hacia `services/ocr_position` en vez de abrir conexión
+  nueva por boleta (`_populate_positions`). Sin cambio de comportamiento, validado.
+
+Pendiente: instrumentar mejor el desglose de tiempo en boletas grandes (la captura
+de esta corrida se perdió por un pipe propio), y decidir si vale la pena repensar el
+reintento completo (2 llamadas más) quando la boleta ya es grande de por sí.
