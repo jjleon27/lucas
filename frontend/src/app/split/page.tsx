@@ -92,11 +92,37 @@ interface BillListRow {
   id: number; merchant: string; date: string; total_amount: number; status: string;
   participants: number; my_share: number; transaction_id: number | null; created_at: string;
 }
+
+interface CombinedTransfer {
+  from_person_id: number; to_person_id: number; amount: number;
+  from_name: string; to_name: string; from_color: string; to_color: string;
+  from_is_me: boolean; to_is_me: boolean;
+}
+interface CombinedSettlement {
+  bill_ids: number[];
+  bills: { id: number; merchant: string; date: string; total_amount: number }[];
+  transfers: CombinedTransfer[];
+}
+const combineSettlement = (billIds: number[]) =>
+  billReq<CombinedSettlement>("/bills/combine-settlement", { method: "POST", body: JSON.stringify({ bill_ids: billIds }) });
 const listBills = () => billReq<BillListRow[]>("/bills");
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
+// En Chile no se propinea en el supermercado — mostrar el paso de "Propina"
+// ahí es ruido/confuso, no una opción real. Heurística simple por nombre de
+// local (las cadenas más comunes) en vez de intentar adivinar del tipo de
+// ítems — el nombre del local ya viene leído por el OCR, es la señal más
+// directa y menos propensa a falsos positivos que analizar la lista de ítems.
+const SUPERMARKET_CHAINS = [
+  "lider", "jumbo", "santa isabel", "unimarc", "tottus", "ekono",
+  "ok market", "acuenta", "mayorista 10", "super 10", "alvi", "montserrat",
+];
+const isSupermarket = (merchant: string) => {
+  const m = merchant.toLowerCase();
+  return SUPERMARKET_CHAINS.some((chain) => m.includes(chain));
+};
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 // Un color pastel distinto por ítem, SIN repetirse por más ítems que tenga la
 // boleta (la paleta fija de 8 colores hacía que el ítem 1 y el 9 quedaran del
@@ -324,6 +350,13 @@ function SplitPageInner({
   const [dateDraft, setDateDraft] = useState("");
   // Step 1 — historial de divisiones guardadas
   const [pastBills, setPastBills] = useState<BillListRow[] | null>(null);
+  // Combinar varias boletas ya finalizadas (distintos pagadores, ej. regalo +
+  // torta + brunch de un cumpleaños) en un solo saldo neto con el mínimo de
+  // transferencias — ver combine-settlement en el backend.
+  const [combineMode, setCombineMode] = useState(false);
+  const [combineSelected, setCombineSelected] = useState<Set<number>>(new Set());
+  const [combineResult, setCombineResult] = useState<CombinedSettlement | null>(null);
+  const [combineBusy, setCombineBusy] = useState(false);
 
   const showError = useCallback((msg: string) => setError(msg), []);
   const showSuccess = useCallback((msg: string) => setSuccessMsg(msg), []);
@@ -720,6 +753,14 @@ function SplitPageInner({
   // ── Step 2 (items + assign) ────────────────────────────────────
 
   const subtotal = bill ? bill.items.reduce((s, i) => s + i.line_total, 0) : 0;
+  // Base para calcular la propina: SIN los descuentos (ítems con valor
+  // negativo, ej. "Descuento torta -$8.900" cuando el local regala algo).
+  // Las boletas reales calculan la propina sugerida sobre el consumo ANTES
+  // del descuento, y recién después descuentan del total final — no del
+  // monto sobre el que se calculó la propina. `subtotal` (con descuentos
+  // incluidos) sigue siendo lo que la gente efectivamente paga/consume;
+  // esto solo cambia la BASE del cálculo del %.
+  const subtotalForTip = bill ? bill.items.reduce((s, i) => s + Math.max(0, i.line_total), 0) : 0;
 
   async function saveEditItem() {
     if (!bill || editItemId === null) return;
@@ -745,7 +786,7 @@ function SplitPageInner({
   async function saveTip() {
     if (!bill) return;
     const raw = parseFloat(tipDraft) || 0;
-    const tip_amount = tipMode === "pct" ? Math.round(subtotal * raw / 100) : Math.round(raw);
+    const tip_amount = tipMode === "pct" ? Math.round(subtotalForTip * raw / 100) : Math.round(raw);
     try {
       setBill(await patchBill(bill.id, { tip_amount }));
       setTipMode("hidden");
@@ -1873,7 +1914,9 @@ function SplitPageInner({
               Boleta original: {clp(bill.total_amount)} · diferencia con ítems: {clp(Math.abs(bill.total_amount - subtotal))}
             </div>
           )}
-          {/* Propina row */}
+          {/* Propina row — oculto en supermercados (no se propinea ahí, ver
+              isSupermarket) para no confundir con una opción que no aplica. */}
+          {!isSupermarket(bill.merchant) && (
           <div className="border-t border-slate-100 px-4 py-2.5">
             {tipMode === "hidden" ? (
               <div className="flex items-center justify-between">
@@ -1881,7 +1924,7 @@ function SplitPageInner({
                   Propina{bill.tip_amount > 0 ? `: ${clp(bill.tip_amount)}` : ""}
                 </span>
                 <button
-                  onClick={() => { setTipMode("pct"); setTipDraft(bill.tip_amount > 0 ? String(Math.round(bill.tip_amount / subtotal * 100)) : "10"); }}
+                  onClick={() => { setTipMode("pct"); setTipDraft(bill.tip_amount > 0 ? String(Math.round(bill.tip_amount / subtotalForTip * 100)) : "10"); }}
                   className="text-xs text-indigo-600 font-medium"
                 >
                   {bill.tip_amount > 0 ? "Editar" : "+ Agregar"}
@@ -1906,7 +1949,7 @@ function SplitPageInner({
                     onKeyDown={(e) => { if (e.key === "Enter") saveTip(); }}
                   />
                   {tipMode === "pct" && tipDraft && (
-                    <span className="text-xs text-slate-400 shrink-0">{clp(Math.round(subtotal * (parseFloat(tipDraft) || 0) / 100))}</span>
+                    <span className="text-xs text-slate-400 shrink-0">{clp(Math.round(subtotalForTip * (parseFloat(tipDraft) || 0) / 100))}</span>
                   )}
                   <button onClick={saveTip} className="bg-indigo-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shrink-0">OK</button>
                   <button onClick={() => { setTipMode("hidden"); setTipDraft(""); }} className="text-slate-400 text-xs px-1">✕</button>
@@ -1914,6 +1957,7 @@ function SplitPageInner({
               </div>
             )}
           </div>
+          )}
           {/* Gran total */}
           <div className="border-t border-slate-200 px-4 py-2.5 flex items-center justify-between bg-slate-50">
             <span className="text-sm font-semibold text-slate-700">Total</span>
@@ -2150,19 +2194,53 @@ function SplitPageInner({
 
             {!cropFile && pastBills && pastBills.filter((b) => b.status === "finalized").length > 0 && (
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Divisiones guardadas</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Divisiones guardadas</p>
+                  {pastBills.filter((b) => b.status === "finalized").length >= 2 && (
+                    <button
+                      onClick={() => { setCombineMode((v) => !v); setCombineSelected(new Set()); setCombineResult(null); }}
+                      className="text-xs text-indigo-600 font-medium"
+                    >
+                      {combineMode ? "Cancelar" : "Combinar boletas"}
+                    </button>
+                  )}
+                </div>
+                {/* Combinar varias boletas: pensado para cuando 4-5 boletas
+                    separadas de una misma salida (regalo, torta, brunch) las
+                    pagaron personas distintas — en vez de liquidar cada una
+                    por separado (transferencias chicas, a veces en
+                    direcciones opuestas entre las mismas dos personas), se
+                    junta el saldo NETO por persona con el mínimo de
+                    transferencias posible (ver combine-settlement). */}
+                {combineMode && (
+                  <p className="text-xs text-slate-400 mb-2">Elegí 2 o más para ver el saldo neto combinado (mínimas transferencias).</p>
+                )}
                 <ul className="space-y-2">
                   {pastBills.filter((b) => b.status === "finalized").map((b) => (
                     <li key={b.id}>
                       <button
-                        onClick={() => openPastBill(b.id)}
-                        className="w-full flex items-center justify-between bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-left hover:border-indigo-300"
+                        onClick={() => {
+                          if (!combineMode) { openPastBill(b.id); return; }
+                          setCombineSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(b.id)) next.delete(b.id); else next.add(b.id);
+                            return next;
+                          });
+                        }}
+                        className={`w-full flex items-center justify-between bg-white border rounded-xl px-3 py-2.5 text-left ${combineMode && combineSelected.has(b.id) ? "border-indigo-500 ring-1 ring-indigo-500" : "border-slate-200 hover:border-indigo-300"}`}
                       >
-                        <span className="min-w-0">
-                          <span className="block text-sm font-medium truncate">{b.merchant || "División"}</span>
-                          <span className="block text-xs text-slate-400">
-                            {b.date} · {b.participants} pers. · total {clp(b.total_amount)}
-                            {b.transaction_id ? "" : " · sin gasto"}
+                        <span className="min-w-0 flex items-center gap-2">
+                          {combineMode && (
+                            <span className={`w-4 h-4 rounded shrink-0 border-2 flex items-center justify-center ${combineSelected.has(b.id) ? "bg-indigo-600 border-indigo-600" : "border-slate-300"}`}>
+                              {combineSelected.has(b.id) && <Check size={11} className="text-white" />}
+                            </span>
+                          )}
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium truncate">{b.merchant || "División"}</span>
+                            <span className="block text-xs text-slate-400">
+                              {b.date} · {b.participants} pers. · total {clp(b.total_amount)}
+                              {b.transaction_id ? "" : " · sin gasto"}
+                            </span>
                           </span>
                         </span>
                         <span className="text-sm font-semibold shrink-0 ml-2">{clp(b.my_share)}</span>
@@ -2170,6 +2248,46 @@ function SplitPageInner({
                     </li>
                   ))}
                 </ul>
+                {combineMode && combineSelected.size >= 2 && (
+                  <button
+                    disabled={combineBusy}
+                    onClick={async () => {
+                      setCombineBusy(true);
+                      try { setCombineResult(await combineSettlement(Array.from(combineSelected))); }
+                      catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+                      finally { setCombineBusy(false); }
+                    }}
+                    className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl"
+                  >
+                    {combineBusy ? "Calculando…" : `Ver saldo combinado (${combineSelected.size})`}
+                  </button>
+                )}
+                {combineResult && (
+                  <div className="mt-3 bg-white rounded-2xl shadow-sm p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-slate-700">Saldo combinado — {combineResult.bills.length} boletas</p>
+                      <button onClick={() => setCombineResult(null)} className="text-slate-400 text-xs">✕</button>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      {combineResult.bills.map((cb) => cb.merchant || "División").join(" · ")} — total {clp(combineResult.bills.reduce((s, cb) => s + cb.total_amount, 0))}
+                    </p>
+                    {combineResult.transfers.length === 0 ? (
+                      <p className="text-sm text-slate-500">Todo saldado — nadie le debe a nadie.</p>
+                    ) : (
+                      <ul className="divide-y divide-slate-100">
+                        {combineResult.transfers.map((t, i) => (
+                          <li key={i} className="py-2 text-sm text-slate-700">
+                            {t.from_is_me
+                              ? <>Le debes {clp(t.amount)} a <span className="font-semibold">{t.to_name}</span></>
+                              : t.to_is_me
+                                ? <><span className="font-semibold">{t.from_name}</span> te debe {clp(t.amount)}</>
+                                : <><span className="font-semibold">{t.from_name}</span> le debe {clp(t.amount)} a <span className="font-semibold">{t.to_name}</span></>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>

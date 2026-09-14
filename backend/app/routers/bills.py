@@ -91,6 +91,10 @@ class SettleDebtPayload(BaseModel):
     pass
 
 
+class CombineSettlementPayload(BaseModel):
+    bill_ids: list[int] = Field(min_length=2)
+
+
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 def _get_bill(bill_id: int, user_id: int, db: Session) -> Bill:
@@ -723,6 +727,76 @@ def finalize_bill(
     db.commit()
     db.refresh(bill)
     return _bill_out(bill)
+
+
+# ── Saldo combinado de varias boletas ───────────────────────────────────────────
+
+@router.post("/combine-settlement")
+def combine_settlement(
+    payload: CombineSettlementPayload,
+    current: UserOut = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Junta las deudas YA calculadas (`BillDebt`, creadas al finalizar cada
+    boleta) de varias boletas — pensado para el caso real de un cumpleaños
+    o salida con varias cuentas separadas (regalo, torta, brunch) pagadas
+    por personas distintas: en vez de liquidar cada boleta por separado
+    (varias transferencias chicas, algunas en direcciones opuestas entre
+    las mismas dos personas), se juntan los saldos por PERSONA (no por
+    participante — el participante es por-boleta, la persona es estable
+    entre boletas) y se vuelve a simplificar con el mismo algoritmo greedy
+    que ya usa `finalize` — el mínimo de transferencias posible para saldar
+    todo junto.
+
+    No crea ninguna boleta/entidad nueva — es una vista computada sobre
+    boletas que YA existen y YA están finalizadas; no hace falta un
+    concepto nuevo de "evento" en la base de datos para esto."""
+    if len(set(payload.bill_ids)) != len(payload.bill_ids):
+        raise HTTPException(400, "Boletas repetidas en la selección")
+    bills = db.query(Bill).filter(Bill.id.in_(payload.bill_ids), Bill.user_id == current.id).all()
+    if len(bills) != len(payload.bill_ids):
+        raise HTTPException(404, "Alguna boleta no existe")
+    for b in bills:
+        if b.status != "finalized":
+            raise HTTPException(400, f"«{b.merchant or 'Boleta'}» todavía no está finalizada")
+
+    # balances[person_id]: positivo = le deben en neto, negativo = debe en
+    # neto — misma convención que ya usa `_simplify_debts` en finalize
+    # (paid - owed). Se arma sumando las BillDebt PENDIENTES de cada boleta
+    # (una ya liquidada dentro de su propia boleta no debe volver a contar acá).
+    balances: dict[int, float] = {}
+    people_info: dict[int, dict] = {}
+
+    def _touch(person: Person) -> None:
+        if person.id not in people_info:
+            people_info[person.id] = {"name": person.name, "color": person.color, "is_me": person.is_me}
+            balances.setdefault(person.id, 0.0)
+
+    for b in bills:
+        debts = db.query(BillDebt).filter(BillDebt.bill_id == b.id, BillDebt.status == "pending").all()
+        for d in debts:
+            from_person = d.from_participant.person
+            to_person = d.to_participant.person
+            _touch(from_person)
+            _touch(to_person)
+            balances[from_person.id] = round(balances[from_person.id] - d.amount, 2)
+            balances[to_person.id] = round(balances[to_person.id] + d.amount, 2)
+
+    transfers = _simplify_debts(balances)
+    return {
+        "bill_ids": payload.bill_ids,
+        "bills": [{"id": b.id, "merchant": b.merchant, "date": b.date.isoformat(), "total_amount": b.total_amount}
+                  for b in bills],
+        "transfers": [
+            {
+                "from_person_id": f, "to_person_id": t, "amount": a,
+                "from_name": people_info[f]["name"], "to_name": people_info[t]["name"],
+                "from_color": people_info[f]["color"], "to_color": people_info[t]["color"],
+                "from_is_me": people_info[f]["is_me"], "to_is_me": people_info[t]["is_me"],
+            }
+            for f, t, a in transfers
+        ],
+    }
 
 
 # ── Public share ──────────────────────────────────────────────────────────────

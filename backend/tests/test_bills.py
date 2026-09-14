@@ -164,3 +164,64 @@ def test_item_bbox_fields_present_and_null_without_ocr(client, h, other_person):
     for f in ("bbox_y0", "bbox_y1"):
         assert f in item and item[f] is None
     assert item["segments"] == []
+
+
+@pytest.fixture(scope="module")
+def third_person(client, h):
+    r = client.post("/split/people", json={"name": "Ana", "color": "#22c55e"}, headers=h)
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _bill_3way(client, h, pedro_id, ana_id, *, total_each: float, payer: str, merchant: str):
+    """Boleta con Yo+Pedro+Ana, 1 ítem repartido en 3 partes iguales,
+    finalizada con `payer` ("me"/"pedro"/"ana") pagando el total."""
+    b = client.post("/bills", json={"merchant": merchant, "currency": "CLP"}, headers=h).json()
+    bid = b["id"]
+    client.post(f"/bills/{bid}/participants", json={"person_id": pedro_id}, headers=h)
+    client.post(f"/bills/{bid}/participants", json={"person_id": ana_id}, headers=h)
+    b = client.get(f"/bills/{bid}", headers=h).json()
+    me = next(p for p in b["participants"] if p["is_me"])
+    pedro = next(p for p in b["participants"] if p["person_id"] == pedro_id)
+    ana = next(p for p in b["participants"] if p["person_id"] == ana_id)
+    total = total_each * 3
+    client.post(f"/bills/{bid}/items", json={"name": merchant, "qty": 1, "unit_price": total}, headers=h)
+    payer_id = {"me": me["id"], "pedro": pedro["id"], "ana": ana["id"]}[payer]
+    client.post(f"/bills/{bid}/set-payers", json=[{"participant_id": payer_id, "paid_amount": total}], headers=h)
+    r = client.post(f"/bills/{bid}/finalize", json={"save_to_expense": False}, headers=h)
+    assert r.status_code == 200, r.text
+    return bid
+
+
+def test_combine_settlement_minimizes_transfers_across_bills(client, h, third_person, other_person):
+    """Escenario real: 3 boletas de un cumpleaños (regalo, torta, brunch),
+    cada una pagada por una persona distinta, todas repartidas en partes
+    iguales entre las mismas 3 personas. El saldo combinado debe dar el
+    NETO por persona (no 3 liquidaciones separadas, algunas en direcciones
+    opuestas entre las mismas dos personas) con el mínimo de transferencias."""
+    pedro_id, ana_id = other_person, third_person
+    # Regalo $30.000, pagó Pedro -> c/u debe $10.000
+    b1 = _bill_3way(client, h, pedro_id, ana_id, total_each=10000, payer="pedro", merchant="Regalo")
+    # Torta $15.000, pagó Ana -> c/u debe $5.000
+    b2 = _bill_3way(client, h, pedro_id, ana_id, total_each=5000, payer="ana", merchant="Torta")
+    # Brunch $60.000, pagué yo -> c/u debe $20.000
+    b3 = _bill_3way(client, h, pedro_id, ana_id, total_each=20000, payer="me", merchant="Brunch")
+
+    r = client.post("/bills/combine-settlement", json={"bill_ids": [b1, b2, b3]}, headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    transfers = body["transfers"]
+    # Neto esperado: Yo +25.000 (pagué 60k, debía 10k+5k+20k=35k), Pedro -5.000
+    # (pagó 30k, debía 10k+5k+20k=35k), Ana -20.000 (pagó 15k, debía 35k) ->
+    # mínimo 2 transferencias, ambas HACIA mí, nunca 3 boletas por separado.
+    assert len(transfers) == 2
+    assert all(t["to_is_me"] for t in transfers)
+    by_name = {t["from_name"]: t["amount"] for t in transfers}
+    assert by_name["Pedro"] == 5000
+    assert by_name["Ana"] == 20000
+
+
+def test_combine_settlement_requires_finalized_bills(client, h, other_person):
+    b = _new_bill(client, h, other_person)  # sin finalizar
+    r = client.post("/bills/combine-settlement", json={"bill_ids": [b["id"], b["id"] + 999]}, headers=h)
+    assert r.status_code == 404  # el segundo id no existe
