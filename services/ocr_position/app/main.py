@@ -63,6 +63,13 @@ class ItemPosition(BaseModel):
 
 class PositionResponse(BaseModel):
     items: list[ItemPosition]
+    # Texto crudo (en orden de lectura) de la variante de escala/contraste
+    # que ganó el matching — se usa en backend/app/ocr.py para verificar,
+    # gratis (ya se pagó este OCR igual), si un nombre/precio que dijo el
+    # modelo de visión realmente aparece en la foto o probablemente lo
+    # inventó. No afecta nada del posicionamiento — es solo un subproducto
+    # que ya se calculaba y se estaba descartando.
+    ocr_lines: list[str] = []
 
 
 def _candidate_scales(long_side: int) -> list[float]:
@@ -213,28 +220,34 @@ def _clahe_variant(img: Image.Image) -> Optional[Image.Image]:
         return None
 
 
-def _run_scale(base_img: Image.Image, items: list[str], scale: float) -> tuple[list[Optional[dict]], int]:
+def _run_scale(base_img: Image.Image, items: list[str], scale: float) -> tuple[list[Optional[dict]], int, list[dict]]:
     w, h = base_img.size
     im = base_img if scale == 1.0 else base_img.resize(
         (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
     )
-    matches = _match_items_to_lines(items, _tesseract_lines(im))
-    return matches, sum(1 for m in matches if m is not None)
+    lines = _tesseract_lines(im)
+    matches = _match_items_to_lines(items, lines)
+    return matches, sum(1 for m in matches if m is not None), lines
 
 
-def _best_of(results: list[tuple[list[Optional[dict]], int]], start: tuple[list[Optional[dict]], int]) -> tuple[list[Optional[dict]], int]:
+def _best_of(
+    results: list[tuple[list[Optional[dict]], int, list[dict]]],
+    start: tuple[list[Optional[dict]], int, list[dict]],
+) -> tuple[list[Optional[dict]], int, list[dict]]:
     """Se queda con el mejor resultado — mismo criterio (`>` estricto,
     primero gana en empate) que si se hubiera recorrido `results` en orden
     de forma secuencial, sin importar en qué orden TERMINARON de calcularse
-    (paralelo o no) — así paralelizar nunca cambia cuál gana."""
-    matches, count = start
-    for m, c in results:
+    (paralelo o no) — así paralelizar nunca cambia cuál gana. Arrastra
+    también las líneas de OCR de la variante ganadora (`ocr_lines` en la
+    respuesta)."""
+    matches, count, lines = start
+    for m, c, l in results:
         if c > count:
-            count, matches = c, m
-    return matches, count
+            count, matches, lines = c, m, l
+    return matches, count, lines
 
 
-def _match_best_effort(items: list[str], img: Image.Image) -> list[Optional[dict]]:
+def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optional[dict]], list[dict]]:
     """Corre el OCR + emparejamiento a varias escalas (ver
     `_candidate_scales`) con la variante de contraste ESTÁNDAR (ya probada)
     y, solo si con eso no alcanza a emparejar todos los ítems, escala a
@@ -259,29 +272,30 @@ def _match_best_effort(items: list[str], img: Image.Image) -> list[Optional[dict
     w, h = std_img.size
     scales = _candidate_scales(max(w, h))
 
-    matches, count = _run_scale(std_img, items, scales[0])
+    matches, count, lines = _run_scale(std_img, items, scales[0])
     if count == len(items) or len(scales) == 1:
-        return matches
+        return matches, lines
 
     enhanced = _clahe_variant(img)
     with ThreadPoolExecutor(max_workers=8) as ex:
         std_futures = [ex.submit(_run_scale, std_img, items, s) for s in scales[1:]]
         clahe_futures = [ex.submit(_run_scale, enhanced, items, s) for s in scales] if enhanced is not None else []
-        matches, count = _best_of([f.result() for f in std_futures], (matches, count))
+        matches, count, lines = _best_of([f.result() for f in std_futures], (matches, count, lines))
         if clahe_futures:
-            clahe_matches, clahe_count = _best_of([f.result() for f in clahe_futures[1:]], clahe_futures[0].result())
+            clahe_matches, clahe_count, clahe_lines = _best_of([f.result() for f in clahe_futures[1:]], clahe_futures[0].result())
             if clahe_count > count:  # CLAHE gana SOLO si mejora estrictamente — misma regla de siempre
-                matches, count = clahe_matches, clahe_count
-    return matches
+                matches, count, lines = clahe_matches, clahe_count, clahe_lines
+    return matches, lines
 
 
 @app.post("/position", response_model=PositionResponse)
 def position(req: PositionRequest) -> PositionResponse:
     matches: list[Optional[dict]]
+    lines: list[dict] = []
     try:
         img_bytes = base64.b64decode(req.image_b64)
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        matches = _match_best_effort(req.items, img)
+        matches, lines = _match_best_effort(req.items, img)
     except Exception:
         matches = [None] * len(req.items)
     items_out: list[ItemPosition] = []
@@ -295,7 +309,7 @@ def position(req: PositionRequest) -> PositionResponse:
                 bbox_x0=round(m["x0"], 1), bbox_x1=round(m["x1"], 1),
                 bbox_y0=round(m["y0"], 1), bbox_y1=round(m["y1"], 1),
             ))
-    return PositionResponse(items=items_out)
+    return PositionResponse(items=items_out, ocr_lines=[l["text"] for l in lines])
 
 
 @app.get("/health")

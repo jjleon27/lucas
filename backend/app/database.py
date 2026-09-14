@@ -78,6 +78,10 @@ def _migrate_schema() -> None:
         # dependa de que el navegador interprete el EXIF igual que Pillow.
         "ALTER TABLE bills ADD COLUMN image_width INTEGER",
         "ALTER TABLE bills ADD COLUMN image_height INTEGER",
+        # bill_items.needs_review — el nombre/precio que dijo el modelo de
+        # visión no aparece en el texto real de la foto (Tesseract) —
+        # probable alucinación, se marca para que el usuario la revise.
+        "ALTER TABLE bill_items ADD COLUMN needs_review BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     with engine.connect() as conn:
         for stmt in stmts:

@@ -282,6 +282,10 @@ class BillItem(Base):
     bbox_y0 = Column(Float, nullable=True)
     bbox_x1 = Column(Float, nullable=True)
     bbox_y1 = Column(Float, nullable=True)
+    # True cuando el nombre+precio leído por el modelo de visión no aparece
+    # en el texto real de la foto (Tesseract, gratis) — probable alucinación.
+    # Solo informativo: nunca bloquea nada, el usuario corrige si hace falta.
+    needs_review = Column(Boolean, nullable=False, default=False, server_default="false")
 
     bill = relationship("Bill", back_populates="items")
     shares = relationship("BillItemShare", back_populates="item", cascade="all, delete-orphan")

@@ -19,8 +19,10 @@ import base64
 import io
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from difflib import SequenceMatcher
 from typing import Optional
 
 import numpy as np
@@ -1773,7 +1775,101 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
     return out
 
 
-def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> None:
+_NAME_COVERAGE_OK = 0.60  # cobertura mínima del nombre dentro de una línea real de la foto
+_TESSERACT_TRUST_GATE = 0.5  # Tesseract se considera confiable en esta foto si cubrió bien >=50% de los ítems
+_MIN_OCR_LINES_FOR_TRUST = 5  # menos que esto, Tesseract no leyó nada útil de la foto
+
+
+def _norm_txt(s: str) -> str:
+    """Minúsculas y sin tildes/diacríticos — para comparar contra OCR que a
+    veces pierde acentos/eñes ("Plátano"/"Platano", "Champiñones"/"Champinones")."""
+    s = unicodedata.normalize("NFKD", s.lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(s.split())
+
+
+def _name_coverage(name: str, ocr_lines: list[str]) -> float:
+    """Mejor fracción del NOMBRE que aparece literal (como bloque contiguo)
+    en alguna línea real que Tesseract leyó de la foto. Se usa el bloque
+    común más largo (no un ratio global tipo SequenceMatcher.ratio()),
+    porque la línea real trae también cantidad y precio que diluirían un
+    ratio simple — a un nombre corto dentro de una línea larga le iría mal
+    con un ratio global aunque esté completo y literal ahí."""
+    n = _norm_txt(name)
+    if not n:
+        return 0.0
+    best = 0.0
+    for ln in ocr_lines:
+        ln_norm = _norm_txt(ln)
+        m = SequenceMatcher(None, n, ln_norm).find_longest_match(0, len(n), 0, len(ln_norm))
+        if m.size / len(n) > best:
+            best = m.size / len(n)
+            if best >= 1.0:
+                break
+    return best
+
+
+def _suspect_items(items: list[ParsedItem], ocr_lines: list[str]) -> list[bool]:
+    """True = este ítem probablemente NO existe en la boleta real — el
+    modelo de visión lo alucinó. Se detecta cruzando su nombre Y su precio
+    contra el texto que Tesseract ya leyó de la MISMA foto (gratis, se
+    calcula de todas formas para posicionar la banda de color — ver
+    `_populate_positions`) — sin gastar tokens de LLM extra.
+
+    Por qué hace falta esto y no alcanza con comparar la suma total: un
+    modelo que ya emitió el total tiende a mantenerse globalmente
+    consistente con él, así que dos ítems mal leídos pueden CANCELARSE en
+    la suma (visto en producción: "Mojito Ginger $5.000" + "Plátano Green
+    $13.300" en vez de "Nordic Ginger $1.500" + "Plateada Greda $15.800" —
+    la suma daba exacta pese a 2 de 6 ítems inventados). La suma es un
+    chequeo de AGREGADO; la alucinación es un fenómeno POR FILA — hace
+    falta una señal por ítem, no solo del total.
+
+    Señal RELATIVA, no absoluta: solo se confía en "este nombre no aparece
+    en el texto" si Tesseract efectivamente leyó bien ESTA foto (si la
+    mayoría de los OTROS ítems sí tienen respaldo). Si Tesseract fracasó en
+    esta foto (muy lavada, muy chica, etc.), no hay evidencia de nada y no
+    se marca ningún ítem — evita acusar en falso cuando el problema es del
+    propio Tesseract, no del modelo de visión.
+
+    Un ítem se marca sospechoso solo cuando fallan DOS señales a la vez
+    (nombre Y precio) — un error de OCR benigno (nombre con una letra mal
+    pero precio correcto) no alcanza; hace falta que ni el nombre ni el
+    precio tengan respaldo en la foto, que es justo el patrón de una
+    alucinación real (inventa un producto Y le pone un precio que no
+    corresponde a nada de lo impreso)."""
+    if len(ocr_lines) < _MIN_OCR_LINES_FOR_TRUST or not items:
+        return [False] * len(items)
+
+    coverages = [_name_coverage(it.name, ocr_lines) for it in items]
+    trust = sum(c >= _NAME_COVERAGE_OK for c in coverages) / len(coverages)
+    if trust < _TESSERACT_TRUST_GATE:
+        return [False] * len(items)  # Tesseract no fue confiable en esta foto — no acusar a nadie
+
+    amounts_in_photo: set[int] = set()
+    for ln in ocr_lines:
+        for tok in re.findall(r"\d[\d.,]*\d|\d", ln):
+            v = _parse_clp(tok)
+            if v > 0:
+                amounts_in_photo.add(int(round(v)))
+
+    def _amount_seen(it: ParsedItem) -> bool:
+        # Tolerancia chica (5%, mínimo 2) en vez de igualdad exacta: Tesseract
+        # también se equivoca en dígitos sueltos en fotos difíciles (probado
+        # en vivo: "1.500" leído como "1509") — un precio CORRECTO no debería
+        # marcarse sospechoso solo porque el propio OCR clásico le erró un
+        # dígito. Una alucinación real (precio inventado sin relación al
+        # impreso) sigue quedando muy afuera de esta tolerancia.
+        target = it.line_total if it.line_total is not None else it.price * it.quantity
+        if target <= 0:
+            return False
+        tol = max(2.0, target * 0.05)
+        return any(abs(a - target) <= tol for a in amounts_in_photo)
+
+    return [cov < _NAME_COVERAGE_OK and not _amount_seen(it) for it, cov in zip(items, coverages)]
+
+
+def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str]:
     """Best-effort: rellena `position_y` y, cuando hay match, la caja REAL
     de la línea de texto (`bbox_x0/y0/x1/y1`, % del ancho/alto de la foto —
     para que la banda de color en el frontend se dibuje del tamaño exacto
@@ -1790,11 +1886,17 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> None:
     dev local), falla, tarda más del límite, o no encuentra match para
     algún ítem, esos campos simplemente quedan en None — el frontend ya cae
     al reparto parejo / tamaño estimado (`defaultBandPct`) en ese caso.
-    Nunca lanza, nunca bloquea la subida de la boleta por esto."""
+    Nunca lanza, nunca bloquea la subida de la boleta por esto.
+
+    Devuelve las líneas de texto que Tesseract leyó de la foto (la variante
+    que el servicio eligió como mejor) — subproducto que YA se calculaba y
+    se estaba descartando; `_suspect_items` lo reusa para detectar ítems
+    que el modelo de visión probablemente alucinó, sin gastar tokens de LLM
+    extra (ver esa función)."""
     import os
     url = os.environ.get("OCR_POSITION_URL")
     if not url or not items:
-        return
+        return []
     try:
         import httpx
         b64 = base64.b64encode(_prep_for_position(image_bytes)).decode("ascii")
@@ -1809,8 +1911,9 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> None:
             timeout=15.0,
         )
         if resp.status_code != 200:
-            return
-        results = resp.json().get("items", [])
+            return []
+        payload = resp.json()
+        results = payload.get("items", [])
         # Emparejar por POSICIÓN en la lista (mismo orden, misma longitud
         # que se envió) — no por nombre, que puede repetirse entre ítems.
         for it, r in zip(items, results):
@@ -1819,8 +1922,10 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> None:
             it.bbox_y0 = r.get("bbox_y0")
             it.bbox_x1 = r.get("bbox_x1")
             it.bbox_y1 = r.get("bbox_y1")
+        return payload.get("ocr_lines") or []
     except Exception as _exc:  # noqa: BLE001
         print(f"[ocr] servicio de posición no disponible ({_exc}) — reparto parejo")
+        return []
 
 
 def vision_parse_bill(
@@ -1836,16 +1941,20 @@ def vision_parse_bill(
          boleta ni decide valores, solo reordena texto — no puede reintroducir
          el problema de precisión que tenía pedir un formato en el paso 1.
 
-    Mismo reintento-por-descuadre que `vision_parse`: si la suma de ítems no
-    cuadra con AMOUNT (umbral 6%), reintenta el par lectura+reformateo con
-    `openai_vision_model_fallback` antes de rendirse — un ítem faltante en una
-    división de cuentas real es plata mal repartida entre amigos, así que esto
-    se mantiene sin importar cuán confiable midió el modelo rápido en pruebas.
+    Reintenta el par lectura+reformateo con `openai_vision_model_fallback`
+    cuando: la suma de ítems no cuadra con AMOUNT (umbral 6%, como antes) O
+    `_suspect_items` marca 2+ ítems (o un tercio o más) como probablemente
+    alucinados — señal que la suma sola NO puede ver, porque dos errores
+    pueden cancelarse en el total (ver docstring de `_suspect_items`). El
+    resultado del reintento nunca se acepta a ciegas: se compara contra el
+    original (menos sospechosos gana; empate lo rompe el descuadre) porque
+    el modelo de fallback puede ser PEOR en boletas difíciles.
 
-    No pide bbox por ítem (position_y/bbox_* quedan None) — el frontend ya
-    tiene un fallback de posición pareja por índice (`defaultBandPct`) más
-    arrastre manual para corregir, y pedir bbox fue justamente una de las
-    cosas que hacía más lento y menos preciso al modelo rápido en las pruebas.
+    position_y/bbox_*/needs_review por ítem salen de `_populate_positions`
+    → el servicio interno de Tesseract (`services/ocr_position`) — best
+    effort, gratis (no gasta tokens de LLM), nunca bloquea: si no hay match
+    confiable esos campos quedan en su default (posición pareja por índice
+    en el frontend, `needs_review=False`).
     """
     if not ai_provider.is_available():
         return None
@@ -1902,32 +2011,64 @@ def vision_parse_bill(
             print("[ocr] vision_parse_bill: respuesta vacía/no parseable")
             return None
 
-        # line_total ya es el total de ESA línea (el prompt pide "valor total
-        # de esa línea", no precio unitario) — NO multiplicar por quantity de
-        # nuevo, ya la incluye. (Bug real encontrado en pruebas 2026-09-11:
-        # duplicaba la cantidad acá, inflaba la suma y disparaba
-        # reescalamientos innecesarios en boletas que en realidad leía bien.)
-        items_sum = sum(it["line_total"] for it in parsed["items"])
-        amount = float(parsed["amount"] or 0)
-        if parsed["items"] and amount > 0 and items_sum > 0:
-            diff = abs(items_sum - amount)
-            if diff / amount > 0.06:
-                print(f"[ocr] retry bill (escalando a {settings.openai_vision_model_fallback}): "
-                      f"items sum {int(items_sum)} vs amount {int(amount)} (diff={int(diff)})")
-                parsed2 = _read_and_structure(settings.openai_vision_model_fallback)
-                if parsed2 is not None:
-                    parsed = parsed2
+        def _build_items(parsed_dict: dict) -> list[ParsedItem]:
+            # line_total ya es el total de ESA línea (el prompt pide "valor
+            # total de esa línea", no precio unitario) — NO multiplicar por
+            # quantity de nuevo, ya la incluye. (Bug real encontrado en
+            # pruebas 2026-09-11: duplicaba la cantidad acá, inflaba la suma
+            # y disparaba reescalamientos innecesarios en boletas que en
+            # realidad leía bien.)
+            return [
+                ParsedItem(
+                    name=it["name"],
+                    price=round(it["line_total"] / it["quantity"]) if it["quantity"] else it["line_total"],
+                    quantity=it["quantity"],
+                    line_total=it["line_total"],  # total real leído — bills.py lo usa tal cual, no qty*price
+                )
+                for it in parsed_dict["items"]
+            ]
 
-        items = [
-            ParsedItem(
-                name=it["name"],
-                price=round(it["line_total"] / it["quantity"]) if it["quantity"] else it["line_total"],
-                quantity=it["quantity"],
-                line_total=it["line_total"],  # total real leído — bills.py lo usa tal cual, no qty*price
-            )
-            for it in parsed["items"]
-        ]
-        _populate_positions(items, image_bytes)
+        def _evaluate(parsed_dict: dict) -> dict:
+            """Arma los ítems, les pide posición (Tesseract, gratis — no
+            gasta tokens de LLM) y con ese mismo resultado detecta cuáles
+            probablemente alucinó el modelo (`_suspect_items`). Devuelve
+            todo lo necesario para decidir si este candidato es bueno o si
+            conviene reintentar con otro modelo."""
+            built_items = _build_items(parsed_dict)
+            ocr_lines = _populate_positions(built_items, image_bytes)
+            flags = _suspect_items(built_items, ocr_lines)
+            for it, flag in zip(built_items, flags):
+                it.needs_review = flag
+            items_sum = sum(it.line_total for it in built_items)
+            amount = float(parsed_dict["amount"] or 0)
+            rel = abs(items_sum - amount) / amount if amount > 0 else (1.0 if built_items else 0.0)
+            return {"parsed": parsed_dict, "items": built_items, "n_suspect": sum(flags), "rel": rel}
+
+        cand = _evaluate(parsed)
+        n = max(1, len(cand["items"]))
+        # Reintenta si la suma no cuadra (como antes) O si hay ítems que
+        # probablemente el modelo alucinó — esto último es justo lo que la
+        # suma sola no puede detectar (ver docstring de `_suspect_items`):
+        # dos errores que se cancelan en el total no mueven `rel`, pero sí
+        # son plata mal repartida entre amigos en la división.
+        needs_retry = cand["rel"] > 0.06 or cand["n_suspect"] >= 2 or cand["n_suspect"] / n >= 1 / 3
+        if needs_retry:
+            print(f"[ocr] retry bill (escalando a {settings.openai_vision_model_fallback}): "
+                  f"sospechosos={cand['n_suspect']}/{n}, descuadre={cand['rel']*100:.1f}%")
+            parsed2 = _read_and_structure(settings.openai_vision_model_fallback)
+            if parsed2 is not None:
+                cand2 = _evaluate(parsed2)
+                # El modelo de reintento (fallback) puede ser PEOR que el
+                # principal en boletas difíciles (ya probado con casos
+                # reales) — por eso nunca se acepta a ciegas: gana el
+                # candidato con MENOS ítems sospechosos, y en empate el de
+                # menor descuadre. Antes este reintento se aceptaba siempre
+                # sin comparar — bug latente corregido de paso.
+                if (cand2["n_suspect"], cand2["rel"]) < (cand["n_suspect"], cand["rel"]):
+                    cand = cand2
+
+        parsed = cand["parsed"]
+        items = cand["items"]
         try:
             parsed_date = _parse_date(parsed["date"]) if parsed["date"] else date.today()
         except Exception:

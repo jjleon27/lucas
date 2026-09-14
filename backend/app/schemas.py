@@ -235,6 +235,12 @@ class ParsedItem(BaseModel):
     # Centro vertical del bbox (derivado) — se mantiene por compatibilidad con
     # el arrastre existente, que solo reposiciona el centro, no cambia el tamaño.
     position_y: Optional[float] = None
+    # True cuando el nombre+precio que dijo el modelo de visión NO aparece en
+    # el texto real de la foto (leído aparte por Tesseract, gratis — ver
+    # `_suspect_items` en ocr.py) — señal de que probablemente alucinó un
+    # ítem que no existe. Nunca bloquea nada, solo marca para que el usuario
+    # lo revise/corrija.
+    needs_review: bool = False
 
 
 class ParsedReceipt(BaseModel):

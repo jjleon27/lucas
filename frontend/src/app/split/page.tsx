@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, createPerson, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Minus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw, RotateCcw } from "lucide-react";
+import { Camera, Plus, Minus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw, RotateCcw, AlertTriangle } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -16,6 +16,10 @@ interface BillItem {
   id: number; name: string; qty: number; unit_price: number; line_total: number;
   position_y: number | null;
   bbox_x0: number | null; bbox_y0: number | null; bbox_x1: number | null; bbox_y1: number | null;
+  // El nombre+valor que dijo el modelo de visión no aparece en el texto real
+  // de la foto (Tesseract, gratis) — probable alucinación. Solo informativo,
+  // nunca bloquea nada — el usuario corrige si hace falta.
+  needs_review: boolean;
   shares: BillItemShare[];
 }
 interface Bill {
@@ -1678,7 +1682,7 @@ export default function SplitPage() {
           return (
             <div
               key={item.id}
-              className="rounded-xl shadow-sm overflow-hidden border border-slate-200"
+              className={`rounded-xl shadow-sm overflow-hidden border ${item.needs_review ? "border-amber-400 border-2" : "border-slate-200"}`}
               style={{ background: itemBg }}
             >
               {editItemId === item.id ? (
@@ -1706,6 +1710,12 @@ export default function SplitPage() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-800 leading-snug line-clamp-2">{item.qty > 1 ? `${item.qty}× ` : ""}{item.name}</p>
                       <p className="text-[11px] text-slate-400 whitespace-nowrap">{clp(item.unit_price)} c/u · {clp(item.line_total)}</p>
+                      {item.needs_review && (
+                        <p className="text-[11px] text-amber-700 font-medium flex items-center gap-1 mt-0.5">
+                          <AlertTriangle size={11} className="shrink-0" />
+                          Revisa este ítem — no lo encontramos en la foto
+                        </p>
+                      )}
                     </div>
                     <button
                       onClick={() => setSplitChoice(splitChoice?.itemId === item.id ? null : { itemId: item.id, n: "2" })}
