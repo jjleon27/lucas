@@ -1870,6 +1870,24 @@ def _suspect_items(items: list[ParsedItem], ocr_lines: list[str]) -> list[bool]:
     return [cov < _NAME_COVERAGE_OK and not _amount_seen(it) for it, cov in zip(items, coverages)]
 
 
+_position_client: "Optional[object]" = None  # httpx.Client, tipado como object para no importar httpx al nivel de módulo
+
+
+def _position_http_client():
+    """Cliente HTTP reusado (con keep-alive) hacia `services/ocr_position`
+    en vez de abrir una conexión nueva por request (`httpx.post(...)`
+    suelto, como antes). En Vercel el proceso del backend suele quedar
+    "caliente" entre invocaciones seguidas — reusar la conexión evita
+    repetir el handshake TCP/TLS con el contenedor cada vez que se sube
+    una boleta. Cambio puramente de transporte, cero cambio de
+    comportamiento (mismo timeout, misma URL, mismo payload)."""
+    global _position_client
+    if _position_client is None:
+        import httpx
+        _position_client = httpx.Client()
+    return _position_client
+
+
 def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str]:
     """Best-effort: rellena `position_y`, el alto real (`bbox_y0/y1`) y uno o
     más tramos horizontales reales (`segments`, % del ancho de la foto —
@@ -1899,9 +1917,8 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
     if not url or not items:
         return []
     try:
-        import httpx
         b64 = base64.b64encode(_prep_for_position(image_bytes)).decode("ascii")
-        resp = httpx.post(
+        resp = _position_http_client().post(
             f"{url.rstrip('/')}/position",
             json={"image_b64": b64, "items": [it.name for it in items]},
             # El servicio prueba varias escalas y, si hace falta, contraste
