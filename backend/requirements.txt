@@ -15,7 +15,7 @@ pillow-heif==0.18.0
 pytesseract==0.3.13
 opencv-python-headless==4.10.0.84
 numpy==2.1.1
-openai==1.51.0
+openai==1.99.0  # >=1.70 necesario para reasoning_effort en chat.completions.create (bug real 2026-09-14: 1.51.0 lo rechazaba con TypeError, rompía el split en prod)
 # Optional alternative providers — keep installed so users can swap by
 # setting AI_PROVIDER + the matching API key in .env. Remove if you want a
 # slimmer image.
