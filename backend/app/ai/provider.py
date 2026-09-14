@@ -177,6 +177,17 @@ class OpenAIProvider(LLMProvider):
         algo (un ítem pasó de "[Ilegible]" a un nombre y precio inventados)
         — inaceptable para leer montos de dinero, se descarta pese a ser
         más rápido. "low" es el punto donde no se vio ese efecto.
+
+        `reasoning_effort` requiere una versión del SDK `openai` más nueva
+        que la que trae producción hoy (bug real 2026-09-14: pasó las
+        pruebas en local con una versión más nueva del paquete instalada,
+        pero en prod tiraba `TypeError: unexpected keyword argument
+        'reasoning_effort'` en CADA boleta — falla silenciosa, sin ítems ni
+        aviso, porque el error queda dentro del try/except de `_read`). En
+        vez de depender de sincronizar la versión del paquete con este
+        cambio, se reintenta sin el parámetro si el SDK instalado no lo
+        soporta — funciona en cualquier versión, más rápido cuando el SDK
+        lo permite, nunca rompe si no.
         """
         from openai import OpenAI
         vision_model = model or settings.openai_vision_model
@@ -186,17 +197,20 @@ class OpenAIProvider(LLMProvider):
             _kw["reasoning_effort"] = "low"
         elif not vision_model.startswith(("o1", "o3", "o4")):
             _kw["temperature"] = temperature
-        resp = client.chat.completions.create(
-            model=vision_model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "text", "text": user_text},
-                    {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
-                ]},
-            ],
-            **_kw,
-        )
+        _messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
+            ]},
+        ]
+        try:
+            resp = client.chat.completions.create(model=vision_model, messages=_messages, **_kw)
+        except TypeError as _exc:
+            if "reasoning_effort" not in _kw or "reasoning_effort" not in str(_exc):
+                raise
+            _kw.pop("reasoning_effort")
+            resp = client.chat.completions.create(model=vision_model, messages=_messages, **_kw)
         usage = getattr(resp, "usage", None)
         raw = (resp.choices[0].message.content or "").strip()
         return LLMResponse(
