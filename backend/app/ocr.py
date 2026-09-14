@@ -2097,7 +2097,11 @@ def vision_parse_bill(
                 # candidato con MENOS ítems sospechosos, y en empate el de
                 # menor descuadre. Antes este reintento se aceptaba siempre
                 # sin comparar — bug latente corregido de paso.
-                if (cand2["n_suspect"], cand2["rel"]) < (cand["n_suspect"], cand["rel"]):
+                won = (cand2["n_suspect"], cand2["rel"]) < (cand["n_suspect"], cand["rel"])
+                print(f"[ocr][retry] candidato2 {'GANO' if won else 'perdio'} "
+                      f"(orig: sosp={cand['n_suspect']} rel={cand['rel']*100:.1f}% | "
+                      f"retry: sosp={cand2['n_suspect']} rel={cand2['rel']*100:.1f}%)")
+                if won:
                     cand = cand2
 
         parsed = cand["parsed"]

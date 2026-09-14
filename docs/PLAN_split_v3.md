@@ -1110,3 +1110,60 @@ alrededor de cada llamada real (no se adivinó):
 Implementado en `OpenAIProvider.vision_text` (`backend/app/ai/provider.py`),
 condicionado a modelos `gpt-5*` — no toca `vision_json` (pipeline general
 `/upload`, hoy en `gpt-4o`, no aplica). Commit `1fbfe0e`.
+
+---
+
+## Cont. 22 (2026-09-14) — evaluación formal: cajas de color + velocidad (plan de Fable, cierre)
+
+Usuario pidió un plan de EVALUACIÓN formal (no más parches ad-hoc) para cajas de
+color + velocidad, planeado por Fable y ejecutado por Sonnet, usando las 26
+boletas reales de `/Users/kako2/Downloads/Boletas/` como banco de pruebas. Plan
+completo en `docs/PLAN_eval_split_v1.md`.
+
+**Cajas de color — resultado: 0 traslapes, en TODO lo probado.**
+`services/ocr_position/tests/eval_position.py` ganó un chequeo 100% geométrico
+(`check_geometry_quality`: overlaps, height_outliers, order_violations — sin
+ojo humano) calibrado con datos reales del set oficial (K=1.95, medido — no
+adivinado — corriendo `--calibrate` sobre las 9 fixtures ya validadas; máximo
+ratio real observado ahí: 1.63). Con eso:
+- Categoría A (duplicados de fixtures existentes, ground-truth reusado sin
+  gastar LLM): 5 fotos, incluida `images-17` — la foto EXACTA del reporte
+  original de bandas superpuestas ("CREAD"/Bar La Providencia) — **13/13,
+  0 overlaps**.
+- Categorías B/C/D-prioritaria (9 fotos nuevas, fixtures de solo-nombre
+  generadas barato con una sola pasada sin reintento): **0 overlaps** en las
+  9. Dos con match rate bajo (`images-16` combo con ítems repetidos,
+  `images-23` bar con 24 ítems muy repetidos, `1.webp` supermercado de 24
+  ítems con códigos abreviados) — NO es el bug de bandas, es la limitación ya
+  conocida del matching forward-only con nombres muy repetidos/abreviados;
+  documentado como límite conocido, no perseguido (no hay overlaps ni riesgo
+  visual, solo algunos ítems sin banda que caen al reparto parejo).
+- Total: **71 fotos reales distintas probadas hoy sin un solo traslape** (9
+  fixtures oficiales + 53 de CORD-v2 + 9 de la carpeta del usuario).
+
+**Velocidad — retry ya no es un problema, confirmado con evidencia.**
+Corrida de no-regresión (`run_eval.py --pipeline bill --dump`, post
+`reasoning_effort="low"`): **90.8%** de precisión (mejor que el baseline de
+87.6% de la corrida anterior) y **0 reintentos disparados** en las 9 fotos —
+antes de hoy, 2/9 disparaban reintento en corridas comparables. El fix de
+velocidad (cont. 21) resultó tener un efecto secundario bueno: lecturas más
+consistentes → menos descuadre de suma → menos reintentos → más rápido
+todavía de lo que ya medía la boleta suelta de 22 ítems. Con 0 reintentos en
+esta corrida no hay datos para ajustar el umbral (`rel > 0.06`) — se
+descarta tocarlo sin evidencia, tal como pedía el plan de Fable ("si no hay
+hueco en los datos, no cambiar el umbral").
+
+`reasoning_effort` en el paso de reformateo (`gpt-4.1-mini`): confirmado por
+lectura de código que NO aplica — no es un modelo de la familia con
+razonamiento, `chat_completion()` no tiene ningún gate de ese parámetro.
+Cerrado sin tocar código, como preveía el plan.
+
+**Criterio de parada de la evaluación (§5 de PLAN_eval_split_v1.md): cumplido.**
+Cajas de color con `overlaps==0` en todo lo probado, sin patrón sistemático
+nuevo. Velocidad sostenida fuera de la única boleta de prueba original,
+umbral de retry evaluado con evidencia (no cambiar). Ninguna corrección bajó
+la precisión del eval oficial (90.8% ≥ 87.6%) ni reintrodujo overlaps.
+
+Instrumentación agregada de paso (`[ocr][retry] candidato2 GANO/perdio`,
+`backend/app/ocr.py`) para que la próxima vez que el reintento sí dispare,
+quede loggeado sin tener que instrumentar de nuevo.
