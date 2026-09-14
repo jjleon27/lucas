@@ -1870,6 +1870,80 @@ def _suspect_items(items: list[ParsedItem], ocr_lines: list[str]) -> list[bool]:
     return [cov < _NAME_COVERAGE_OK and not _amount_seen(it) for it, cov in zip(items, coverages)]
 
 
+_SELF_CONSISTENCY_SAMPLES = 2  # lecturas EXTRA (además de la original) — solo cuando ya hay ≥1 ítem sospechoso
+
+
+def _self_consistency_recheck(items: list[ParsedItem], *, model: str, read_and_structure) -> None:
+    """Self-consistency (Wang et al. 2022, arxiv.org/abs/2203.11171): pedirle
+    al modelo que lea la boleta MÁS VECES, de forma independiente, y mirar si
+    las lecturas coinciden entre sí — NO se toca si ya no hay ningún ítem con
+    `needs_review=True` (gratis en el camino feliz, mismo criterio que ya
+    disparaba el reintento que se sacó, pero ahora la acción es distinta).
+
+    Medido en vivo hoy (2026-09-14, 5 lecturas independientes de las 2
+    boletas reales que fallan en el eval): en una, el valor salió IDÉNTICO
+    las 5 veces (un error sistemático — votar solo confirmaría el mismo
+    error con más "confianza", no lo arregla, así que NO se intenta
+    corregir automáticamente a ciegas). En la otra, los valores salieron
+    muy dispersos entre sí (nunca 2 lecturas coincidieron dentro de una
+    tolerancia razonable) — ahí self-consistency no puede encontrar un
+    valor correcto con confianza, PERO la propia dispersión es una señal
+    fuerte de que ese ítem no es confiable, más fuerte que la que ya usa
+    `_suspect_items` (que a veces no marca porque el NOMBRE sí calza,
+    aunque el precio esté mal). Por eso esta función NUNCA inventa un
+    valor sin que al menos 2 lecturas independientes coincidan entre sí
+    (misma tolerancia 5%/mín ±2 que ya usa `_amount_seen`) — y si ninguna
+    coincide, FUERZA `needs_review=True` aunque el nombre calzara bien,
+    en vez de intentar "adivinar" hacia la respuesta más común."""
+    # Dispara por BOLETA (si algún ítem ya es sospechoso), pero re-chequea
+    # TODOS los ítems, no solo los marcados — bug real encontrado hoy mismo
+    # midiendo esto en vivo: "Nordic Ginger" (nombre calza bien contra
+    # Tesseract, precio mal leído) casi nunca queda marcado por
+    # `_suspect_items` (exige que TANTO nombre COMO precio fallen), así que
+    # limitar el re-chequeo a los YA sospechosos lo dejaba afuera — el caso
+    # exacto que esto debía atajar.
+    if not any(it.needs_review for it in items):
+        return
+    print(f"[ocr] self-consistency: {sum(it.needs_review for it in items)} ítem(s) sospechoso(s) — "
+          f"re-chequeando los {len(items)} ítems con {_SELF_CONSISTENCY_SAMPLES} lecturas extra")
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=_SELF_CONSISTENCY_SAMPLES) as ex:
+        futures = [ex.submit(read_and_structure, model) for _ in range(_SELF_CONSISTENCY_SAMPLES)]
+        extra_reads = [f.result() for f in futures]
+    extra_item_lists = [r["items"] for r in extra_reads if r is not None]
+    if not extra_item_lists:
+        return  # las 2 lecturas extra fallaron — no hay nada con qué comparar, se deja needs_review=True como estaba
+
+    for it in items:
+        name_norm = _norm_txt(it.name)
+        target = it.line_total if it.line_total is not None else it.price * it.quantity
+        values = [target]
+        for extra_items in extra_item_lists:
+            best_ratio, best_val = 0.0, None
+            for ei in extra_items:
+                ratio = SequenceMatcher(None, name_norm, _norm_txt(ei["name"])).ratio()
+                if ratio > best_ratio:
+                    best_ratio, best_val = ratio, ei["line_total"]
+            if best_ratio >= 0.5 and best_val is not None:
+                values.append(best_val)
+        consensus = None
+        for v in values:
+            tol = max(2.0, v * 0.05)
+            if sum(1 for other in values if abs(other - v) <= tol) >= 2:
+                consensus = v
+                break
+        if consensus is None:
+            it.needs_review = True  # ninguna lectura independiente coincide -> señal fuerte, no se afloja
+            continue
+        if abs(consensus - target) <= max(2.0, target * 0.05):
+            it.needs_review = False  # el consenso coincide con lo original -> tranquiliza
+        else:
+            it.line_total = consensus
+            it.price = round(consensus / it.quantity) if it.quantity else consensus
+            # se corrigió por consenso, pero sigue siendo un valor que valía
+            # la pena revisar -> needs_review se deja en True a propósito
+
+
 _position_client: "Optional[object]" = None  # httpx.Client, tipado como object para no importar httpx al nivel de módulo
 
 
@@ -2085,6 +2159,8 @@ def vision_parse_bill(
         cand = _evaluate(parsed)
         parsed = cand["parsed"]
         items = cand["items"]
+        _self_consistency_recheck(items, model=settings.openai_vision_model_bill,
+                                   read_and_structure=_read_and_structure)
         try:
             parsed_date = _parse_date(parsed["date"]) if parsed["date"] else date.today()
         except Exception:
