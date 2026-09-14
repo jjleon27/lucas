@@ -715,3 +715,69 @@ del hueco disponible como margen. Build verificado, commiteado
 (`f40c9c8`), pusheado, deployado a producción (`vercel --prod --yes`,
 esta vez SIN bloqueo del clasificador). `curl /api/health` OK
 post-deploy.
+
+### Iteración 2026-09-13/14 (cont. 16) — recorte manual + girar + nombre/fecha editables
+
+El usuario, viendo que la posición de las bandas seguía fallando en fotos
+con mucho fondo, propuso: "primero seleccionar la foto y pedirme que la
+recorte manualmente... así hay menos errores". Nuevo paso en "Subir
+boleta": recuadro de recorte arrastrable (mover + 4 esquinas) antes de
+subir, recortado en el navegador vía canvas (aprovecha que `<img>` ya
+aplica la orientación EXIF, así el recorte queda bien orientado sin tocar
+el backend). Luego, dos pedidos más del usuario sobre ese mismo paso:
+girar la foto (agregado: 90° a la izquierda/derecha + slider de
+enderezado fino ±45° con vista previa CSS en vivo, horneado a píxeles
+reales al soltar) y nombre/fecha editables al final del flujo — antes de
+guardar — para reconocer la división después en el historial (reutiliza
+el PATCH `/bills/{id}` que el backend ya soportaba). Cero cambios de
+backend para el recorte/giro — todo en canvas del navegador.
+
+### Iteración 2026-09-14 (cont. 17) — diagnóstico a fondo: por qué la posición fallaba, y fix general
+
+El usuario pidió evaluar a fondo (con Fable) por qué las bandas seguían
+mal puestas — a veces sombreando encabezados/totales en vez del ítem, y
+pidió que el ANCHO de la banda también se adapte al texto real, no fijo
+a todo el ancho de la foto. Reproducido en local con la boleta real que
+falló ("cuenta_valeria"): la foto es diminuta (253×450px) — a esa
+resolución Tesseract no lee "parecido" al texto real, lee GARABATO total
+("Una Vara za" en vez de "Coca Cola Light"), y el umbral de similitud
+igual encontraba algo por encima de 0.35 contra ese garabato.
+
+Dos intentos descartados con evidencia directa:
+- Agrandar SIEMPRE la foto a una resolución fija antes de Tesseract:
+  arregla la boleta chica pero ROMPE una que ya estaba bien (probado en
+  `bar_autoctono`, 1200×1600 — agrandarla de más la emborrona lo
+  suficiente para confundir líneas repetidas parecidas, ej. las 7 "Promo
+  Alto del Carmen"). No existe un tamaño "bueno" único para cualquier foto.
+- Usar el precio del ítem como señal extra para no confundir con
+  encabezados: en ítems con el MISMO precio repetido, el precio no
+  desambigua nada y el bonus rompía la propiedad de "en empate gana el
+  más cercano" que hacía funcionar el emparejamiento por orden — bug
+  reproducido de forma aislada con un test A/B sobre el mismo set de
+  líneas de Tesseract.
+
+**Fix real**: `_match_best_effort` prueba el OCR a varias escalas
+—calculadas a partir del tamaño REAL de cada foto, nunca fijas— y se
+queda con la que logra emparejar más ítems. Verificado: `cuenta_valeria`
+6/6 (antes 0/6 útiles — todo mal puesto sobre encabezados), `bar_autoctono`
+17/17 (antes 16/17, SIN regresión, de hecho mejoró), y contra las otras 7
+boletas del eval set: 45/47 ítems (95.7%) — la única boleta con fallas
+reales (`montana_bellavista`) tiene la columna de nombres directamente
+ilegible para Tesseract a cualquier escala, límite genuino de la foto, no
+un bug.
+
+Segundo pedido (ancho adaptado al texto): el servicio ya calculaba
+internamente la caja horizontal real de cada línea de Tesseract (igual
+que ya hacía con la vertical) — se revivieron `bbox_x0`/`bbox_x1`
+(columnas que YA EXISTÍAN de punta a punta en el pipeline desde el
+mecanismo de bbox anterior a este rediseño de OCR) con datos reales en
+vez de agregar campos nuevos. La banda ahora se dibuja del ancho real del
+texto (con margen chico + mínimo tocable) en vez de siempre a todo el
+ancho de la foto. Corrección manual (arrastre) sigue limpiando
+`bbox_x0/y0/x1/y1` enteros, cae al tamaño estimado por hueco a vecinos.
+
+Verificado en producción con captura real: las bandas de `cuenta_valeria`
+pasaron de sombrear "Mesa N°6"/"Usuario Valeria Ortega"/"Total Final" a
+sombrear exactamente "Coca Cola Light", "Agua Mineral Sin Gas", etc.
+pytest: mismas 3 fallas preexistentes. Commiteado (`373824f`), pusheado,
+deployado.
