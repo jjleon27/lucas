@@ -109,6 +109,14 @@ const listBills = () => billReq<BillListRow[]>("/bills");
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
+// Apagado A PROPÓSITO (2026-09-14, pedido explícito): mientras la prioridad
+// es que la lista de ítems salga rápido y 100% correcta, las franjas de
+// color sobre la foto no se dibujan — no se borró nada (position_y/bbox_*/
+// segments se siguen guardando igual, el drag-para-corregir sigue andando
+// si se prende esto de nuevo), solo se apaga el render para que deje de
+// competir por atención/tiempo con lo que sí importa ahora.
+const SHOW_COLOR_BANDS = false;
+
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
 // En Chile no se propinea en el supermercado — mostrar el paso de "Propina"
 // ahí es ruido/confuso, no una opción real. Heurística simple por nombre de
@@ -2818,7 +2826,7 @@ function SplitPageInner({
                   recibe el mismo transform (pan/zoom) que la <img>. Arrastrar
                   sigue moviendo solo el centro vertical (position_y); el tamaño
                   del recuadro no cambia al arrastrar. */}
-              {!drawMode && bill.items.length > 0 && (
+              {SHOW_COLOR_BANDS && !drawMode && bill.items.length > 0 && (
                 <div
                   className="absolute inset-0 z-[15] pointer-events-none"
                   style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
