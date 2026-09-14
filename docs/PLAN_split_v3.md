@@ -1250,3 +1250,55 @@ que el propio Fable ya había medido): 87.6% / 83.6% / 86.9%, media 86.0%
 ruido). Las 27 corridas de boleta (9 fotos × 3) dieron **0 reintentos y
 ninguna pasó de 14.5s** — antes, el peor caso llegaba a 78-89s. Desplegado y
 verificado (health check).
+
+---
+
+## Cont. 25 (2026-09-14) — self-consistency real (investigación con Fable + WebSearch)
+
+Usuario, muy enojado, exigió investigar qué usan sistemas serios (no más
+reglas inventadas) y planear con Fable con acceso real a fuentes externas.
+Plan completo con citas reales: paper de self-consistency (Wang et al. 2022,
+arxiv.org/abs/2203.11171), benchmark público de AWS Textract Expense Analysis
+(confidence score por campo) y Google Document AI (87% línea-a-línea en su
+propio benchmark — confirma que ningún sistema serio promete 100%).
+
+**Veredicto de Fable sobre reconstruir vs. arreglar puntual**: la evidencia
+(7/9 boletas al 100% en corridas repetidas, fallos concentrados en 2 boletas
+específicas, Tesseract —código de terceros— fallando en el MISMO número que
+la IA) apoya arreglar puntual, no reconstruir. Reconstruir arriesgaba romper
+los 7 casos que ya funcionan sin evidencia de que arreglaría los 2 que fallan.
+
+**Checkpoint 1 (diagnóstico obligatorio, ANTES de escribir código)**: 5
+lecturas independientes de cada boleta que falla, para saber si votar
+siquiera podía funcionar:
+- `cuenta_valeria` ("Pechuga de Pollo"): **$5.700 idéntico las 5 veces**,
+  nunca el real ($4.400) — error sistemático. Self-consistency NO puede
+  arreglar esto (votar solo confirma el mismo error con más "confianza") —
+  se decidió, con evidencia, NO intentarlo a ciegas para este caso.
+- `danes_vitacura` ("Nordic Ginger"): 5 valores DISTINTOS en 5 corridas — el
+  correcto apareció 1 vez, nunca alcanza mayoría con pocas muestras.
+
+**Implementado** (`_self_consistency_recheck`, `backend/app/ocr.py`): NO es
+un corrector mágico — es un detector de desacuerdo. Solo dispara si ya hay
+≥1 ítem sospechoso (gratis en el camino feliz). Lanza 2 lecturas extra en
+paralelo; si ≥2 de 3 coinciden (tolerancia 5%), adopta ese consenso; si
+ninguna coincide, fuerza `needs_review=True` sin inventar un valor.
+
+**Bug real encontrado y arreglado en el mismo commit**: la primera versión
+solo re-chequeaba los ítems YA marcados sospechosos — pero "Nordic Ginger"
+casi nunca se marca solo (el nombre calza bien contra Tesseract, solo el
+precio está mal), así que quedaba afuera del re-chequeo, el caso exacto que
+esto debía atajar. Corregido: dispara por boleta, re-chequea TODOS los
+ítems.
+
+**Validado** (3 corridas completas post-fix): 90.8% / 90.2% / 87.6%, media
+**89.5%** — mejor que el baseline sin esto (86.0%). `cuenta_valeria` sigue
+sin detectarse (matemáticamente imposible de arreglar por voto, ya
+explicado) — límite conocido, documentado, no perseguido más allá.
+
+**Pendiente** (de la investigación de Fable, no bloqueante): ninguna de las
+9 fixtures oficiales tiene un descuento real (`line_total` negativo) en el
+ground-truth — el mecanismo de descuento/propina de cont. 23 solo está
+validado con aritmética sintética, no contra una foto real de punta a
+punta. Conseguir 1 boleta real con descuento (ya se usó
+`/Users/kako2/Downloads/Boletas/` antes) y agregarla como 10ma fixture.
