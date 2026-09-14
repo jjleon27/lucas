@@ -2059,23 +2059,37 @@ def vision_parse_bill(
                 for it in parsed_dict["items"]
             ]
 
-        def _evaluate(parsed_dict: dict) -> dict:
+        def _evaluate(parsed_dict: dict, *, ocr_lines: Optional[list[str]] = None) -> dict:
             """Arma los ítems, les pide posición (Tesseract, gratis — no
             gasta tokens de LLM) y con ese mismo resultado detecta cuáles
             probablemente alucinó el modelo (`_suspect_items`). Devuelve
             todo lo necesario para decidir si este candidato es bueno o si
-            conviene reintentar con otro modelo."""
+            conviene reintentar con otro modelo.
+
+            `ocr_lines`: si se pasa (evaluando el candidato del REINTENTO),
+            se reusa el texto de Tesseract YA leído en la foto en vez de
+            volver a pedirle posición al servicio — el texto que Tesseract
+            lee de la foto no depende de qué ítems se le pidan emparejar,
+            así que es válido reusarlo. Evita repetir el paso caro de
+            emparejamiento multi-escala (medido en vivo en una boleta real
+            de 23 ítems: 10-13s) para un candidato que puede terminar
+            perdiendo la comparación y descartándose — en ese caso, sus
+            ítems quedan sin `position_y`/`bbox`/`segments` (se completan
+            aparte, una sola vez, SOLO si termina siendo el ganador — ver
+            más abajo)."""
             built_items = _build_items(parsed_dict)
-            t0 = time.time()
-            ocr_lines = _populate_positions(built_items, image_bytes)
-            print(f"[ocr][timing] _populate_positions={time.time()-t0:.2f}s")
+            if ocr_lines is None:
+                t0 = time.time()
+                ocr_lines = _populate_positions(built_items, image_bytes)
+                print(f"[ocr][timing] _populate_positions={time.time()-t0:.2f}s")
             flags = _suspect_items(built_items, ocr_lines)
             for it, flag in zip(built_items, flags):
                 it.needs_review = flag
             items_sum = sum(it.line_total for it in built_items)
             amount = float(parsed_dict["amount"] or 0)
             rel = abs(items_sum - amount) / amount if amount > 0 else (1.0 if built_items else 0.0)
-            return {"parsed": parsed_dict, "items": built_items, "n_suspect": sum(flags), "rel": rel}
+            return {"parsed": parsed_dict, "items": built_items, "n_suspect": sum(flags), "rel": rel,
+                    "ocr_lines": ocr_lines}
 
         cand = _evaluate(parsed)
         n = max(1, len(cand["items"]))
@@ -2090,7 +2104,7 @@ def vision_parse_bill(
                   f"sospechosos={cand['n_suspect']}/{n}, descuadre={cand['rel']*100:.1f}%")
             parsed2 = _read_and_structure(settings.openai_vision_model_fallback)
             if parsed2 is not None:
-                cand2 = _evaluate(parsed2)
+                cand2 = _evaluate(parsed2, ocr_lines=cand["ocr_lines"])
                 # El modelo de reintento (fallback) puede ser PEOR que el
                 # principal en boletas difíciles (ya probado con casos
                 # reales) — por eso nunca se acepta a ciegas: gana el
@@ -2102,6 +2116,14 @@ def vision_parse_bill(
                       f"(orig: sosp={cand['n_suspect']} rel={cand['rel']*100:.1f}% | "
                       f"retry: sosp={cand2['n_suspect']} rel={cand2['rel']*100:.1f}%)")
                 if won:
+                    # cand2 ganó pero evaluó con el texto de Tesseract reusado
+                    # de cand — sus ítems todavía no tienen posición/bbox
+                    # propios (se saltó a propósito, ver docstring de
+                    # _evaluate). Se completa ahora, una sola vez, solo
+                    # porque este SÍ es el candidato que se va a usar.
+                    t0 = time.time()
+                    _populate_positions(cand2["items"], image_bytes)
+                    print(f"[ocr][timing] _populate_positions(retry-winner)={time.time()-t0:.2f}s")
                     cand = cand2
 
         parsed = cand["parsed"]
