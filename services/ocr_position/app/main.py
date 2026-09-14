@@ -37,16 +37,22 @@ class PositionRequest(BaseModel):
 class ItemPosition(BaseModel):
     name: str
     position_y: Optional[float] = None  # 0-100 (centro vertical), o null si no hay match confiable
+    # Caja vertical REAL de la línea de texto emparejada (0-100 = % del alto
+    # de la foto) — permite que la banda de color en el frontend se dibuje
+    # del alto exacto del texto (nombre+valor) en vez de una altura inventada.
+    bbox_y0: Optional[float] = None
+    bbox_y1: Optional[float] = None
 
 
 class PositionResponse(BaseModel):
     items: list[ItemPosition]
 
 
-def _tesseract_lines(img: Image.Image) -> list[tuple[str, float]]:
-    """OCR con Tesseract → lista de (texto_de_la_línea, y_centro_%) en orden
-    de lectura (arriba a abajo). Agrupa palabras en líneas usando
-    block_num/par_num/line_num, que pytesseract ya calcula."""
+def _tesseract_lines(img: Image.Image) -> list[dict]:
+    """OCR con Tesseract → lista de líneas en orden de lectura (arriba a
+    abajo), cada una con su texto y su caja vertical real (% del alto de la
+    foto). Agrupa palabras en líneas usando block_num/par_num/line_num, que
+    pytesseract ya calcula."""
     w, h = img.size
     data = pytesseract.image_to_data(img, lang="spa", output_type=Output.DICT)
     lines: dict[tuple[int, int, int], dict] = {}
@@ -62,12 +68,12 @@ def _tesseract_lines(img: Image.Image) -> list[tuple[str, float]]:
         entry["bottom"] = max(entry["bottom"], top + height)
     ordered = sorted(lines.values(), key=lambda e: e["top"])
     return [
-        (" ".join(e["words"]), ((e["top"] + e["bottom"]) / 2) / h * 100)
+        {"text": " ".join(e["words"]), "y0": e["top"] / h * 100, "y1": e["bottom"] / h * 100}
         for e in ordered
     ]
 
 
-def _match_items_to_lines(items: list[str], lines: list[tuple[str, float]]) -> list[Optional[float]]:
+def _match_items_to_lines(items: list[str], lines: list[dict]) -> list[Optional[tuple[float, float]]]:
     """Empareja cada ítem (en el orden en que vienen) con la mejor línea de
     Tesseract disponible, buscando siempre HACIA ADELANTE desde la última
     línea ya usada — nunca hacia atrás, así ítems con nombres repetidos
@@ -76,19 +82,22 @@ def _match_items_to_lines(items: list[str], lines: list[tuple[str, float]]) -> l
     saltar — una boleta real trae fácil 15-20 líneas de encabezado (fecha,
     dirección, "CANT/PRECIO/CODIGO", etc.) antes del primer ítem, así que
     una ventana angosta nunca llega a él. Lo que evita un match espurio
-    lejano no es un límite de distancia, es el umbral de similitud."""
+    lejano no es un límite de distancia, es el umbral de similitud.
+
+    Devuelve, por ítem, (y0, y1) de la línea emparejada, o None si no hubo
+    match confiable."""
     MIN_SIMILARITY = 0.35
-    results: list[Optional[float]] = []
+    results: list[Optional[tuple[float, float]]] = []
     last_idx = -1
     for name in items:
         name_norm = name.strip().lower()
         best_ratio, best_idx = 0.0, -1
         for idx in range(last_idx + 1, len(lines)):
-            ratio = SequenceMatcher(None, name_norm, lines[idx][0].strip().lower()).ratio()
+            ratio = SequenceMatcher(None, name_norm, lines[idx]["text"].strip().lower()).ratio()
             if ratio > best_ratio:
                 best_ratio, best_idx = ratio, idx
         if best_idx >= 0 and best_ratio >= MIN_SIMILARITY:
-            results.append(round(lines[best_idx][1], 1))
+            results.append((round(lines[best_idx]["y0"], 1), round(lines[best_idx]["y1"], 1)))
             last_idx = best_idx
         else:
             results.append(None)
@@ -97,17 +106,22 @@ def _match_items_to_lines(items: list[str], lines: list[tuple[str, float]]) -> l
 
 @app.post("/position", response_model=PositionResponse)
 def position(req: PositionRequest) -> PositionResponse:
-    positions: list[Optional[float]]
+    matches: list[Optional[tuple[float, float]]]
     try:
         img_bytes = base64.b64decode(req.image_b64)
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         lines = _tesseract_lines(img)
-        positions = _match_items_to_lines(req.items, lines)
+        matches = _match_items_to_lines(req.items, lines)
     except Exception:
-        positions = [None] * len(req.items)
-    return PositionResponse(items=[
-        ItemPosition(name=n, position_y=p) for n, p in zip(req.items, positions)
-    ])
+        matches = [None] * len(req.items)
+    items_out: list[ItemPosition] = []
+    for name, m in zip(req.items, matches):
+        if m is None:
+            items_out.append(ItemPosition(name=name))
+        else:
+            y0, y1 = m
+            items_out.append(ItemPosition(name=name, position_y=round((y0 + y1) / 2, 1), bbox_y0=y0, bbox_y1=y1))
+    return PositionResponse(items=items_out)
 
 
 @app.get("/health")

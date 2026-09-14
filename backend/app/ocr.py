@@ -1751,14 +1751,17 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
 
 
 def _populate_positions(items: list[ParsedItem], data_url: str) -> None:
-    """Best-effort: rellena `position_y` en cada ítem llamando al servicio
-    interno aislado `services/ocr_position` (Tesseract + emparejamiento por
-    orden — ver ese servicio para el detalle). Es opcional por diseño: si el
-    servicio no está configurado (`OCR_POSITION_URL` sin definir, p.ej. en
-    dev local), falla, tarda más del límite corto, o no encuentra match para
-    algún ítem, esos `position_y` simplemente quedan en None — el frontend
-    ya cae al reparto parejo (`defaultBandPct`) en ese caso. Nunca lanza,
-    nunca bloquea la subida de la boleta por esto."""
+    """Best-effort: rellena `position_y` (y, cuando hay match, `bbox_y0`/
+    `bbox_y1` — la caja vertical REAL de la línea de texto, para que la banda
+    de color en el frontend se dibuje del alto exacto del ítem en vez de una
+    altura inventada) llamando al servicio interno aislado
+    `services/ocr_position` (Tesseract + emparejamiento por orden — ver ese
+    servicio para el detalle). Es opcional por diseño: si el servicio no
+    está configurado (`OCR_POSITION_URL` sin definir, p.ej. en dev local),
+    falla, tarda más del límite corto, o no encuentra match para algún
+    ítem, esos campos simplemente quedan en None — el frontend ya cae al
+    reparto parejo / altura estimada (`defaultBandPct`) en ese caso. Nunca
+    lanza, nunca bloquea la subida de la boleta por esto."""
     import os
     url = os.environ.get("OCR_POSITION_URL")
     if not url or not items:
@@ -1778,6 +1781,8 @@ def _populate_positions(items: list[ParsedItem], data_url: str) -> None:
         # que se envió) — no por nombre, que puede repetirse entre ítems.
         for it, r in zip(items, results):
             it.position_y = r.get("position_y")
+            it.bbox_y0 = r.get("bbox_y0")
+            it.bbox_y1 = r.get("bbox_y1")
     except Exception as _exc:  # noqa: BLE001
         print(f"[ocr] servicio de posición no disponible ({_exc}) — reparto parejo")
 
