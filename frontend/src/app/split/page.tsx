@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, createPerson, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop } from "lucide-react";
+import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ const deleteItem = (billId: number, iid: number) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "DELETE" });
 const postShares = (billId: number, itemId: number, shares: { participant_id: number; weight: number; units?: number }[]) =>
   billReq<Bill>(`/bills/${billId}/shares`, { method: "POST", body: JSON.stringify({ item_id: itemId, shares }) });
-const patchBill = (billId: number, patch: { tip_amount?: number }) =>
+const patchBill = (billId: number, patch: { tip_amount?: number; merchant?: string; date?: string }) =>
   billReq<Bill>(`/bills/${billId}`, { method: "PATCH", body: JSON.stringify(patch) });
 const assignEqual = (billId: number) =>
   billReq<Bill>(`/bills/${billId}/assign-equal`, { method: "POST" });
@@ -161,6 +161,7 @@ export default function SplitPage() {
   const [cropFile, setCropFile] = useState<File | null>(null);
   const [cropUrl, setCropUrl] = useState<string | null>(null);
   const [cropRect, setCropRect] = useState({ x: 5, y: 5, w: 90, h: 90 });
+  const [rotating, setRotating] = useState(false);
   const cropContainerRef = useRef<HTMLDivElement>(null);
   const cropDragRef = useRef<{ mode: "move" | "nw" | "ne" | "sw" | "se"; startX: number; startY: number; startRect: { x: number; y: number; w: number; h: number } } | null>(null);
 
@@ -232,6 +233,12 @@ export default function SplitPage() {
   const [finalized, setFinalized] = useState(false);
   const [myShare, setMyShare] = useState(0);
   const [saveAsExpense, setSaveAsExpense] = useState(true);
+  // Nombre del local + fecha, editables al final — el OCR no siempre los lee
+  // bien, y son lo que permite reconocer la división después en el historial
+  // ("Divisiones guardadas"), así que se dejan editables sin depender de que
+  // el OCR haya acertado.
+  const [merchantDraft, setMerchantDraft] = useState("");
+  const [dateDraft, setDateDraft] = useState("");
   // Step 1 — historial de divisiones guardadas
   const [pastBills, setPastBills] = useState<BillListRow[] | null>(null);
 
@@ -323,15 +330,28 @@ export default function SplitPage() {
   }
   function onCropPointerUp() { cropDragRef.current = null; }
 
+  function loadImageEl(url: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = reject;
+      el.src = url;
+    });
+  }
+
+  function canvasToJpegFile(canvas: HTMLCanvasElement, name: string): Promise<File> {
+    return new Promise((resolve, reject) =>
+      canvas.toBlob(
+        (b) => (b ? resolve(new File([b], name, { type: "image/jpeg" })) : reject(new Error("toBlob falló"))),
+        "image/jpeg", 0.92,
+      ),
+    );
+  }
+
   async function cropImageToFile(file: File, rect: { x: number; y: number; w: number; h: number }): Promise<File> {
     const url = URL.createObjectURL(file);
     try {
-      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const el = new Image();
-        el.onload = () => resolve(el);
-        el.onerror = reject;
-        el.src = url;
-      });
+      const img = await loadImageEl(url);
       // naturalWidth/Height del <img> ya vienen orientados según EXIF (igual
       // que lo que se ve en pantalla) — se recorta sobre esas dimensiones y
       // el canvas exporta un JPEG plano sin rotación pendiente.
@@ -345,12 +365,43 @@ export default function SplitPage() {
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("sin contexto de canvas");
       ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise<Blob>((resolve, reject) =>
-        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob falló"))), "image/jpeg", 0.92),
-      );
-      return new File([blob], file.name.replace(/\.\w+$/, "") + "-recortada.jpg", { type: "image/jpeg" });
+      return await canvasToJpegFile(canvas, file.name.replace(/\.\w+$/, "") + "-recortada.jpg");
     } finally {
       URL.revokeObjectURL(url);
+    }
+  }
+
+  // Gira la foto pendiente de recorte 90° a la derecha. Re-codifica los
+  // píxeles ya rotados en un nuevo JPEG (en vez de solo aplicar un
+  // transform CSS) para no tener que manejar por separado el caso de
+  // orientación al calcular el recuadro de recorte — después de girar, el
+  // archivo de trabajo YA está en la orientación correcta y el recorte
+  // vuelve a partir de foto completa.
+  async function rotateCropImage() {
+    if (!cropFile || rotating) return;
+    setRotating(true);
+    const prevUrl = cropUrl;
+    try {
+      const url = URL.createObjectURL(cropFile);
+      const img = await loadImageEl(url);
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalHeight;
+      canvas.height = img.naturalWidth;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("sin contexto de canvas");
+      ctx.translate(canvas.width, 0);
+      ctx.rotate(Math.PI / 2);
+      ctx.drawImage(img, 0, 0);
+      const rotated = await canvasToJpegFile(canvas, cropFile.name.replace(/\.\w+$/, "") + ".jpg");
+      setCropFile(rotated);
+      setCropUrl(URL.createObjectURL(rotated));
+      setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+    } catch {
+      showError("No se pudo girar la foto");
+    } finally {
+      if (prevUrl) URL.revokeObjectURL(prevUrl);
+      setRotating(false);
     }
   }
 
@@ -1229,6 +1280,18 @@ export default function SplitPage() {
 
   // ── Step 5 ────────────────────────────────────────────────────
 
+  useEffect(() => {
+    if (bill && step === 5) { setMerchantDraft(bill.merchant); setDateDraft(bill.date); }
+  }, [bill?.id, step]);
+
+  async function saveMerchantDate() {
+    if (!bill) return;
+    const merchant = merchantDraft.trim();
+    if (merchant === bill.merchant && dateDraft === bill.date) return; // sin cambios, no llamar a la API
+    try { setBill(await patchBill(bill.id, { merchant, date: dateDraft })); }
+    catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+  }
+
   async function handleFinalize() {
     if (!bill) return; setLoading(true);
     try {
@@ -1597,6 +1660,15 @@ export default function SplitPage() {
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={cropUrl} alt="" className="w-full block" draggable={false} onError={onCropImgError} />
+                  <button
+                    type="button"
+                    disabled={rotating}
+                    onClick={rotateCropImage}
+                    className="absolute top-2 right-2 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center disabled:opacity-40"
+                    aria-label="Girar foto"
+                  >
+                    {rotating ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <RotateCw size={18} />}
+                  </button>
                   <div
                     className="absolute border-2 border-white cursor-move"
                     style={{
@@ -1967,6 +2039,31 @@ export default function SplitPage() {
                 </p>
               )}
             </div>
+
+            {/* Nombre del local + fecha — editable solo antes de guardar (al
+                finalizar se copian a la transacción y quedan fijos ahí). El
+                OCR no siempre acierta el nombre/fecha; esto es lo que
+                después distingue una división de otra en "Divisiones
+                guardadas". */}
+            {!finalized && (
+              <div className="bg-white rounded-2xl shadow-sm p-4 space-y-2">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Para reconocerla después</p>
+                <input
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium"
+                  placeholder="Nombre del local"
+                  value={merchantDraft}
+                  onChange={(e) => setMerchantDraft(e.target.value)}
+                  onBlur={saveMerchantDate}
+                />
+                <input
+                  type="date"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  value={dateDraft}
+                  onChange={(e) => setDateDraft(e.target.value)}
+                  onBlur={saveMerchantDate}
+                />
+              </div>
+            )}
 
             {/* Per-person owes/paid summary */}
             <div className="bg-white rounded-2xl shadow-sm divide-y divide-slate-100">
