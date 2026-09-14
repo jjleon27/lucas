@@ -916,3 +916,88 @@ pytest: mismas 3 fallas preexistentes (+1 test actualizado al nuevo
 esquema). Build de frontend verificado. Commiteado (`0f98f26`,
 `371ad2b`), pusheado, deployado. Verificado visualmente en producción con
 zoom a la foto real.
+
+---
+
+## Cont. 20 (2026-09-14) — bandas desalineadas en boletas dobladas/rotadas
+
+Dos bugs reales reportados en prod (con foto), sobre la base de "cont. 19"
+(bandas en bloques separados, verificada en su momento solo con boletas
+PLANAS):
+
+1. **Segmentos compartiendo una sola altura por ítem.** `_row_segments`
+   devolvía `segments: [{x0,x1}]` pero el `bbox_y0/y1` que usaba el
+   frontend para TODOS los tramos de un ítem salía solo de la línea base
+   (el nombre) — nunca se extendía aunque se hubieran sumado palabras de
+   otra línea Tesseract con otra altura. En una boleta doblada/arrugada
+   (foto real del usuario: "Limonada" debía resaltarse en $2.500 pero la
+   banda del precio quedó desalineada), el tramo del precio se dibujaba en
+   la altura del nombre, no la suya. Fix: `_cluster_word_spans` ahora
+   agrupa por línea de origen y cada segmento sale con su PROPIO `y0/y1`
+   (`Segment` gana esos dos campos); el frontend usa el alto de cada
+   segmento, no uno compartido por ítem. `segments` pasó de `[x0,x1]` a
+   `[x0,x1,y0,y1]` en toda la cadena (`ocr_position` → `_populate_positions`
+   → `ParsedItem`/`BillItem.segments` JSON → frontend). Formato viejo
+   (2 elementos, boletas leídas antes de este cambio) cae a `bbox_y0/y1`
+   del ítem, como antes — sin romper nada guardado.
+
+2. **Foto sacada en ángulo** (el cuadro ENTERO inclinado, no solo el
+   papel doblado — otra foto real del usuario, boleta "PRECUENTA" clara-
+   mente torcida). Confirmado con rotaciones sintéticas sobre boletas del
+   eval set: a partir de ~6° el precio dejaba de resaltarse (el heurístico
+   de "misma fila" de `_row_segments`, por traslape vertical, deja de
+   agrupar nombre+precio porque Tesseract mismo agrupa mal las líneas bajo
+   rotación); a partir de ~10°, ítems mal emparejados o sin posición.
+
+   Plan diseñado con Fable (agente async, prompt con el código completo +
+   ambos bugs + restricción explícita del usuario de no usar reglas
+   ad-hoc). Descartó "row-grouping robusto a rotación" (parchar
+   `_row_segments` para tolerar Y variable) porque opera sobre datos que
+   Tesseract YA corrompió — nada downstream puede reconstruir texto mal
+   agrupado. Recomendó: detectar el ángulo y ENDEREZAR la foto antes de
+   correr Tesseract, dejando el resto del pipeline (ya validado al 100%
+   en boletas rectas) intacto.
+
+   Implementado por Sonnet:
+   - `_detect_skew_angle`: híbrido Hough (Canny + HoughLinesP, mediana de
+     líneas cerca de la horizontal — robusto a outliers como bordes de
+     mesa) para una estimación GRUESA, refinada por projection-profile
+     (rotar una versión binarizada a varios ángulos candidatos, maximizar
+     varianza de la suma de texto por fila) en una ventana angosta
+     (±2.5°) alrededor de esa estimación. Se probó projection-profile
+     SOLO (búsqueda completa ±25°) primero — falló en vivo: a partir de
+     ~8° queda dominado por la SILUETA del recibo (no el texto) y
+     converge a ángulos completamente errados; combinado con Hough como
+     ancla gruesa, error <0.2° en 8/9 boletas del eval set a 5-12° de
+     rotación sintética (la 9na, la más densa/difícil del set, baja a
+     ~1-3° de error — igual mejora sustancialmente el resultado final).
+   - `_rotate_expand`: rota sin recortar (equivalente a
+     `Image.rotate(expand=True)`) vía cv2, quedándose con la matriz afín
+     exacta.
+   - `_unrotate_lines`: aplica la transformación afín INVERSA a las 4
+     esquinas de cada caja/palabra que devolvió Tesseract sobre la foto
+     enderezada, y toma el rectángulo alineado a los ejes que las
+     contiene — de vuelta a % de la foto ORIGINAL (la que ve el usuario,
+     sin rotar). Sale un poco más ancho que el texto real (inevitable con
+     un rectángulo sin rotación sobre texto en ángulo) — mismo trade-off
+     que ya aceptaba el resto del sistema.
+   - Solo se prueba en el camino difícil de `_match_best_effort` (escala
+     barata no alcanzó el 100%), nunca en el rápido (no cambia el costo
+     del caso común); compite en el mismo torneo `_best_of` que
+     escala/CLAHE — gana solo si empareja estrictamente más ítems, nunca
+     se asume que enderezar ayuda. Umbral `_SKEW_MIN_DEGREES = 3.0`.
+
+   Verificado: 69/70 en el set recto (igual que antes, sin regresión) +
+   100% en 3 fotos rotadas sintéticas (danes_vitacura @10°,
+   lider_quilicura @8°, bar_autoctono @10° — esta última incluso mejoró de
+   16/17 a 17/17) agregadas como fixture de regresión permanente en
+   `backend/tests/eval/receipts_synthetic_rotated/` +
+   `services/ocr_position/tests/eval_position.py` (eval liviano nuevo,
+   reusa nombres de ítem del eval de visión existente, mismo criterio de
+   score — `matched/total` — que ya usa el código internamente).
+
+pytest backend: 450 passed (3 fallas preexistentes sin relación,
+confirmadas también en `git stash`). Build frontend verificado. Commiteado
+(`39cad62`), pusheado, deployado (`vercel --prod --yes`), verificado en
+producción (health check + navegador, página `/split` carga limpia sin
+errores de consola).
