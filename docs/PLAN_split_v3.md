@@ -855,3 +855,64 @@ pytest: mismas 3 fallas preexistentes. Build de frontend verificado.
 Commiteado (`e932b0c`, `420f763`), pusheado, deployado. Verificado en
 producción vía captura + consulta directa a la API (`fetch` con el token
 de sesión desde la consola del navegador) — no solo visual.
+
+### Iteración 2026-09-14 (cont. 19) — detectar alucinaciones del modelo de visión + bandas en bloques separados
+
+Dos pedidos del usuario con captura real, ambos evaluados con Opus antes
+de implementar (a pedido explícito: "analiza con tu modelo más avanzado").
+
+**Alucinaciones del modelo de visión**: en una boleta real, el modelo
+inventó 2 de 6 productos completos ("Mojito Ginger $5.000" y "Plátano
+Green $13.300" en vez de "Nordic Ginger $1.500" y "Plateada Greda
+$15.800") — no un typo, un producto que no existe. La suma dio EXACTA
+igual ($25.500) porque los errores se cancelaron, así que el chequeo de
+reconciliación (reintenta si la suma no cuadra >6%) nunca se disparó.
+
+Diagnóstico de Opus: la suma es un chequeo de AGREGADO — la alucinación
+es un fenómeno POR FILA que puede cancelarse en el total, estructuralmente
+indetectable por ese chequeo solo. Plan: usar el texto que Tesseract YA
+lee de la foto (para posicionar las bandas — antes se descartaba después
+de usarlo) como verificador por ítem, sin gastar tokens de LLM extra.
+
+`_suspect_items` (backend/app/ocr.py) cruza cada nombre+precio del LLM
+contra ese texto real: cobertura del nombre (mejor bloque contiguo dentro
+de alguna línea real) + ¿aparece el precio en el texto? (con tolerancia
+5%, mínimo 2 — Tesseract TAMBIÉN se equivoca en dígitos sueltos en fotos
+difíciles, sin tolerancia eso daba un falso positivo real en pruebas: "1.500"
+leído como "1509"). Sospechoso solo si fallan las DOS señales. Señal
+RELATIVA: solo se confía si Tesseract leyó bien la mayoría de los OTROS
+ítems de esta foto — si Tesseract fracasó, no se acusa a nadie.
+
+Verificado contra las 9 boletas del eval set (70 ítems, nombres reales):
+1 falso positivo (la línea de esa MISMA foto difícil que originó todo,
+donde ni el propio Tesseract logra leer el número). Contra el caso real:
+detecta los 2 ítems alucinados exactos, cero falsos positivos en los
+otros 4.
+
+El reintento con el modelo más caro ahora también se dispara con ≥2
+sospechosos (o ≥1/3) además del descuadre de suma, y ya NO se acepta a
+ciegas (bug latente corregido: antes `parsed = parsed2` sin comparar) —
+gana el candidato con menos sospechosos. `needs_review` viaja hasta la UI
+(borde ámbar + aviso), nunca bloquea nada.
+
+**Bandas en bloques separados**: el usuario notó que la banda seguía
+siendo un solo recuadro que se estira desde el nombre hasta el precio,
+sombreando también el hueco en blanco de por medio — pidió explícitamente
+bloques separados (nombre+cantidad por un lado, precio por otro).
+
+Medido en una boleta real: el hueco normal entre palabras de un mismo
+bloque es ~3-5% del ancho de la foto; el hueco entre columna de nombre y
+de precio es ~40% — margen de sobra para un umbral fijo. `_row_segments`
+(reemplaza `_expand_to_full_row` en `services/ocr_position`) ahora agrupa
+las palabras individuales de la fila en bloques, cortando cuando el hueco
+a la siguiente palabra supera 8% del ancho. Devuelve `segments: [{x0,x1},
+...]` en vez de un solo bbox — reemplaza esos campos enteros (no los
+agrega aparte). Verificado con datos reales: "2× Bao Mix" da 2 segmentos
+limpios ([9.1-28.6] + [68.7-83.3]), 100% (70/70) de aciertos de posición
+sin cambios. El frontend dibuja un `<div>` por segmento (mismo alto/Y,
+arrastre funciona igual en cualquiera de los segmentos).
+
+pytest: mismas 3 fallas preexistentes (+1 test actualizado al nuevo
+esquema). Build de frontend verificado. Commiteado (`0f98f26`,
+`371ad2b`), pusheado, deployado. Verificado visualmente en producción con
+zoom a la foto real.
