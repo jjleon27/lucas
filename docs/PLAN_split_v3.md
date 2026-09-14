@@ -1402,3 +1402,46 @@ warm-up), riesgo de regresión bajo.
 boleta (o una similar) y confirmar en `vercel logs` que el cold start del
 contenedor ya no aparece después de `_populate_positions`, y a ojo que las
 bandas ya no se superponen.
+
+---
+
+## Cont. 28 (2026-09-14) — la causa REAL de los 30s: self-consistency, no el cold start
+
+Usuario subió otra boleta después del deploy de cont. 27 y siguió tardando
+30+s. Tenía razón en seguir furioso: el cold-start-warmup de cont. 27 era
+real pero secundario — la causa dominante era otra cosa que yo mismo agregué
+esta sesión y no había medido con el self-consistency YA activo en el
+camino caliente.
+
+**Causa real, con aritmética**: `_self_consistency_recheck` (agregada en
+cont. 25) dispara 2 lecturas de visión EXTRA — una boleta entera de nuevo,
+en paralelo entre sí pero DESPUÉS de que la primera lectura ya terminó —
+cada vez que CUALQUIER ítem queda `needs_review=True`. En boletas largas
+con nombres repetidos eso se dispara seguido. Aritmética real: 1ra pasada
+~18s + 2da tanda ~18-20s = 30-38s. Coincide exacto con la queja.
+
+**Decisión**: se saca por completo (`_self_consistency_recheck` y
+`_SELF_CONSISTENCY_SAMPLES` eliminados de `backend/app/ocr.py`, sin dejar
+código muerto) — mismo criterio que ya se aplicó al reintento viejo en
+cont. 24: costo alto (ronda completa de visión extra) por beneficio real
+bajo (en el camino feliz solo prende/apaga una bandera de revisión; rara
+vez corrige el valor mostrado).
+
+**Verificado, no prometido**:
+- Llamada real contra la FOTO REAL de bill_id=150 (misma de cont. 27,
+  22-23 ítems): **13.72s total** (`_read`=8.50s + `_reformat`=3.57s +
+  posición), los 23 ítems calzan exactos contra la foto (revisados uno
+  por uno). Antes de este fix esa misma boleta venía dando 30+s en prod.
+- Eval completo (9 boletas oficiales, sin self-consistency): **8/9 al
+  100%**, tiempos 4.5s-11.5s (todas bajo 15s). La única que baja es
+  `danes_vitacura` (29.4%) — la boleta con foto físicamente borrosa, ya
+  documentada desde antes como el único caso genuinamente difícil del set
+  (Nordic Ginger/Plateada Greda) — self-consistency existía justo para
+  tapar ese caso puntual. Trade-off real y consciente: se pierde esa red
+  de seguridad en ESE caso conocido a cambio de sacar el mayor freno de
+  velocidad de TODAS las boletas.
+- pytest: 453/456 (mismos 3 fallos preexistentes de `vision_parse`,
+  ajenos a este cambio, confirmado antes en cont. 27).
+
+**Pendiente de confirmar en producción**: que la próxima subida real del
+usuario efectivamente baje de 15s.
