@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, createPerson, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X } from "lucide-react";
+import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -154,6 +154,16 @@ export default function SplitPage() {
   const [autoAssignBanner, setAutoAssignBanner] = useState(false);
   const [celebrate, setCelebrate] = useState(false);
 
+  // Step 1 — recorte manual antes de mandar la foto a OCR: menos fondo/ruido
+  // en la imagen = Tesseract (servicio de posición) y el modelo de visión
+  // aciertan más. Se guarda la selección en % de la imagen (no píxeles) para
+  // no depender del tamaño de pantalla.
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  const [cropUrl, setCropUrl] = useState<string | null>(null);
+  const [cropRect, setCropRect] = useState({ x: 5, y: 5, w: 90, h: 90 });
+  const cropContainerRef = useRef<HTMLDivElement>(null);
+  const cropDragRef = useRef<{ mode: "move" | "nw" | "ne" | "sw" | "se"; startX: number; startY: number; startRect: { x: number; y: number; w: number; h: number } } | null>(null);
+
   // Step 2 — items
   const [editItemId, setEditItemId] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState({ name: "", qty: 1, total: 0 });
@@ -250,6 +260,120 @@ export default function SplitPage() {
   }
 
   // ── Step 1 ────────────────────────────────────────────────────
+
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // permite volver a elegir la misma foto después
+    if (!f) return;
+    setCropFile(f);
+    setCropUrl(URL.createObjectURL(f));
+    setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+  }
+
+  function clearCropState() {
+    setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
+    setCropFile(null);
+  }
+
+  // Si el navegador no puede mostrar la foto (ej. HEIC fuera de Safari/iOS),
+  // no bloqueamos el flujo — se sigue con la foto completa sin recortar.
+  function onCropImgError() {
+    const f = cropFile;
+    clearCropState();
+    if (f) handleFile(f);
+  }
+
+  function clampCropRect(
+    mode: "move" | "nw" | "ne" | "sw" | "se",
+    start: { x: number; y: number; w: number; h: number },
+    dx: number, dy: number,
+  ) {
+    const MIN = 8; // % mínimo de lado, para no dejar un recorte inservible
+    if (mode === "move") {
+      return {
+        ...start,
+        x: Math.min(100 - start.w, Math.max(0, start.x + dx)),
+        y: Math.min(100 - start.h, Math.max(0, start.y + dy)),
+      };
+    }
+    let x1 = start.x, y1 = start.y, x2 = start.x + start.w, y2 = start.y + start.h;
+    if (mode.includes("w")) x1 = Math.min(x2 - MIN, Math.max(0, start.x + dx));
+    if (mode.includes("e")) x2 = Math.max(start.x + MIN, Math.min(100, x2 + dx));
+    if (mode.includes("n")) y1 = Math.min(y2 - MIN, Math.max(0, start.y + dy));
+    if (mode.includes("s")) y2 = Math.max(start.y + MIN, Math.min(100, y2 + dy));
+    return { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+  }
+
+  function onCropPointerDown(e: React.PointerEvent, mode: "move" | "nw" | "ne" | "sw" | "se") {
+    e.stopPropagation();
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    cropDragRef.current = { mode, startX: e.clientX, startY: e.clientY, startRect: cropRect };
+  }
+  function onCropPointerMove(e: React.PointerEvent) {
+    const drag = cropDragRef.current;
+    const container = cropContainerRef.current;
+    if (!drag || !container) return;
+    e.stopPropagation();
+    const rect = container.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const dx = ((e.clientX - drag.startX) / rect.width) * 100;
+    const dy = ((e.clientY - drag.startY) / rect.height) * 100;
+    setCropRect(clampCropRect(drag.mode, drag.startRect, dx, dy));
+  }
+  function onCropPointerUp() { cropDragRef.current = null; }
+
+  async function cropImageToFile(file: File, rect: { x: number; y: number; w: number; h: number }): Promise<File> {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = reject;
+        el.src = url;
+      });
+      // naturalWidth/Height del <img> ya vienen orientados según EXIF (igual
+      // que lo que se ve en pantalla) — se recorta sobre esas dimensiones y
+      // el canvas exporta un JPEG plano sin rotación pendiente.
+      const sx = (rect.x / 100) * img.naturalWidth;
+      const sy = (rect.y / 100) * img.naturalHeight;
+      const sw = (rect.w / 100) * img.naturalWidth;
+      const sh = (rect.h / 100) * img.naturalHeight;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(sw));
+      canvas.height = Math.max(1, Math.round(sh));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("sin contexto de canvas");
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob falló"))), "image/jpeg", 0.92),
+      );
+      return new File([blob], file.name.replace(/\.\w+$/, "") + "-recortada.jpg", { type: "image/jpeg" });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function confirmCrop(useCrop: boolean) {
+    const f = cropFile;
+    if (!f) return;
+    if (!useCrop) {
+      clearCropState();
+      await handleFile(f);
+      return;
+    }
+    setLoading(true);
+    try {
+      const cropped = await cropImageToFile(f, cropRect);
+      clearCropState();
+      await handleFile(cropped);
+    } catch {
+      setLoading(false);
+      showError("No se pudo recortar la foto — se usará la foto completa");
+      clearCropState();
+      await handleFile(f);
+    }
+  }
 
   async function handleFile(file: File) {
     setLoading(true);
@@ -1459,22 +1583,77 @@ export default function SplitPage() {
         {/* ── STEP 1: Capture ── */}
         {step === 1 && (
           <div className="space-y-6">
-            <div
-              className="border-2 border-dashed border-indigo-300 rounded-2xl bg-white flex flex-col items-center justify-center py-16 gap-3 cursor-pointer hover:border-indigo-500 transition-colors"
-              onClick={() => !loading && fileRef.current?.click()}
-            >
-              {loading ? (
-                <><div className="w-10 h-10 border-4 border-indigo-300 border-t-indigo-600 rounded-full animate-spin" /><p className="text-slate-500 text-sm">Leyendo boleta…</p></>
-              ) : (
-                <><Camera size={40} className="text-indigo-400" /><p className="font-semibold text-slate-700 text-lg">Subir boleta</p><p className="text-slate-400 text-sm">Foto o imagen</p></>
-              )}
-            </div>
-            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+            {cropFile && cropUrl ? (
+              <div className="space-y-4">
+                <p className="text-sm text-slate-600 text-center">
+                  Recorta la foto para dejar solo el texto de la boleta — así se lee mejor y las etiquetas de color caen en el lugar correcto.
+                </p>
+                <div
+                  ref={cropContainerRef}
+                  className="relative select-none touch-none rounded-xl overflow-hidden bg-slate-900 mx-auto"
+                  onPointerMove={onCropPointerMove}
+                  onPointerUp={onCropPointerUp}
+                  onPointerCancel={onCropPointerUp}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={cropUrl} alt="" className="w-full block" draggable={false} onError={onCropImgError} />
+                  <div
+                    className="absolute border-2 border-white cursor-move"
+                    style={{
+                      left: `${cropRect.x}%`, top: `${cropRect.y}%`,
+                      width: `${cropRect.w}%`, height: `${cropRect.h}%`,
+                      boxShadow: "0 0 0 9999px rgba(0,0,0,0.55)",
+                    }}
+                    onPointerDown={(e) => onCropPointerDown(e, "move")}
+                  >
+                    {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                      <div
+                        key={corner}
+                        onPointerDown={(e) => onCropPointerDown(e, corner)}
+                        className={
+                          "absolute w-6 h-6 -m-3 rounded-full bg-white border-2 border-indigo-500 " +
+                          (corner === "nw" ? "top-0 left-0 cursor-nwse-resize"
+                            : corner === "ne" ? "top-0 right-0 cursor-nesw-resize"
+                            : corner === "sw" ? "bottom-0 left-0 cursor-nesw-resize"
+                            : "bottom-0 right-0 cursor-nwse-resize")
+                        }
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button disabled={loading} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={clearCropState}>
+                    Cambiar foto
+                  </button>
+                  <button disabled={loading} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={() => confirmCrop(false)}>
+                    Foto completa
+                  </button>
+                  <button disabled={loading} className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" onClick={() => confirmCrop(true)}>
+                    {loading ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Crop size={16} />}
+                    Recortar
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="border-2 border-dashed border-indigo-300 rounded-2xl bg-white flex flex-col items-center justify-center py-16 gap-3 cursor-pointer hover:border-indigo-500 transition-colors"
+                onClick={() => !loading && fileRef.current?.click()}
+              >
+                {loading ? (
+                  <><div className="w-10 h-10 border-4 border-indigo-300 border-t-indigo-600 rounded-full animate-spin" /><p className="text-slate-500 text-sm">Leyendo boleta…</p></>
+                ) : (
+                  <><Camera size={40} className="text-indigo-400" /><p className="font-semibold text-slate-700 text-lg">Subir boleta</p><p className="text-slate-400 text-sm">Foto o imagen</p></>
+                )}
+              </div>
+            )}
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickFile} />
+            {!cropFile && (
             <button disabled={loading} className="w-full text-sm text-indigo-600 underline text-center py-2 disabled:opacity-40" onClick={handleManual}>
               Ingresar manualmente
             </button>
+            )}
 
-            {pastBills && pastBills.filter((b) => b.status === "finalized").length > 0 && (
+            {!cropFile && pastBills && pastBills.filter((b) => b.status === "finalized").length > 0 && (
               <div>
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Divisiones guardadas</p>
                 <ul className="space-y-2">
