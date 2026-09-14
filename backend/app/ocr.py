@@ -1962,6 +1962,33 @@ def _position_http_client():
     return _position_client
 
 
+def _warm_position_service() -> None:
+    """Dispara un ping liviano (GET /health) a `services/ocr_position` sin
+    esperar la respuesta. Es un contenedor Vercel que escala a cero cuando
+    está inactivo — el log real de producción (boleta "Consumo Mesa S4",
+    2026-09-14) mostró la secuencia de arranque completa (`Started server
+    process... Waiting for application startup... Application startup
+    complete.`) recién AL LLEGAR a `_populate_positions`, es decir DESPUÉS
+    de que las 2 llamadas de visión ya habían tardado ~18s — el cold start
+    se sumaba encima, no se solapaba con nada. Se llama esto en paralelo,
+    apenas arranca `vision_parse_bill` (antes de la visión, no después):
+    mientras la foto se lee con el LLM, el contenedor ya está despertando
+    en background, así que para cuando `_populate_positions` de verdad
+    necesita el servicio, casi siempre ya está caliente. Best-effort puro:
+    igual que `_populate_positions`, nunca lanza y nunca bloquea la
+    subida — si el ping falla o tarda, no pasa nada distinto a lo de
+    siempre (el propio `_populate_positions` seguiría pagando el cold
+    start, como ya hacía antes de este cambio)."""
+    import os
+    url = os.environ.get("OCR_POSITION_URL")
+    if not url:
+        return
+    try:
+        _position_http_client().get(f"{url.rstrip('/')}/health", timeout=20.0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str]:
     """Best-effort: rellena `position_y`, el alto real (`bbox_y0/y1`) y uno o
     más tramos horizontales reales (`segments`, % del ancho de la foto —
@@ -2052,6 +2079,13 @@ def vision_parse_bill(
     if not ai_provider.is_available():
         return None
     try:
+        # Despierta el contenedor de posición YA, en paralelo con la visión
+        # (ver docstring de `_warm_position_service`) — no se espera su
+        # resultado acá, solo se lanza en un hilo aparte para que el cold
+        # start corra mientras el LLM lee la foto, no después.
+        import threading
+        threading.Thread(target=_warm_position_service, daemon=True).start()
+
         data_url, upright_w, upright_h, _ = _prep_receipt_image(image_bytes)
 
         def _read(model: str) -> str:

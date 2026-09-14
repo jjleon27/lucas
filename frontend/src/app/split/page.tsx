@@ -1500,14 +1500,43 @@ function SplitPageInner({
   // ── Resaltado de color por ítem sobre la foto ───────────────────
   // Una franja translúcida (mismo color que la fila de la derecha) tapa la
   // línea del ítem en la foto, como marcador de texto. Si el OCR no estimó
-  // position_y (ítems agregados a mano, o el modelo lo omitió), se reparte
-  // parejo hasta que el usuario la arrastra a su lugar.
-  function defaultBandPct(idx: number, total: number): number {
-    return total > 0 ? ((idx + 1) / (total + 1)) * 100 : 50;
+  // position_y para ESTE ítem (el matching por Tesseract no lo encontró —
+  // ej. bajo una sombra o pliegue — o es un ítem agregado a mano), antes se
+  // repartía parejo por índice sobre el 100% de la foto completa. Eso
+  // rompía boletas donde SÍ hay ítems reales matcheados: si esos matches
+  // reales quedan agrupados en una franja angosta de la foto (ej. el primer
+  // 35-48% porque el resto cayó bajo sombra), un reparto ciego por
+  // idx/total podía calcular el "hueco" de en medio de la foto entera y
+  // terminar dibujando encima de bandas ya ubicadas con datos reales
+  // (overlap visible — boleta "Consumo Mesa S4", 2026-09-14).
+  // Fix general y geométrico (no una regla por caso): interpola entre las
+  // DOS anclas reales más cercanas (ítems con position_y real, sea por
+  // match de Tesseract o por corrección manual previa) según qué tan lejos
+  // está este índice de cada una. Sin ancla a un lado, extrapola desde la
+  // única ancla que haya hacia ese borde de la foto. Sin ninguna ancla en
+  // toda la boleta, cae al reparto uniforme de siempre.
+  function defaultBandPct(items: BillItem[], idx: number): number {
+    const total = items.length;
+    if (total === 0) return 50;
+    let beforeIdx = -1;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (items[i].position_y != null) { beforeIdx = i; break; }
+    }
+    let afterIdx = -1;
+    for (let i = idx + 1; i < total; i++) {
+      if (items[i].position_y != null) { afterIdx = i; break; }
+    }
+    const beforeY = beforeIdx >= 0 ? items[beforeIdx].position_y! : null;
+    const afterY = afterIdx >= 0 ? items[afterIdx].position_y! : null;
+    if (beforeY == null && afterY == null) return ((idx + 1) / (total + 1)) * 100;
+    if (beforeY == null) return (afterY! * (idx + 1)) / (afterIdx + 1);
+    if (afterY == null) return beforeY + ((100 - beforeY) * (idx - beforeIdx)) / (total - beforeIdx);
+    const frac = (idx - beforeIdx) / (afterIdx - beforeIdx);
+    return beforeY + (afterY - beforeY) * frac;
   }
-  function bandPctFor(item: BillItem, idx: number, total: number): number {
+  function bandPctFor(item: BillItem, idx: number, items: BillItem[]): number {
     if (markerPreview[item.id] !== undefined) return markerPreview[item.id];
-    return item.position_y ?? defaultBandPct(idx, total);
+    return item.position_y ?? defaultBandPct(items, idx);
   }
   function onBandPointerDown(e: React.PointerEvent, item: BillItem, startPct: number) {
     e.stopPropagation();
@@ -2014,7 +2043,10 @@ function SplitPageInner({
           <button onClick={() => step > 1 ? setStep(step - 1) : router.back()} className="text-slate-400 hover:text-slate-700">
             <ChevronLeft size={22} />
           </button>
-          <h1 className="font-bold text-slate-800 flex-1">{stepLabels[step]}</h1>
+          <h1 className="font-bold text-slate-800 flex-1">
+            {stepLabels[step]}
+            {queueRemaining > 0 && <span className="ml-2 text-xs font-medium text-indigo-500">+{queueRemaining} en cola</span>}
+          </h1>
           {bill?.image_url && (
             <a href={resolveBackendUrl(bill.image_url)} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-indigo-600">
               <Camera size={18} />
@@ -2185,7 +2217,7 @@ function SplitPageInner({
                 )}
               </div>
             )}
-            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickFile} />
+            <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={onPickFile} />
             {!cropFile && (
             <button disabled={loading} className="w-full text-sm text-indigo-600 underline text-center py-2 disabled:opacity-40" onClick={handleManual}>
               Ingresar manualmente
@@ -2715,6 +2747,16 @@ function SplitPageInner({
                 <Share2 size={18} /> Compartir por WhatsApp
               </button>
             )}
+            {/* Si subió varias boletas de una (queueRemaining > 0), esta
+                instancia se descarta entera y `SplitPage` monta una nueva
+                limpia con la siguiente foto ya cargada — no reseteamos
+                estado a mano acá, eso es justo lo que evita bugs de "quedó
+                pegado algo de la boleta anterior". */}
+            {finalized && queueRemaining > 0 && (
+              <button onClick={onAdvanceQueue} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
+                Siguiente boleta ({queueRemaining} {queueRemaining === 1 ? "restante" : "restantes"})
+              </button>
+            )}
             {finalized && <button onClick={() => router.push("/dashboard")} className="w-full text-sm text-slate-500 underline py-2">Cerrar</button>}
           </div>
         )}
@@ -2783,7 +2825,7 @@ function SplitPageInner({
                 >
                   {bill.items.map((item, idx) => {
                     const total = bill.items.length;
-                    const pct = bandPctFor(item, idx, total);
+                    const pct = bandPctFor(item, idx, bill.items);
                     const isDragging = markerDrag?.itemId === item.id;
                     // Tramos horizontales de la banda: cuando el servicio de
                     // posición encontró un match confiable, `segments` trae uno o
@@ -2828,7 +2870,7 @@ function SplitPageInner({
                     // causa.
                     const rawSegments = item.segments && item.segments.length > 0 ? item.segments : [[0, 100] as unknown as [number, number, number, number]];
                     const otherCenters = bill.items
-                      .map((other, otherIdx) => (otherIdx === idx ? null : bandPctFor(other, otherIdx, total)))
+                      .map((other, otherIdx) => (otherIdx === idx ? null : bandPctFor(other, otherIdx, bill.items)))
                       .filter((c): c is number => c !== null);
                     const segments = rawSegments.map((seg) => {
                       const [sx0, sx1, sy0, sy1] = seg;
@@ -2855,8 +2897,8 @@ function SplitPageInner({
                         // corrigió la posición a mano) — cae al estimado por
                         // distancia real al vecino más cercano, acotado para
                         // nunca invadirlo (igual que antes de esta migración).
-                        const prevPct = idx > 0 ? bandPctFor(bill.items[idx - 1], idx - 1, total) : null;
-                        const nextPct = idx < total - 1 ? bandPctFor(bill.items[idx + 1], idx + 1, total) : null;
+                        const prevPct = idx > 0 ? bandPctFor(bill.items[idx - 1], idx - 1, bill.items) : null;
+                        const nextPct = idx < total - 1 ? bandPctFor(bill.items[idx + 1], idx + 1, bill.items) : null;
                         const gapToPrev = prevPct !== null ? pct - prevPct : null;
                         const gapToNext = nextPct !== null ? nextPct - pct : null;
                         const gaps = [gapToPrev, gapToNext].filter((g): g is number => g !== null && g > 0);

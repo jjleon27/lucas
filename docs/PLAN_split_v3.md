@@ -1334,3 +1334,71 @@ borrosa en ese punto.
 límite real del modelo, verificar el ground-truth contra la foto (con zoom)
 antes de gastar tiempo/dinero intentando arreglar el pipeline — el propio
 archivo de referencia puede estar mal, como pasó acá.
+
+---
+
+## Cont. 27 (2026-09-14) — boleta "Consumo Mesa S4" (bill_id=150): 3 causas reales, 3 fixes
+
+Boleta real de 22 ítems (muchos repetidos: Iced Latte×2, +Extra Vainilla×2,
++Leche Descremada×2-3, varias líneas $0 de modificador), 30+s y bandas de
+color superpuestas. Se bajó la foto real de Vercel Blob (`vercel blob list`
++ descarga) y se corrió `services/ocr_position` local contra ella con los
+ítems exactos — nada de "se ve mejor", medido contra la foto real.
+
+**Causa 1 — bandas superpuestas (la queja concreta)**: la foto tiene una
+sombra física real (mano/celular) que tapa el tercio medio del papel, desde
+"Omelette" hasta la 2da mitad. Tesseract, a la escala/variante que ganó, solo
+matcheó 8 de 22 ítems (todos arriba de la sombra, agrupados en 35-48% de
+alto de foto, más 2 sueltos en 63-66%). El fallback del frontend para
+ítems SIN match (`defaultBandPct`) repartía por índice sobre el 100% de la
+foto COMPLETA, ignorando dónde habían caído las anclas reales — con 8
+anclas apretadas en 35-48%, el ítem 6 sin match caía en 30.4% por
+índice: literal encima del cluster real. Confirmado con los datos reales
+de esta boleta (no supuesto). **Fix geométrico, no por caso**: interpola
+entre las DOS anclas reales (con `position_y`) más cercanas al índice del
+ítem sin match; sin ancla a un lado, extrapola desde la única que hay hacia
+ese borde; sin ninguna ancla en toda la boleta, cae al reparto uniforme de
+siempre. Con el ítem 6 de esta boleta: antes 30.4% (superpuesto), ahora
+55.3% (a mitad de camino entre sus dos anclas reales, 46.9% y 63.8%) — sin
+overlap. `frontend/src/app/split/page.tsx`: `defaultBandPct`/`bandPctFor`.
+
+**Causa 2 — cold start del contenedor, nunca contabilizado antes**: los
+logs reales de esta request (`vercel logs`) mostraron la secuencia de
+arranque completa del contenedor `ocr_position` (`Started server
+process... Waiting for application startup... Application startup
+complete.`) arrancando recién cuando el backend llegó a
+`_populate_positions` — es decir, DESPUÉS de los ~18s que ya habían tardado
+las 2 llamadas de visión (`_read`=14.6s + `_reformat`=3.3s). El cold start
+se sumaba encima, no se solapaba con nada. **Fix**: `_warm_position_service()`
+nuevo en `backend/app/ocr.py`, dispara un GET `/health` al contenedor en un
+hilo aparte apenas arranca `vision_parse_bill` — en paralelo con la
+visión, no después. Fire-and-forget, mismo comportamiento best-effort que
+ya tenía `_populate_positions` si el servicio no responde. No cambia
+timeouts ni resultados, solo solapa el cold start con tiempo que ya se
+gastaba de todas formas.
+
+**Causa 3 — "subir múltiples boletas" nunca funcionó**: el código de cola
+(`onQueueFiles`/`onAdvanceQueue`, de un trabajo anterior) existía pero
+tenía DOS bugs que lo dejaban muerto: (a) el `<input type="file">` nunca
+tuvo el atributo `multiple`, así que el picker del sistema jamás dejaba
+elegir más de una foto — `files.length > 1` nunca se cumplía; (b)
+`onAdvanceQueue` estaba desestructurado como prop pero nunca se llamaba en
+ningún lado, así que aunque hubiera cola pendiente, nada la avanzaba al
+terminar una boleta. Fix: atributo `multiple` agregado; botón "Siguiente
+boleta (N restantes)" en la pantalla de resumen (step 5) cuando
+`queueRemaining > 0`, más indicador "+N en cola" en el header durante todo
+el flujo.
+
+**Verificado, no inventado**: 453/456 tests backend pasan (3 fallos
+preexisten en `main`, confirmado con `git stash` — son de
+`test_ocr_integration.py`, la ruta de `vision_parse` para cartolas, no
+`vision_parse_bill`; no se tocan en este cambio). `npm run build` limpio.
+La interpolación de bandas se verificó a mano contra las 8 anclas reales de
+esta boleta (arriba). No se tocó `services/ocr_position` ni el matching —
+ambos fixes son fuera del pipeline de OCR (frontend + paralelismo del
+warm-up), riesgo de regresión bajo.
+
+**Pendiente de verificar en producción tras deploy**: re-subir esta misma
+boleta (o una similar) y confirmar en `vercel logs` que el cold start del
+contenedor ya no aparece después de `_populate_positions`, y a ojo que las
+bandas ya no se superponen.
