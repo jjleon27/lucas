@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Account, Person, listAccounts, listPeople, createPerson, getToken, resolveBackendUrl } from "@/lib/api";
-import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw } from "lucide-react";
+import { Camera, Plus, Trash2, Pencil, Check, ChevronRight, ChevronLeft, Share2, Hand, Eraser, Sparkles, X, Crop, RotateCw, RotateCcw } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -162,6 +162,13 @@ export default function SplitPage() {
   const [cropUrl, setCropUrl] = useState<string | null>(null);
   const [cropRect, setCropRect] = useState({ x: 5, y: 5, w: 90, h: 90 });
   const [rotating, setRotating] = useState(false);
+  // Enderezado fino (± 45°): solo transform CSS mientras se arrastra (barato,
+  // instantáneo) — se "hornea" en los píxeles reales recién al soltar, vía
+  // canvas, igual que los giros de 90°. Mientras se arrastra se oculta el
+  // recuadro de recorte (ver `straightening`) para no tener que rotarlo en
+  // sincronía con la foto — se vuelve a mostrar ya alineado tras el commit.
+  const [fineAngle, setFineAngle] = useState(0);
+  const [straightening, setStraightening] = useState(false);
   const cropContainerRef = useRef<HTMLDivElement>(null);
   const cropDragRef = useRef<{ mode: "move" | "nw" | "ne" | "sw" | "se"; startX: number; startY: number; startRect: { x: number; y: number; w: number; h: number } } | null>(null);
 
@@ -275,11 +282,15 @@ export default function SplitPage() {
     setCropFile(f);
     setCropUrl(URL.createObjectURL(f));
     setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+    setFineAngle(0);
+    setStraightening(false);
   }
 
   function clearCropState() {
     setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
     setCropFile(null);
+    setFineAngle(0);
+    setStraightening(false);
   }
 
   // Si el navegador no puede mostrar la foto (ej. HEIC fuera de Safari/iOS),
@@ -371,13 +382,13 @@ export default function SplitPage() {
     }
   }
 
-  // Gira la foto pendiente de recorte 90° a la derecha. Re-codifica los
-  // píxeles ya rotados en un nuevo JPEG (en vez de solo aplicar un
-  // transform CSS) para no tener que manejar por separado el caso de
-  // orientación al calcular el recuadro de recorte — después de girar, el
+  // Gira la foto pendiente de recorte 90° a la izquierda (-1) o derecha (+1).
+  // Re-codifica los píxeles ya rotados en un nuevo JPEG (en vez de solo
+  // aplicar un transform CSS) para no tener que manejar por separado el caso
+  // de orientación al calcular el recuadro de recorte — después de girar, el
   // archivo de trabajo YA está en la orientación correcta y el recorte
   // vuelve a partir de foto completa.
-  async function rotateCropImage() {
+  async function rotateCropImage(direction: 1 | -1) {
     if (!cropFile || rotating) return;
     setRotating(true);
     const prevUrl = cropUrl;
@@ -390,8 +401,13 @@ export default function SplitPage() {
       canvas.height = img.naturalWidth;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("sin contexto de canvas");
-      ctx.translate(canvas.width, 0);
-      ctx.rotate(Math.PI / 2);
+      if (direction === 1) {
+        ctx.translate(canvas.width, 0);
+        ctx.rotate(Math.PI / 2);
+      } else {
+        ctx.translate(0, canvas.height);
+        ctx.rotate(-Math.PI / 2);
+      }
       ctx.drawImage(img, 0, 0);
       const rotated = await canvasToJpegFile(canvas, cropFile.name.replace(/\.\w+$/, "") + ".jpg");
       setCropFile(rotated);
@@ -401,6 +417,46 @@ export default function SplitPage() {
       showError("No se pudo girar la foto");
     } finally {
       if (prevUrl) URL.revokeObjectURL(prevUrl);
+      setRotating(false);
+    }
+  }
+
+  // Enderezado fino: mientras se arrastra el slider solo se aplica un
+  // transform CSS (instantáneo, sin tocar píxeles). Al soltar, se "hornea"
+  // el ángulo en píxeles reales vía canvas — igual mecanismo que el giro de
+  // 90°, pero con el canvas agrandado para no recortar las esquinas que
+  // sobresalen al rotar un ángulo no múltiplo de 90°.
+  async function commitFineRotation() {
+    if (!cropFile || fineAngle === 0) { setStraightening(false); return; }
+    setRotating(true);
+    const prevUrl = cropUrl;
+    try {
+      const url = URL.createObjectURL(cropFile);
+      const img = await loadImageEl(url);
+      URL.revokeObjectURL(url);
+      const rad = (fineAngle * Math.PI) / 180;
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(w * cos + h * sin);
+      canvas.height = Math.round(w * sin + h * cos);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("sin contexto de canvas");
+      ctx.fillStyle = "#000"; // relleno de las esquinas que quedan fuera de la foto original
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -w / 2, -h / 2);
+      const rotated = await canvasToJpegFile(canvas, cropFile.name.replace(/\.\w+$/, "") + ".jpg");
+      setCropFile(rotated);
+      setCropUrl(URL.createObjectURL(rotated));
+      setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+    } catch {
+      showError("No se pudo enderezar la foto");
+    } finally {
+      if (prevUrl) URL.revokeObjectURL(prevUrl);
+      setFineAngle(0);
+      setStraightening(false);
       setRotating(false);
     }
   }
@@ -1648,20 +1704,9 @@ export default function SplitPage() {
           <div className="space-y-6">
             {cropFile && cropUrl ? (
               <div className="space-y-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm text-slate-600">
-                    Recorta la foto para dejar solo el texto de la boleta — así se lee mejor y las etiquetas de color caen en el lugar correcto.
-                  </p>
-                  <button
-                    type="button"
-                    disabled={rotating}
-                    onClick={rotateCropImage}
-                    className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
-                    aria-label="Girar foto"
-                  >
-                    {rotating ? <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" /> : <RotateCw size={18} />}
-                  </button>
-                </div>
+                <p className="text-sm text-slate-600">
+                  Recorta la foto para dejar solo el texto de la boleta — así se lee mejor y las etiquetas de color caen en el lugar correcto.
+                </p>
                 <div
                   ref={cropContainerRef}
                   className="relative select-none touch-none rounded-xl overflow-hidden bg-slate-900 mx-auto"
@@ -1670,30 +1715,66 @@ export default function SplitPage() {
                   onPointerCancel={onCropPointerUp}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={cropUrl} alt="" className="w-full block" draggable={false} onError={onCropImgError} />
-                  <div
-                    className="absolute border-2 border-white cursor-move"
-                    style={{
-                      left: `${cropRect.x}%`, top: `${cropRect.y}%`,
-                      width: `${cropRect.w}%`, height: `${cropRect.h}%`,
-                      boxShadow: "0 0 0 9999px rgba(0,0,0,0.55)",
-                    }}
-                    onPointerDown={(e) => onCropPointerDown(e, "move")}
+                  <img
+                    src={cropUrl} alt="" className="w-full block" draggable={false} onError={onCropImgError}
+                    style={{ transform: `rotate(${fineAngle}deg)` }}
+                  />
+                  {!straightening && (
+                    <div
+                      className="absolute border-2 border-white cursor-move"
+                      style={{
+                        left: `${cropRect.x}%`, top: `${cropRect.y}%`,
+                        width: `${cropRect.w}%`, height: `${cropRect.h}%`,
+                        boxShadow: "0 0 0 9999px rgba(0,0,0,0.55)",
+                      }}
+                      onPointerDown={(e) => onCropPointerDown(e, "move")}
+                    >
+                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                        <div
+                          key={corner}
+                          onPointerDown={(e) => onCropPointerDown(e, corner)}
+                          className={
+                            "absolute w-6 h-6 -m-3 rounded-full bg-white border-2 border-indigo-500 " +
+                            (corner === "nw" ? "top-0 left-0 cursor-nwse-resize"
+                              : corner === "ne" ? "top-0 right-0 cursor-nesw-resize"
+                              : corner === "sw" ? "bottom-0 left-0 cursor-nesw-resize"
+                              : "bottom-0 right-0 cursor-nwse-resize")
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {/* Girar 90° (ambos lados) + enderezado fino de a poco (±45°, arrastrando) */}
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button" disabled={rotating} onClick={() => rotateCropImage(-1)}
+                    className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
+                    aria-label="Girar 90° a la izquierda"
                   >
-                    {(["nw", "ne", "sw", "se"] as const).map((corner) => (
-                      <div
-                        key={corner}
-                        onPointerDown={(e) => onCropPointerDown(e, corner)}
-                        className={
-                          "absolute w-6 h-6 -m-3 rounded-full bg-white border-2 border-indigo-500 " +
-                          (corner === "nw" ? "top-0 left-0 cursor-nwse-resize"
-                            : corner === "ne" ? "top-0 right-0 cursor-nesw-resize"
-                            : corner === "sw" ? "bottom-0 left-0 cursor-nesw-resize"
-                            : "bottom-0 right-0 cursor-nwse-resize")
-                        }
-                      />
-                    ))}
+                    <RotateCcw size={18} />
+                  </button>
+                  <div className="flex-1 flex items-center gap-2">
+                    <input
+                      type="range" min={-45} max={45} step={1}
+                      value={fineAngle}
+                      disabled={rotating}
+                      onChange={(e) => { setFineAngle(parseInt(e.target.value, 10)); setStraightening(true); }}
+                      onPointerUp={commitFineRotation}
+                      onMouseUp={commitFineRotation}
+                      onTouchEnd={commitFineRotation}
+                      className="flex-1 accent-indigo-600"
+                      aria-label="Enderezar foto de a poco"
+                    />
+                    <span className="text-xs text-slate-500 w-8 text-right tabular-nums shrink-0">{fineAngle}°</span>
                   </div>
+                  <button
+                    type="button" disabled={rotating} onClick={() => rotateCropImage(1)}
+                    className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
+                    aria-label="Girar 90° a la derecha"
+                  >
+                    {rotating ? <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" /> : <RotateCw size={18} />}
+                  </button>
                 </div>
                 <div className="flex gap-2">
                   <button disabled={loading} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={clearCropState}>
