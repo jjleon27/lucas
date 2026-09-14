@@ -1167,3 +1167,48 @@ la precisión del eval oficial (90.8% ≥ 87.6%) ni reintrodujo overlaps.
 Instrumentación agregada de paso (`[ocr][retry] candidato2 GANO/perdio`,
 `backend/app/ocr.py`) para que la próxima vez que el reintento sí dispare,
 quede loggeado sin tener que instrumentar de nuevo.
+
+---
+
+## Cont. 23 (2026-09-14) — bug crítico en prod: reasoning_effort rompía el split entero
+
+El usuario reportó "se demoró 5 segundos pero no hay lista de ítems ni cajas de
+color" justo después del deploy de la evaluación (cont. 22). Revisado con logs
+reales de Vercel (`vercel logs`): **cada subida de boleta fallaba**, no solo
+algunas.
+
+```
+[ai.provider] openai vision_text failed: Completions.create() got an
+unexpected keyword argument 'reasoning_effort'
+[ocr] vision_parse_bill: respuesta vacía/no parseable
+```
+
+**Causa**: el fix de velocidad de la mañana (cont. 21, `reasoning_effort="low"`)
+pasó TODAS las pruebas en local porque el entorno local tenía `openai==2.38.0`
+instalado globalmente — pero `backend/requirements.txt` pineaba `openai==1.51.0`,
+una versión del SDK que ni siquiera acepta ese parámetro (`TypeError`). El
+`try/except` de `_read()` capturaba el error en silencio → `vision_parse_bill`
+devolvía `None` → el usuario veía "nada" sin ningún aviso de error. Un bug
+crítico (el split quedaba completamente roto), no solo una regresión de
+velocidad — encontrado y arreglado en ~15 minutos desde el reporte.
+
+**Fix en dos partes**:
+1. **Inmediato (defensivo)**: `vision_text` reintenta SIN `reasoning_effort` si
+   el SDK instalado no lo soporta (`TypeError` específico, no un catch-all) —
+   funciona en cualquier versión del paquete, nunca vuelve a romper por esto
+   aunque alguien pinee una versión vieja de nuevo (commit `51b5d64`).
+2. **Raíz**: `requirements.txt` actualizado a `openai==1.99.0` — versión mínima
+   confirmada PROBANDO en vivo (no adivinada): se instalaron 1.99.0, 1.97.0,
+   1.93.0, 1.90.0, 1.80.0, 1.70.0 en un venv aislado y se inspeccionó la firma
+   real de `Completions.create` — todas desde 1.70.0 soportan el parámetro.
+   Se eligió 1.99.0 (última de la serie 1.x, sin saltar a un major version 2.x
+   que arriesgaría romper otras llamadas ya funcionando). Validado con
+   requirements.txt completo instalado en un venv aislado: 450/450 tests +
+   prueba real de las 3 superficies de API del proyecto (`vision_text`,
+   `chat_completion`, `vision_json`) — commit `6685fd2`.
+
+**Lección para la próxima vez que se toque una versión de librería vía API
+nueva de un proveedor**: el entorno local puede tener una versión distinta a
+la pineada en `requirements.txt` — verificar SIEMPRE la versión realmente
+pineada (no solo lo que hay instalado localmente) antes de dar por buena una
+prueba local de un parámetro de API nuevo.
