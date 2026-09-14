@@ -1302,3 +1302,35 @@ ground-truth — el mecanismo de descuento/propina de cont. 23 solo está
 validado con aritmética sintética, no contra una foto real de punta a
 punta. Conseguir 1 boleta real con descuento (ya se usó
 `/Users/kako2/Downloads/Boletas/` antes) y agregarla como 10ma fixture.
+
+---
+
+## Cont. 26 (2026-09-14) — corrección: "cuenta_valeria" nunca fue un error del modelo
+
+El usuario cuestionó directamente: "pero pechuga de pollo dice 5700 pues, y
+ensalada surtida es 4400... quizás has sido tú siempre el que se equivoca".
+Tenía razón. Revisando la foto real con zoom (`images-12.jpeg`/`images-21.jpeg`
+en `/Users/kako2/Downloads/Boletas/`): **Pechuga de Pollo = $5.700, Ensalada
+Surtida = $4.400** — la suma (1700+1700+5700+4400+8900+2500=24.900) cuadra
+exacto con el Total Final impreso.
+
+El ground-truth en `backend/tests/eval/expected/cuenta_valeria.json` tenía
+`"Pechuga de Pollo": 4400` y `"Ensalada Surtida": null` — **mal armado**, le
+asigné el precio equivocado al ítem equivocado (y nunca completé el otro).
+El modelo de visión leyó bien "Pechuga de Pollo = $5.700" en TODAS las
+pruebas de hoy (más de 15 corridas, incluidas 2 fotos distintas de la misma
+boleta real) — lo que fallaba todo el día no era el pipeline, era mi propio
+archivo de referencia.
+
+**Corregido y re-verificado**: `cuenta_valeria` da **100.0%** exacto en los 6
+ítems con el ground-truth arreglado. Esto significa que el estado real del
+eval set oficial es **8/9 boletas perfectas**, no 7/9 como se venía
+reportando — `danes_vitacura` (SÍ verificado contra la foto real con zoom,
+Nordic Ginger $1.500 y Plateada Greda $15.800 confirmados, suma exacta) sigue
+siendo el único caso genuinamente difícil del set, con la foto físicamente
+borrosa en ese punto.
+
+**Lección aplicada**: antes de aceptar cualquier "boleta que falla" como un
+límite real del modelo, verificar el ground-truth contra la foto (con zoom)
+antes de gastar tiempo/dinero intentando arreglar el pipeline — el propio
+archivo de referencia puede estar mal, como pasó acá.
