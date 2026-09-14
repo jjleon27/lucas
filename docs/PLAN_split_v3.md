@@ -1001,3 +1001,58 @@ confirmadas también en `git stash`). Build frontend verificado. Commiteado
 (`39cad62`), pusheado, deployado (`vercel --prod --yes`), verificado en
 producción (health check + navegador, página `/split` carga limpia sin
 errores de consola).
+
+---
+
+## Cont. 21 (2026-09-14) — /loop de optimización de "Dividir cuenta" (arranque)
+
+Usuario pidió vía `/loop` (autónomo, sin intervalo fijo) un loop de mejora sistemática:
+probar con boletas reales, arreglar lo que falle, hacerlo más rápido, planeado por Fable
+y ejecutado por modelos baratos, hasta "optimizar división de cuenta". Plan completo de
+Fable: métrica compuesta (posición gratis + contenido real + latencia), árbol de triage
+por categoría de falla (bug real / límite de imagen / mejor prep de foto), condición de
+parada (2 corridas sin regresión, ≥90% contenido, ≥20% menos latencia p95), presupuesto
+(qué cambios pagan LLM y cuáles no).
+
+**Fase 0 ejecutada** (encontrado real al leer el código, no supuesto: `run_eval.py`
+NUNCA había evaluado `vision_parse_bill` — solo el pipeline general `parse_receipt`):
+- `--pipeline {tx,bill}` en `run_eval.py`, con `score_one_bill` (items_lines_bill por
+  línea + needs_review_fn/fp) — más relevante para split que el total agregado.
+- Instrumentación de tiempo por paso (`_read`/`_reformat`/`_populate_positions`) en
+  `ocr.py`, para medir cuellos de botella reales antes de tocar velocidad.
+- **Baseline real (primera vez que existe un número)**: ~86% overall, items_lines_bill
+  90%, needs_review sin falsos positivos en 2 corridas. `danes_vitacura` inestable
+  entre corridas (distintos ítems mal cada vez — confirma que es un límite de calidad
+  de imagen genuino, no un bug determinístico).
+- Bug propio encontrado y arreglado en el scorer nuevo: `dondewilly_vinadelmar` tiene
+  propina sugerida incluida en el total impreso, pero en split la propina se agrega
+  aparte en la UI — el chequeo de `amount` ahora respeta `items_lenient` para eso,
+  sin apagar el chequeo por línea (`items_lines_bill`), que es el que realmente
+  importa para dividir cuenta.
+
+**Bug real encontrado en paralelo** (reportado por el usuario con foto real, mismo día):
+banda de color más alta que el texto, se superponía con la del ítem vecino. Causa
+doble: `_row_segments` en `services/ocr_position` a veces agrupa de más en boletas con
+líneas muy juntas (bbox sale más alto que la fila real — verificado, gaps negativos de
+hasta -2.1 entre filas), y el frontend además inflaba esa altura ×1.3 sin límite. Fix:
+se quita la inflación, y se agrega un clamp general — la altura de cualquier tramo
+nunca cruza el punto medio hacia el ítem vecino más cercano por posición real en la
+foto, sea cual sea la causa del bbox. **Validado con 53 boletas reales de CORD-v2**
+(dataset público, no chileno — pero geométricamente representativo, gratis, sin LLM):
+17% mostraban el mismo patrón de bbox invadiendo la fila vecina. No era un caso
+aislado — confirma que el fix ataca algo real y común, no solo la foto reportada.
+
+**Sobre datasets de boletas reales** (pregunta del usuario): no existe dataset público
+de boletas CHILENAS. SROIE (ICDAR 2019, 1000 boletas) y CORD-v2 (Naver, 1000 boletas)
+son los datasets públicos de boletas más usados, pero ambos son de Indonesia/Malasia —
+sirven gratis para estresar la parte GEOMÉTRICA (posición, rotación, alineación —
+como se hizo arriba), pero no para validar lectura de montos en pesos chilenos o
+formato IVA 19% (para eso solo sirve seguir sumando fotos reales chilenas, como ya se
+viene haciendo). Muestra CORD-v2 descargada a `/private/tmp/.../scratchpad/cord/`
+(temporal, no versionada — es del dataset externo, no del proyecto).
+
+Pendiente (loop continúa): recorrer el árbol de triage de Fable sobre `cuenta_valeria`
+y `ponzano_madrid` (fallaron en la 2da corrida pero no en la 1ra — más evidencia de
+inestabilidad, no determinismo perfecto del modelo a temperature=0), y explorar las
+palancas de velocidad (tamaño de imagen a visión, keep-alive HTTP hacia
+`services/ocr_position`) con los tiempos ya instrumentados.
