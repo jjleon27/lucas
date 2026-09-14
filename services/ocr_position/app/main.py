@@ -579,7 +579,46 @@ def position(req: PositionRequest) -> PositionResponse:
                     for s in segs
                 ],
             ))
+    _clamp_adjacent_overlap(items_out)
     return PositionResponse(items=items_out, ocr_lines=[l["text"] for l in lines])
+
+
+def _clamp_adjacent_overlap(items_out: list[ItemPosition]) -> None:
+    """Tesseract a veces devuelve la altura de UNA línea inflada — casi el
+    doble de lo normal — cuando esa línea puntual está borrosa/con poco
+    contraste y su propio análisis de layout fusiona la fila con parte de
+    la de arriba o abajo (visto en vivo: una boleta con mediana de altura
+    de línea 2.7% dio una línea puntual de 4.5%, justo la que se veía
+    invadiendo al ítem vecino). No es un problema del agrupado de fila
+    (`_row_segments`) ni de escala/contraste — es la caja que Tesseract
+    mismo calculó para esa línea en particular.
+
+    En vez de adivinar cuál de los dos bordes de esa línea está mal (no
+    hay forma de saberlo de antemano, y varía de foto en foto), se acota
+    GEOMÉTRICAMENTE después de emparejar: ningún ítem puede extender su
+    bbox/segmentos más allá del punto medio hacia el ítem SIGUIENTE en el
+    orden de lectura (mismo orden que ya usa `_match_items_to_lines`,
+    siempre hacia adelante) — así, sea cual sea la causa real de una caja
+    inflada, nunca termina pisando el espacio del ítem de al lado. Solo
+    actúa cuando hay traslape real entre dos ítems consecutivos con match;
+    ítems sin match (bbox None) o ya separados quedan intactos."""
+    for i in range(len(items_out) - 1):
+        a, b = items_out[i], items_out[i + 1]
+        if a.position_y is None or b.position_y is None:
+            continue
+        if a.bbox_y1 is None or b.bbox_y0 is None or a.bbox_y1 <= b.bbox_y0:
+            continue  # sin traslape, no hay nada que acotar
+        midpoint = round((a.position_y + b.position_y) / 2, 1)
+        if a.bbox_y1 > midpoint:
+            a.bbox_y1 = midpoint
+            for seg in a.segments:
+                seg.y1 = min(seg.y1, midpoint)
+                seg.y0 = min(seg.y0, seg.y1)
+        if b.bbox_y0 < midpoint:
+            b.bbox_y0 = midpoint
+            for seg in b.segments:
+                seg.y0 = max(seg.y0, midpoint)
+                seg.y1 = max(seg.y1, seg.y0)
 
 
 @app.get("/health")
