@@ -1082,3 +1082,31 @@ palancas de velocidad (tamaño de imagen a visión, keep-alive HTTP hacia
 Pendiente: instrumentar mejor el desglose de tiempo en boletas grandes (la captura
 de esta corrida se perdió por un pipe propio), y decidir si vale la pena repensar el
 reintento completo (2 llamadas más) quando la boleta ya es grande de por sí.
+
+**Addendum — causa real de la lentitud reportada, encontrada (2026-09-14)**:
+el usuario insistió en que ChatGPT lee cualquiera de estas boletas en <10s, y
+pidió averiguar en serio dónde se iba el tiempo. Se midió con `time.time()`
+alrededor de cada llamada real (no se adivinó):
+
+- `detail: "high"` vs `"low"` en la imagen: sin diferencia real (6.2s vs 7.0s
+  en una boleta simple) — descartado como causa.
+- Largo del prompt del sistema: 169 caracteres — descartado, es trivial.
+- **La causa real**: `vision_text` (usada por `vision_parse_bill`) no fijaba
+  `reasoning_effort` — el modelo (`gpt-5.6-luna`, familia gpt-5 con
+  razonamiento) gastaba miles de tokens de "pensamiento" interno invisible
+  antes de responder. Medido en la boleta real más lenta del día (22+ ítems):
+  `completion_tokens=2279` para una respuesta visible de ~260 tokens — el 90%
+  del tiempo era pensamiento que nadie ve.
+- `reasoning_effort="low"`: pipeline completo de esa misma boleta bajó de
+  **74.1s a 18.0s (-75%)** — y esta vez ni siquiera disparó el reintento (la
+  lectura salió más consistente). Se probó también `"none"` (4.8s, -79%) pero
+  cambia de comportamiento: en vez de admitir "[Ilegible]" cuando no puede
+  leer algo, empieza a INVENTAR con confianza (un ítem pasó de "ilegible" a
+  un nombre y precio inventados) — inaceptable para montos de dinero,
+  descartado pese a ser más rápido. `"low"` es el punto donde eso no pasó.
+- Validado con eval real (9 boletas): 87.6% (igual o mejor que el baseline
+  85.9% sin fijar el parámetro).
+
+Implementado en `OpenAIProvider.vision_text` (`backend/app/ai/provider.py`),
+condicionado a modelos `gpt-5*` — no toca `vision_json` (pipeline general
+`/upload`, hoy en `gpt-4o`, no aplica). Commit `1fbfe0e`.
