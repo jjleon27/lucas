@@ -19,6 +19,7 @@ import base64
 import io
 import json
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -1967,6 +1968,7 @@ def vision_parse_bill(
 
         def _read(model: str) -> str:
             """Paso 1: lectura libre de la foto, sin pedirle formato."""
+            t0 = time.time()
             try:
                 resp = ai_provider.vision_text(
                     system_prompt=_RECEIPT_PROMPT_BILL,
@@ -1982,10 +1984,16 @@ def vision_parse_bill(
             except Exception as _exc:  # noqa: BLE001
                 print(f"[ocr] vision_text (bill) failed: {_exc}")
                 return ""
+            finally:
+                # timing por paso — ver docs/PLAN_split_v3.md cont. 21 (loop de
+                # optimización, Fase 0.1): permite saber, con datos reales y no
+                # supuestos, cuál de los pasos pesa más antes de optimizar velocidad.
+                print(f"[ocr][timing] _read({model})={time.time()-t0:.2f}s")
 
         def _reformat(free_text: str) -> str:
             """Paso 2: reordena la lectura libre (ya correcta) a nuestro
             formato fijo — texto plano, no ve la imagen, barato y rápido."""
+            t0 = time.time()
             try:
                 resp = ai_provider.chat_completion(
                     messages=[
@@ -2002,6 +2010,8 @@ def vision_parse_bill(
             except Exception as _exc:  # noqa: BLE001
                 print(f"[ocr] chat_completion (reformat bill) failed: {_exc}")
                 return ""
+            finally:
+                print(f"[ocr][timing] _reformat={time.time()-t0:.2f}s")
 
         def _read_and_structure(model: str) -> Optional[dict]:
             free_text = _read(model)
@@ -2039,7 +2049,9 @@ def vision_parse_bill(
             todo lo necesario para decidir si este candidato es bueno o si
             conviene reintentar con otro modelo."""
             built_items = _build_items(parsed_dict)
+            t0 = time.time()
             ocr_lines = _populate_positions(built_items, image_bytes)
+            print(f"[ocr][timing] _populate_positions={time.time()-t0:.2f}s")
             flags = _suspect_items(built_items, ocr_lines)
             for it, flag in zip(built_items, flags):
                 it.needs_review = flag

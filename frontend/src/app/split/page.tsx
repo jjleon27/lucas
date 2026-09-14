@@ -2660,8 +2660,8 @@ function SplitPageInner({
                     // completo, como antes.
                     const PAD_X = 2; // puntos porcentuales de margen a cada lado
                     const MIN_WIDTH_PCT = 8; // ancho mínimo por tramo, % del ancho de la foto
-                    const PAD_Y = 0.6; // puntos porcentuales de margen arriba/abajo
-                    const MIN_HEIGHT_PCT = 1.6; // alto mínimo por tramo, % del alto de la foto
+                    const PAD_Y = 0.2; // puntos porcentuales de margen arriba/abajo — chico a propósito, solo legibilidad, no "aire" extra que invada al vecino
+                    const MIN_HEIGHT_PCT = 1.0; // alto mínimo por tramo, % del alto de la foto
                     // Alto de la banda: cuando el servicio de posición encontró un
                     // match confiable, cada tramo usa el alto REAL de SU PROPIA
                     // línea de texto (segmento[2]=y0, segmento[3]=y1, en % de la
@@ -2673,7 +2673,23 @@ function SplitPageInner({
                     // la altura del nombre, desalineado del texto real. Formato
                     // viejo [x0,x1] (fotos leídas antes de esta migración, sin
                     // y0/y1 propio) cae al bbox_y0/y1 del ítem completo, como antes.
+                    //
+                    // La banda debe cubrir SOLO la altura real del texto — sin
+                    // inflarla de más (antes se multiplicaba ×1.3, lo que en
+                    // boletas con líneas muy juntas hacía que ítems vecinos se
+                    // sobrepusieran visualmente). Como red de seguridad ADICIONAL
+                    // (el bbox que devuelve el servicio de posición puede venir
+                    // un poco más alto que una sola fila si Tesseract agrupó de
+                    // más — ver `_row_segments` en services/ocr_position), la
+                    // altura de CUALQUIER tramo se acota para que nunca cruce el
+                    // punto medio hacia el ítem vecino más cercano (por posición
+                    // real en la foto, no por orden de la lista) — así un bbox
+                    // mal calculado nunca invade al de al lado, sea cual sea su
+                    // causa.
                     const rawSegments = item.segments && item.segments.length > 0 ? item.segments : [[0, 100] as unknown as [number, number, number, number]];
+                    const otherCenters = bill.items
+                      .map((other, otherIdx) => (otherIdx === idx ? null : bandPctFor(other, otherIdx, total)))
+                      .filter((c): c is number => c !== null);
                     const segments = rawSegments.map((seg) => {
                       const [sx0, sx1, sy0, sy1] = seg;
                       const x0 = Math.max(0, sx0 - PAD_X);
@@ -2688,8 +2704,12 @@ function SplitPageInner({
                       if (y0 != null && y1 != null) {
                         const centerPct = (y0 + y1) / 2;
                         const heightPct = Math.max(MIN_HEIGHT_PCT, Math.abs(y1 - y0) + PAD_Y * 2);
+                        const nearestGap = otherCenters.length > 0
+                          ? Math.min(...otherCenters.map((c) => Math.abs(c - centerPct))) * 2
+                          : heightPct;
+                        const cappedHeightPct = Math.min(heightPct, Math.max(MIN_HEIGHT_PCT, nearestGap * 0.9));
                         top = imgBox.offsetY + (centerPct / 100) * imgBox.height;
-                        height = Math.min(40, heightPct * 1.3 * imgBox.height / 100);
+                        height = Math.min(40, cappedHeightPct * imgBox.height / 100);
                       } else {
                         // Sin bbox (sin match, reparto parejo, o el usuario
                         // corrigió la posición a mano) — cae al estimado por

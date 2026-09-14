@@ -209,13 +209,24 @@ def score_one(parsed: dict, exp: dict) -> dict:
 
 
 # ── running the pipeline ──────────────────────────────────────────────────────
-def run_pipeline(img_path: Path):
-    """Returns (parsed_dict, raw_result, elapsed_s)."""
+def run_pipeline(img_path: Path, pipeline: str = "tx"):
+    """Returns (parsed_dict, raw_result, elapsed_s).
+
+    pipeline="tx" (default): ocr.parse_receipt — carga general de
+    transacciones/cartola, lo único que este harness evaluaba hasta ahora.
+    pipeline="bill": ocr.vision_parse_bill — el pipeline REAL de "Dividir
+    cuenta" (bills.py::bill_ocr). Nunca se había evaluado con este harness
+    (gap real encontrado al leer el código, no una suposición) — sin
+    category/is_income (bill-split no los usa), pero con line_total y
+    needs_review por ítem (bill-split sí los usa)."""
     from app import ocr  # imported late so --vision-model / --provider take effect
 
     data = img_path.read_bytes()
     t0 = time.time()
-    res = ocr.parse_receipt(data, db=None, user_id=None)
+    if pipeline == "bill":
+        res = ocr.vision_parse_bill(data, db=None, user_id=None)
+    else:
+        res = ocr.parse_receipt(data, db=None, user_id=None)
     dt = time.time() - t0
 
     if not res or not res.transactions:
@@ -232,7 +243,11 @@ def run_pipeline(img_path: Path):
         "is_income": bool(getattr(tx, "is_income", False)),
         "category": getattr(tx, "category", "") or "",
         "items": [
-            {"name": it.name, "price": float(it.price or 0), "quantity": int(it.quantity or 1)}
+            {
+                "name": it.name, "price": float(it.price or 0), "quantity": int(it.quantity or 1),
+                "line_total": float(it.line_total) if getattr(it, "line_total", None) is not None else None,
+                "needs_review": bool(getattr(it, "needs_review", False)),
+            }
             for it in (getattr(tx, "items", []) or [])
         ],
     }
@@ -244,18 +259,127 @@ def run_pipeline(img_path: Path):
     return parsed, res, dt
 
 
+def score_one_bill(parsed: dict, exp: dict) -> dict:
+    """Scoring para el pipeline de bill-split — reusa el MISMO ground-truth
+    (expected/*.json) que score_one, pero sin currency/merchant/neto_iva/
+    category (bill-split no los usa) y con dos checks nuevos que SÍ importan
+    para dividir cuenta, calculables con el ground-truth que ya existe (sin
+    etiquetar nada nuevo):
+
+    - items_lines_bill: por cada ítem esperado con line_total conocido, ¿hay
+      un ítem devuelto que matchea por nombre (difuso) Y cuyo total de línea
+      cae dentro de la tolerancia? % de cobertura — mide si el usuario
+      terminaría dividiendo la boleta con los montos reales o no.
+    - needs_review_fn / needs_review_fp: para cada ítem devuelto, la verdad
+      ("¿está mal?") sale del mismo match nombre+total de arriba — así se
+      mide si el flag needs_review avisa cuando debe (FN = mal pero no
+      avisado, el peligroso — plata mal repartida en silencio) y si no
+      molesta de más (FP = bien pero avisado igual)."""
+    from difflib import SequenceMatcher
+    checks: dict[str, dict] = {}
+
+    def put(name, applicable, ok, detail="", weight=1.0, partial=None):
+        checks[name] = {"applicable": applicable, "ok": bool(ok), "weight": weight, "detail": detail}
+        if partial is not None:
+            checks[name]["partial"] = partial
+
+    cur_exp = (exp.get("currency") or "CLP").upper()
+    if exp.get("items_lenient"):
+        # El "amount" del ground-truth puede incluir propina sugerida (ver
+        # p.ej. dondewilly_vinadelmar.json) — válido para el pipeline
+        # general (vision_parse), pero NO para dividir cuenta: ahí la
+        # propina se agrega aparte en un paso propio de la UI (ver
+        # "Propina" en frontend/split), así que el "amount" correcto de
+        # vision_parse_bill es la suma de los ÍTEMS, no el total impreso.
+        # `items_lines_bill` ya valida que cada línea sea correcta — ese es
+        # el chequeo que importa acá, no un total que carga una ambigüedad
+        # que no aplica a este pipeline.
+        put("amount", False, True, "items_lenient — se valida por línea (items_lines_bill), no por total")
+    else:
+        amt_exp = float(exp["amount"])
+        amt_got = float(parsed.get("amount") or 0)
+        tol = _amount_tol(amt_exp, cur_exp)
+        put("amount", True, abs(amt_got - amt_exp) <= tol, f"exp {amt_exp:g} +-{tol:g} / got {amt_got:g}", weight=3.0)
+
+    exp_lines = [it for it in (exp.get("items") or []) if it.get("line_total") is not None]
+    items = parsed.get("items") or []
+    fn_details, fp_details = [], []
+    # OJO: a diferencia de `items_lines` en score_one, acá NO se salta este
+    # chequeo cuando `items_lenient` — ese flag significa "el TOTAL/cantidad
+    # de ítems es ambiguo" (p.ej. propina sugerida incluida o no en el total
+    # impreso, ver dondewilly_vinadelmar.json), no "los line_total de cada
+    # ítem no son confiables" — el ground-truth sigue trayendo el precio
+    # exacto de cada línea, y eso es justo lo que importa para dividir
+    # cuenta (cada persona paga lo que pidió, no depende de si hay propina).
+    if exp_lines:
+        pool = list(enumerate(items))
+        hits = 0
+        matched_idx: set[int] = set()
+        line_details = []
+        for el in exp_lines:
+            en = _norm(el["name"])
+            best, bi, bidx = 0.0, -1, -1
+            for pos, (idx, pi) in enumerate(pool):
+                r = SequenceMatcher(None, en, _norm(pi.get("name", ""))).ratio()
+                if r > best:
+                    best, bi, bidx = r, pos, idx
+            lt_exp = float(el["line_total"])
+            if bi >= 0 and best >= 0.5:
+                idx, pi = pool.pop(bi)
+                matched_idx.add(idx)
+                lt_got = pi["line_total"] if pi.get("line_total") is not None else pi["price"] * pi["quantity"]
+                ok_line = abs(lt_got - lt_exp) <= max(lt_exp * 0.05, 50)
+                if ok_line:
+                    hits += 1
+                else:
+                    line_details.append(f"{el['name']}: exp {lt_exp:g} got {lt_got:g}")
+                    if not pi["needs_review"]:  # mal Y no avisado -> falso negativo del flag
+                        fn_details.append(el["name"])
+            else:
+                line_details.append(f"{el['name']}: sin match")
+        # ítems devueltos que SÍ matchearon bien pero igual quedaron needs_review=True -> falso positivo
+        for idx, pi in enumerate(items):
+            if idx in matched_idx and pi["needs_review"]:
+                any_bad = any(d.startswith(pi["name"] + ":") for d in line_details)
+                if not any_bad:
+                    fp_details.append(pi["name"])
+        frac = hits / len(exp_lines)
+        checks["items_lines_bill"] = {
+            "applicable": True, "ok": frac >= 0.999, "partial": round(frac, 3), "weight": 3.0,
+            "detail": f"{hits}/{len(exp_lines)} lineas ok" + (" | " + "; ".join(line_details[:4]) if line_details else ""),
+        }
+    else:
+        put("items_lines_bill", False, True, "lenient / sin line_total en ground-truth")
+
+    put("needs_review_fn", True, len(fn_details) == 0,
+        f"{len(fn_details)} ítem(s) mal Y no avisados: {', '.join(fn_details) or '-'}", weight=2.0)
+    put("needs_review_fp", True, len(fp_details) == 0,
+        f"{len(fp_details)} ítem(s) bien pero avisados igual: {', '.join(fp_details) or '-'}", weight=0.5)
+
+    num = den = 0.0
+    for c in checks.values():
+        if not c["applicable"]:
+            continue
+        w = c["weight"]
+        den += w
+        num += w * c.get("partial", 1.0 if c["ok"] else 0.0)
+    pct = (num / den * 100) if den else 0.0
+    return {"checks": checks, "pct": round(pct, 1)}
+
+
 def cmd_run(args):
     import app.config as _cfg
     if args.provider:
         _cfg.settings.ai_provider = args.provider
     if args.vision_model:
         _cfg.settings.openai_vision_model = args.vision_model
+        _cfg.settings.openai_vision_model_bill = args.vision_model
         _cfg.settings.google_model = args.vision_model
         _cfg.settings.anthropic_model = args.vision_model
 
     from app.ai import provider as _prov
     prov_name = _prov.active_provider_name()
-    vmodel = _cfg.settings.openai_vision_model
+    vmodel = _cfg.settings.openai_vision_model_bill if args.pipeline == "bill" else _cfg.settings.openai_vision_model
 
     names = sorted(p.stem for p in EXPECTED.glob("*.json"))
     if args.only:
@@ -276,7 +400,7 @@ def cmd_run(args):
             if cand:
                 img = cand[0]
         try:
-            parsed, raw, dt = run_pipeline(img)
+            parsed, raw, dt = run_pipeline(img, pipeline=args.pipeline)
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {name:26s} ERROR: {e}")
             traceback.print_exc()
@@ -288,7 +412,7 @@ def cmd_run(args):
             rows.append({"name": name, "pct": 0.0, "error": "no transactions", "elapsed": round(dt, 1)})
             continue
 
-        sc = score_one(parsed, exp)
+        sc = score_one_bill(parsed, exp) if args.pipeline == "bill" else score_one(parsed, exp)
         mark = "✓" if sc["pct"] >= 80 else ("~" if sc["pct"] >= 60 else "✗")
         fails = [f"{k}[{v['detail']}]" for k, v in sc["checks"].items()
                  if v["applicable"] and not v["ok"] and v.get("partial", 0) < 1.0]
@@ -312,9 +436,9 @@ def cmd_run(args):
 
     RESULTS.mkdir(exist_ok=True)
     ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = RESULTS / f"{ts}_{prov_name}_{vmodel.replace('/', '-')}.json"
+    out = RESULTS / f"{ts}_{args.pipeline}_{prov_name}_{vmodel.replace('/', '-')}.json"
     out.write_text(json.dumps({
-        "timestamp": ts, "provider": prov_name, "vision_model": vmodel,
+        "timestamp": ts, "pipeline": args.pipeline, "provider": prov_name, "vision_model": vmodel,
         "overall": overall, "per_check": {k: round(sum(v) / len(v) * 100, 1)
                                           for k, v in per_check_tot.items()},
         "rows": rows,
@@ -343,6 +467,9 @@ def cmd_compare(args):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--pipeline", choices=["tx", "bill"], default="tx",
+                     help="tx (default) = ocr.parse_receipt (carga general); "
+                          "bill = ocr.vision_parse_bill (el pipeline real de Dividir cuenta)")
     ap.add_argument("--provider", help="openai | anthropic | gemini (override AI_PROVIDER)")
     ap.add_argument("--vision-model", help="override modelo de vision (p.ej. gpt-4o, gpt-5-mini, gemini-2.5-flash)")
     ap.add_argument("--only", nargs="+", metavar="NAME", help="correr solo estas imagenes (match por substring)")
