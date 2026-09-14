@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import io
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -82,7 +83,12 @@ def _tesseract_lines(img: Image.Image) -> list[dict]:
     se le pasó). Agrupa palabras en líneas usando block_num/par_num/
     line_num, que pytesseract ya calcula."""
     w, h = img.size
-    data = pytesseract.image_to_data(img, lang="spa", output_type=Output.DICT)
+    # --oem 1 = LSTM-only explícito. El paquete `tesseract-ocr-spa` que
+    # instala el Dockerfile solo trae datos del motor LSTM (no legacy), así
+    # que el modo automático (default) ya resuelve a esto en la práctica —
+    # se deja explícito para no depender de eso si algún día cambia la
+    # imagen base o el paquete. No cambia el resultado.
+    data = pytesseract.image_to_data(img, lang="spa", output_type=Output.DICT, config="--oem 1")
     lines: dict[tuple[int, int, int], dict] = {}
     for i in range(len(data["text"])):
         txt = data["text"][i].strip()
@@ -207,41 +213,65 @@ def _clahe_variant(img: Image.Image) -> Optional[Image.Image]:
         return None
 
 
+def _run_scale(base_img: Image.Image, items: list[str], scale: float) -> tuple[list[Optional[dict]], int]:
+    w, h = base_img.size
+    im = base_img if scale == 1.0 else base_img.resize(
+        (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
+    )
+    matches = _match_items_to_lines(items, _tesseract_lines(im))
+    return matches, sum(1 for m in matches if m is not None)
+
+
+def _best_of(results: list[tuple[list[Optional[dict]], int]], start: tuple[list[Optional[dict]], int]) -> tuple[list[Optional[dict]], int]:
+    """Se queda con el mejor resultado — mismo criterio (`>` estricto,
+    primero gana en empate) que si se hubiera recorrido `results` en orden
+    de forma secuencial, sin importar en qué orden TERMINARON de calcularse
+    (paralelo o no) — así paralelizar nunca cambia cuál gana."""
+    matches, count = start
+    for m, c in results:
+        if c > count:
+            count, matches = c, m
+    return matches, count
+
+
 def _match_best_effort(items: list[str], img: Image.Image) -> list[Optional[dict]]:
     """Corre el OCR + emparejamiento a varias escalas (ver
-    `_candidate_scales`) con la variante de contraste ESTÁNDAR (ya probada,
-    la más barata) y, solo si con eso no alcanza a emparejar todos los
-    ítems, escala a probar de nuevo con contraste realzado (CLAHE) — se
-    queda con la combinación de escala+contraste que efectivamente logra
-    emparejar más ítems con confianza. Así se adapta sola a la calidad y
-    tamaño real de CADA foto en vez de asumir una resolución o un contraste
-    que funcione siempre (no existe: probado en vivo que una resolución o
-    un contraste fijo arregla una boleta y rompe otra que ya estaba bien) —
-    y el caso común (la variante estándar ya alcanza) nunca paga el costo
-    extra de CLAHE."""
-    def _try(base_img: Image.Image) -> tuple[list[Optional[dict]], int]:
-        w, h = base_img.size
-        best_matches: list[Optional[dict]] = [None] * len(items)
-        best_count = -1
-        for scale in _candidate_scales(max(w, h)):
-            im = base_img if scale == 1.0 else base_img.resize(
-                (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
-            )
-            matches = _match_items_to_lines(items, _tesseract_lines(im))
-            count = sum(1 for m in matches if m is not None)
-            if count > best_count:
-                best_count, best_matches = count, matches
-            if best_count == len(items):
-                break
-        return best_matches, best_count
+    `_candidate_scales`) con la variante de contraste ESTÁNDAR (ya probada)
+    y, solo si con eso no alcanza a emparejar todos los ítems, escala a
+    probar de nuevo con contraste realzado (CLAHE) — se queda con la
+    combinación de escala+contraste que efectivamente logra emparejar más
+    ítems con confianza. Así se adapta sola a la calidad y tamaño real de
+    CADA foto en vez de asumir una resolución o un contraste que funcione
+    siempre (no existe: probado en vivo que una resolución o un contraste
+    fijo arregla una boleta y rompe otra que ya estaba bien).
 
-    matches, count = _try(_standard_variant(img))
-    if count < len(items):
-        enhanced = _clahe_variant(img)
-        if enhanced is not None:
-            matches2, count2 = _try(enhanced)
-            if count2 > count:
-                matches, count = matches2, count2
+    La escala más barata (1.0, sin reescalar) SIEMPRE se corre sola primero
+    — si con eso ya emparejó todo (el caso común: 7 de 9 boletas del set de
+    prueba), se corta ahí, exactamente 1 sola llamada a Tesseract, igual de
+    rápido que si no existiera ninguna otra escala/variante. Solo en el
+    caso difícil (no alcanzó el 100%) se lanzan en PARALELO el resto de
+    escalas estándar + todas las escalas de CLAHE — como esas llamadas son
+    independientes entre sí y ya de por sí se iban a correr todas en serie
+    (nunca había early-stop en este caso), paralelizarlas no cambia qué
+    resultado gana (ver `_best_of`), solo el tiempo de reloj: el peor caso
+    pasa de la SUMA de todas las llamadas a la más LENTA de ellas."""
+    std_img = _standard_variant(img)
+    w, h = std_img.size
+    scales = _candidate_scales(max(w, h))
+
+    matches, count = _run_scale(std_img, items, scales[0])
+    if count == len(items) or len(scales) == 1:
+        return matches
+
+    enhanced = _clahe_variant(img)
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        std_futures = [ex.submit(_run_scale, std_img, items, s) for s in scales[1:]]
+        clahe_futures = [ex.submit(_run_scale, enhanced, items, s) for s in scales] if enhanced is not None else []
+        matches, count = _best_of([f.result() for f in std_futures], (matches, count))
+        if clahe_futures:
+            clahe_matches, clahe_count = _best_of([f.result() for f in clahe_futures[1:]], clahe_futures[0].result())
+            if clahe_count > count:  # CLAHE gana SOLO si mejora estrictamente — misma regla de siempre
+                matches, count = clahe_matches, clahe_count
     return matches
 
 
