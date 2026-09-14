@@ -162,6 +162,14 @@ export default function SplitPage() {
   const [cropUrl, setCropUrl] = useState<string | null>(null);
   const [cropRect, setCropRect] = useState({ x: 5, y: 5, w: 90, h: 90 });
   const [rotating, setRotating] = useState(false);
+  // La foto TAL CUAL fue elegida, sin tocar — permite "volver a recortar"
+  // (deshacer) desde la etapa de enderezar y arrancar de cero, sin tener
+  // que salir a elegir la foto de nuevo. `cropStage` separa el flujo en dos
+  // pasos (primero recortar, después girar), a pedido del usuario: recortar
+  // "acerca" la imagen (la selección pasa a llenar el cuadro) y recién ahí
+  // se gira, en vez de hacer las dos cosas a la vez en la misma pantalla.
+  const [cropOriginalFile, setCropOriginalFile] = useState<File | null>(null);
+  const [cropStage, setCropStage] = useState<"select" | "straighten">("select");
   // Enderezado fino (± 45°): solo transform CSS mientras se arrastra (barato,
   // instantáneo) — se "hornea" en los píxeles reales recién al soltar, vía
   // canvas, igual que los giros de 90°. Mientras se arrastra se oculta el
@@ -295,17 +303,21 @@ export default function SplitPage() {
     const f = e.target.files?.[0];
     e.target.value = ""; // permite volver a elegir la misma foto después
     if (!f) return;
+    setCropOriginalFile(f);
     setCropFile(f);
     setCropUrl(URL.createObjectURL(f));
     setCropRect({ x: 5, y: 5, w: 90, h: 90 });
     setFineAngle(0);
     setStraightening(false);
+    setCropStage("select");
     resetCropZoomPan();
   }
 
   function clearCropState() {
     setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
     setCropFile(null);
+    setCropOriginalFile(null);
+    setCropStage("select");
     setFineAngle(0);
     setStraightening(false);
     resetCropZoomPan();
@@ -560,25 +572,53 @@ export default function SplitPage() {
     }
   }
 
-  async function confirmCrop(useCrop: boolean) {
-    const f = cropFile;
-    if (!f) return;
+  // Etapa 1 → 2: recorta (si useCrop) y pasa a la pantalla de girar. El
+  // recorte "acerca" la imagen porque la selección pasa a llenar todo el
+  // cuadro — no hace falta zoom aparte para eso.
+  async function goToStraighten(useCrop: boolean) {
+    if (!cropFile) return;
     if (!useCrop) {
-      clearCropState();
-      await handleFile(f);
+      setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+      resetCropZoomPan();
+      setCropStage("straighten");
       return;
     }
     setLoading(true);
     try {
-      const cropped = await cropImageToFile(f, cropRect);
-      clearCropState();
-      await handleFile(cropped);
+      const cropped = await cropImageToFile(cropFile, cropRect);
+      setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(cropped); });
+      setCropFile(cropped);
+      setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+      resetCropZoomPan();
+      setCropStage("straighten");
     } catch {
+      showError("No se pudo recortar la foto");
+    } finally {
       setLoading(false);
-      showError("No se pudo recortar la foto — se usará la foto completa");
-      clearCropState();
-      await handleFile(f);
     }
+  }
+
+  // Deshacer: vuelve a la etapa de recorte con la foto ORIGINAL (antes de
+  // cualquier recorte/giro) — permite empezar de cero sin salir a elegir
+  // la foto de nuevo.
+  function backToSelect() {
+    const orig = cropOriginalFile;
+    if (!orig) return;
+    setCropUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(orig); });
+    setCropFile(orig);
+    setCropRect({ x: 5, y: 5, w: 90, h: 90 });
+    setFineAngle(0);
+    setStraightening(false);
+    resetCropZoomPan();
+    setCropStage("select");
+  }
+
+  // Etapa 2 → sube la foto (ya recortada y/o girada) a leer.
+  async function finishCropFlow() {
+    const f = cropFile;
+    if (!f) return;
+    clearCropState();
+    await handleFile(f);
   }
 
   async function handleFile(file: File) {
@@ -1460,9 +1500,52 @@ export default function SplitPage() {
     finally { setLoading(false); }
   }
 
+  // Mensaje para compartir: detalle completo, no solo el total por persona —
+  // el usuario pidió que el grupo vea qué pidió cada quien, cuánto costó
+  // cada ítem, quién pagó y el balance final, para no tener que explicarlo
+  // aparte. Reutiliza itemCostFor/unitsFor (las mismas funciones que ya
+  // arma el desglose en pantalla) para que el texto compartido sea
+  // exactamente consistente con lo que el usuario ya revisó y confirmó —
+  // ni un cálculo aparte que pueda desalinearse.
   function buildShareText(): string {
     if (!bill) return "";
-    return `Cuenta en ${bill.merchant || "la cuenta"}\n${bill.participants.map((p) => `${p.name}: ${clp(p.owes_amount)}`).join("\n")}\nTotal: ${clp(bill.total_amount)}`;
+    const lines: string[] = [];
+    lines.push(`🧾 *${bill.merchant || "Cuenta"}*${bill.date ? ` — ${bill.date}` : ""}`);
+    lines.push("");
+    lines.push("*Ítems:*");
+    for (const item of bill.items) {
+      const eaters = bill.participants.filter((p) => itemCostFor(item, p.id) > 0.01);
+      const who = eaters.length > 0
+        ? eaters.map((p) => {
+            const first = p.name.split(" ")[0];
+            const u = item.qty > 1 ? unitsFor(item, p.id) : 0;
+            return u > 1 ? `${first} ×${u}` : first;
+          }).join(", ")
+        : "sin asignar";
+      const qtyPrefix = item.qty > 1 ? `${item.qty}× ` : "";
+      lines.push(`${qtyPrefix}${item.name} — ${clp(item.line_total)} (${who})`);
+    }
+    lines.push("");
+    lines.push(`Subtotal: ${clp(subtotal)}`);
+    if (bill.tip_amount > 0) lines.push(`Propina: ${clp(bill.tip_amount)}`);
+    lines.push(`*Total: ${clp(bill.total_amount)}*`);
+    lines.push("");
+    lines.push("*Quién pagó:*");
+    const payers = bill.participants.filter((p) => p.paid_amount > 0.01);
+    if (payers.length > 0) {
+      payers.forEach((p) => lines.push(`${p.name}: ${clp(p.paid_amount)}`));
+    } else {
+      lines.push("(sin registrar)");
+    }
+    lines.push("");
+    lines.push("*Balance:*");
+    for (const p of bill.participants) {
+      const diff = p.owes_amount - p.paid_amount;
+      if (diff > 1) lines.push(`${p.name} debe ${clp(diff)}`);
+      else if (diff < -1) lines.push(`A ${p.name} le deben ${clp(-diff)}`);
+      else lines.push(`${p.name}: al día`);
+    }
+    return lines.join("\n");
   }
 
   // Web Share API en vez de un link wa.me: dentro de una PWA instalada
@@ -1776,6 +1859,31 @@ export default function SplitPage() {
     );
   }
 
+  // Grilla fija de referencia para el paso de recorte/enderezado: NO gira
+  // ni hace zoom con la foto (es hermana del <img>, fuera de su transform)
+  // — sirve para ver, mientras se gira, si el texto de la boleta va
+  // quedando paralelo a estas líneas. Dos niveles: líneas finas cada 2.5%
+  // para tener referencia bien densa, y líneas gruesas/brillantes cada 25%
+  // que se ven incluso de lejos o contra foto clara.
+  function cropGridOverlay() {
+    return (
+      <div className="absolute inset-0 pointer-events-none">
+        {Array.from({ length: 39 }, (_, i) => (i + 1) * 2.5).filter((p) => p % 25 !== 0).map((p) => (
+          <div key={`h${p}`} className="absolute left-0 right-0 border-t border-lime-300/60" style={{ top: `${p}%` }} />
+        ))}
+        {[25, 50, 75].map((p) => (
+          <div key={`hmaj${p}`} className="absolute left-0 right-0 border-t-2 border-lime-300" style={{ top: `${p}%` }} />
+        ))}
+        {Array.from({ length: 19 }, (_, i) => (i + 1) * 5).filter((p) => p % 25 !== 0).map((p) => (
+          <div key={`v${p}`} className="absolute top-0 bottom-0 border-l border-lime-300/50" style={{ left: `${p}%` }} />
+        ))}
+        {[25, 50, 75].map((p) => (
+          <div key={`vmaj${p}`} className="absolute top-0 bottom-0 border-l-2 border-lime-300/90" style={{ left: `${p}%` }} />
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="h-[100dvh] bg-slate-50 flex flex-col overflow-hidden">
       {/* Header */}
@@ -1805,7 +1913,9 @@ export default function SplitPage() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-sm text-slate-600">
-                    Recorta la foto para dejar solo el texto de la boleta — usa la grilla como referencia para que el texto quede derecho.
+                    {cropStage === "select"
+                      ? "Recorta la foto para dejar solo el texto de la boleta — usa la grilla como referencia."
+                      : "Gira la foto hasta que el texto quede paralelo a la grilla."}
                   </p>
                   <div className="shrink-0 flex items-center gap-1">
                     <button
@@ -1852,28 +1962,8 @@ export default function SplitPage() {
                       cursor: cropZoom > 1 ? "grab" : "default",
                     }}
                   />
-                  {/* Grilla fija de referencia: NO gira ni hace zoom con la foto
-                      (es hermana del <img>, fuera de su transform) — sirve para
-                      ver, mientras se gira o se acerca, si el texto de la
-                      boleta va quedando paralelo a estas líneas. Dos niveles:
-                      líneas finas cada 5% para tener referencia densa, y
-                      líneas gruesas/brillantes cada 25% que se ven incluso de
-                      lejos o sobre foto clara. */}
-                  <div className="absolute inset-0 pointer-events-none">
-                    {Array.from({ length: 19 }, (_, i) => (i + 1) * 5).map((p) => (
-                      <div key={`h${p}`} className="absolute left-0 right-0 border-t border-lime-300/60" style={{ top: `${p}%` }} />
-                    ))}
-                    {[25, 50, 75].map((p) => (
-                      <div key={`hmaj${p}`} className="absolute left-0 right-0 border-t-2 border-lime-300" style={{ top: `${p}%` }} />
-                    ))}
-                    {Array.from({ length: 9 }, (_, i) => (i + 1) * 10).map((p) => (
-                      <div key={`v${p}`} className="absolute top-0 bottom-0 border-l border-lime-300/45" style={{ left: `${p}%` }} />
-                    ))}
-                    {[25, 50, 75].map((p) => (
-                      <div key={`vmaj${p}`} className="absolute top-0 bottom-0 border-l-2 border-lime-300/90" style={{ left: `${p}%` }} />
-                    ))}
-                  </div>
-                  {!straightening && (
+                  {cropGridOverlay()}
+                  {cropStage === "select" && !straightening && (
                     <div
                       className="absolute border-2 border-white cursor-move"
                       style={{
@@ -1899,48 +1989,66 @@ export default function SplitPage() {
                     </div>
                   )}
                 </div>
-                {/* Girar 90° (ambos lados) + enderezado fino de a poco (±45°, arrastrando) */}
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button" disabled={rotating} onClick={() => rotateCropImage(-1)}
-                    className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
-                    aria-label="Girar 90° a la izquierda"
-                  >
-                    <RotateCcw size={18} />
-                  </button>
-                  <div className="flex-1 flex items-center gap-2">
-                    <input
-                      type="range" min={-45} max={45} step={1}
-                      value={fineAngle}
-                      disabled={rotating}
-                      onChange={(e) => { setFineAngle(parseInt(e.target.value, 10)); setStraightening(true); }}
-                      onPointerUp={commitFineRotation}
-                      onMouseUp={commitFineRotation}
-                      onTouchEnd={commitFineRotation}
-                      className="flex-1 accent-indigo-600"
-                      aria-label="Enderezar foto de a poco"
-                    />
-                    <span className="text-xs text-slate-500 w-8 text-right tabular-nums shrink-0">{fineAngle}°</span>
+
+                {cropStage === "straighten" && (
+                  /* Girar 90° (ambos lados) + enderezado fino de a poco (±45°, arrastrando) */
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button" disabled={rotating} onClick={() => rotateCropImage(-1)}
+                      className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
+                      aria-label="Girar 90° a la izquierda"
+                    >
+                      <RotateCcw size={18} />
+                    </button>
+                    <div className="flex-1 flex items-center gap-2">
+                      <input
+                        type="range" min={-45} max={45} step={1}
+                        value={fineAngle}
+                        disabled={rotating}
+                        onChange={(e) => { setFineAngle(parseInt(e.target.value, 10)); setStraightening(true); }}
+                        onPointerUp={commitFineRotation}
+                        onMouseUp={commitFineRotation}
+                        onTouchEnd={commitFineRotation}
+                        className="flex-1 accent-indigo-600"
+                        aria-label="Enderezar foto de a poco"
+                      />
+                      <span className="text-xs text-slate-500 w-8 text-right tabular-nums shrink-0">{fineAngle}°</span>
+                    </div>
+                    <button
+                      type="button" disabled={rotating} onClick={() => rotateCropImage(1)}
+                      className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
+                      aria-label="Girar 90° a la derecha"
+                    >
+                      {rotating ? <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" /> : <RotateCw size={18} />}
+                    </button>
                   </div>
-                  <button
-                    type="button" disabled={rotating} onClick={() => rotateCropImage(1)}
-                    className="shrink-0 w-9 h-9 rounded-full border border-slate-300 text-slate-600 flex items-center justify-center disabled:opacity-40"
-                    aria-label="Girar 90° a la derecha"
-                  >
-                    {rotating ? <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" /> : <RotateCw size={18} />}
-                  </button>
-                </div>
+                )}
+
                 <div className="flex gap-2">
-                  <button disabled={loading} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={clearCropState}>
-                    Cambiar foto
-                  </button>
-                  <button disabled={loading} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={() => confirmCrop(false)}>
-                    Foto completa
-                  </button>
-                  <button disabled={loading} className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" onClick={() => confirmCrop(true)}>
-                    {loading ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Crop size={16} />}
-                    Recortar
-                  </button>
+                  {cropStage === "select" ? (
+                    <>
+                      <button disabled={loading} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={clearCropState}>
+                        Cambiar foto
+                      </button>
+                      <button disabled={loading} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={() => goToStraighten(false)}>
+                        Foto completa
+                      </button>
+                      <button disabled={loading} className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" onClick={() => goToStraighten(true)}>
+                        {loading ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Crop size={16} />}
+                        Recortar
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button disabled={loading || rotating} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 text-sm font-medium disabled:opacity-40" onClick={backToSelect}>
+                        Volver a recortar
+                      </button>
+                      <button disabled={loading || rotating} className="flex-1 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-1.5" onClick={finishCropFlow}>
+                        {loading ? <div className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Check size={16} />}
+                        Usar esta foto
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             ) : (

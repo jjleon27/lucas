@@ -110,6 +110,40 @@ def _tesseract_lines(img: Image.Image) -> list[dict]:
     ]
 
 
+_ROW_OVERLAP_MIN = 0.6  # fracción mínima de traslape vertical para considerar "misma fila"
+_ROW_SEARCH_WINDOW = 6  # cuántas líneas mirar a cada lado (ordenadas por altura)
+
+
+def _expand_to_full_row(lines: list[dict], idx: int) -> dict:
+    """Tesseract a veces separa la cantidad y/o el precio del nombre del
+    ítem en bloques de texto DISTINTOS cuando hay mucho espacio en blanco
+    entre columnas (común en boletas con columnas bien separadas: cantidad
+    a la izquierda, nombre al medio, precio pegado al borde derecho) — el
+    nombre matchea bien, pero la caja queda angosta, sin la cantidad ni el
+    valor. Se agranda el ancho para cubrir toda la fila física: se busca,
+    cerca en el orden de lectura, cualquier otra línea que comparta CASI LA
+    MISMA ALTURA en la foto (traslape vertical ≥60%) y se une su ancho.
+    Es geométrico — no depende del idioma, mayúsculas, largo del nombre/
+    valor, ni de si hay descuento u otro formato — así generaliza a
+    cualquier boleta sin reglas por caso."""
+    base = lines[idx]
+    x0, x1 = base["x0"], base["x1"]
+    lo = max(0, idx - _ROW_SEARCH_WINDOW)
+    hi = min(len(lines), idx + _ROW_SEARCH_WINDOW + 1)
+    for j in range(lo, hi):
+        if j == idx:
+            continue
+        other = lines[j]
+        top = max(base["y0"], other["y0"])
+        bottom = min(base["y1"], other["y1"])
+        inter = max(0.0, bottom - top)
+        union = max(base["y1"], other["y1"]) - min(base["y0"], other["y0"])
+        if union > 0 and inter / union >= _ROW_OVERLAP_MIN:
+            x0 = min(x0, other["x0"])
+            x1 = max(x1, other["x1"])
+    return {**base, "x0": x0, "x1": x1}
+
+
 def _match_items_to_lines(items: list[str], lines: list[dict]) -> list[Optional[dict]]:
     """Empareja cada ítem (en el orden en que vienen) con la mejor línea de
     Tesseract disponible, buscando siempre HACIA ADELANTE desde la última
@@ -131,34 +165,84 @@ def _match_items_to_lines(items: list[str], lines: list[dict]) -> list[Optional[
             if ratio > best_ratio:
                 best_ratio, best_idx = ratio, idx
         if best_idx >= 0 and best_ratio >= MIN_SIMILARITY:
-            results.append(lines[best_idx])
+            results.append(_expand_to_full_row(lines, best_idx))
             last_idx = best_idx
         else:
             results.append(None)
     return results
 
 
+def _standard_variant(img: Image.Image) -> Image.Image:
+    """Contraste + nitidez fijos — la mejora que ya se venía usando (y
+    probando bien) para casi todas las boletas. Es la variante BASE que se
+    prueba primero (más barata, ya validada); CLAHE es solo un escalón
+    extra para cuando esta no alcanza."""
+    from PIL import ImageEnhance
+    img = ImageEnhance.Contrast(img).enhance(1.8)
+    img = ImageEnhance.Sharpness(img).enhance(2.0)
+    return img
+
+
+def _clahe_variant(img: Image.Image) -> Optional[Image.Image]:
+    """Versión con contraste LOCAL realzado (CLAHE sobre el canal L de LAB,
+    + la misma nitidez de la variante estándar) — ayuda en fotos muy
+    claras/lavadas o muy oscuras donde el contraste fijo no alcanza. No
+    siempre ayuda más que el fijo (se probó en un set de boletas reales:
+    mejora las fotos difíciles pero empeora otras que ya leían bien con el
+    fijo) — por eso solo se prueba como ESCALÓN, nunca como primera opción.
+    None si cv2 no está disponible (nunca debe romper el resto del
+    servicio)."""
+    try:
+        import cv2
+        import numpy as np
+        from PIL import ImageEnhance
+        arr = np.array(img)
+        lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        l_ch = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l_ch)
+        arr = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2RGB)
+        out = Image.fromarray(arr)
+        return ImageEnhance.Sharpness(out).enhance(2.0)
+    except Exception:
+        return None
+
+
 def _match_best_effort(items: list[str], img: Image.Image) -> list[Optional[dict]]:
     """Corre el OCR + emparejamiento a varias escalas (ver
-    `_candidate_scales`) y se queda con la que efectivamente logra
-    emparejar más ítems con confianza — así se adapta sola a la calidad y
-    tamaño real de CADA foto en vez de asumir una resolución que funcione
-    siempre (no existe: se probó y una misma resolución fija arreglaba una
-    boleta chica pero rompía una boleta que ya estaba bien de tamaño)."""
-    w, h = img.size
-    best_matches: list[Optional[dict]] = [None] * len(items)
-    best_count = -1
-    for scale in _candidate_scales(max(w, h)):
-        im = img if scale == 1.0 else img.resize(
-            (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
-        )
-        matches = _match_items_to_lines(items, _tesseract_lines(im))
-        count = sum(1 for m in matches if m is not None)
-        if count > best_count:
-            best_count, best_matches = count, matches
-        if best_count == len(items):
-            break  # ya emparejó todo — no vale la pena seguir probando escalas más caras
-    return best_matches
+    `_candidate_scales`) con la variante de contraste ESTÁNDAR (ya probada,
+    la más barata) y, solo si con eso no alcanza a emparejar todos los
+    ítems, escala a probar de nuevo con contraste realzado (CLAHE) — se
+    queda con la combinación de escala+contraste que efectivamente logra
+    emparejar más ítems con confianza. Así se adapta sola a la calidad y
+    tamaño real de CADA foto en vez de asumir una resolución o un contraste
+    que funcione siempre (no existe: probado en vivo que una resolución o
+    un contraste fijo arregla una boleta y rompe otra que ya estaba bien) —
+    y el caso común (la variante estándar ya alcanza) nunca paga el costo
+    extra de CLAHE."""
+    def _try(base_img: Image.Image) -> tuple[list[Optional[dict]], int]:
+        w, h = base_img.size
+        best_matches: list[Optional[dict]] = [None] * len(items)
+        best_count = -1
+        for scale in _candidate_scales(max(w, h)):
+            im = base_img if scale == 1.0 else base_img.resize(
+                (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
+            )
+            matches = _match_items_to_lines(items, _tesseract_lines(im))
+            count = sum(1 for m in matches if m is not None)
+            if count > best_count:
+                best_count, best_matches = count, matches
+            if best_count == len(items):
+                break
+        return best_matches, best_count
+
+    matches, count = _try(_standard_variant(img))
+    if count < len(items):
+        enhanced = _clahe_variant(img)
+        if enhanced is not None:
+            matches2, count2 = _try(enhanced)
+            if count2 > count:
+                matches, count = matches2, count2
+    return matches
 
 
 @app.post("/position", response_model=PositionResponse)

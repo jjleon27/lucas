@@ -1263,6 +1263,29 @@ def _find_plausible_total(ocr_text: str, items_sum: float) -> Optional[int]:
 
 
 
+def _prep_for_position(image_bytes: bytes) -> bytes:
+    """Versión LIMPIA de la foto (orientada + redimensionada, SIN contraste
+    ni nitidez) para el servicio de posición (Tesseract). Ese servicio
+    prueba sus propias variantes de contraste (ninguna vs CLAHE) combinadas
+    con varias escalas — se probó (2026-09-14) subirle SIEMPRE contraste
+    realzado (CLAHE) de forma fija: mejoró boletas muy lavadas pero
+    EMPEORÓ varias que ya leían bien (97%→79% de aciertos en el set de
+    prueba) — el contraste ideal para Tesseract, igual que la escala, varía
+    de foto en foto. Por eso el servicio recibe la base más limpia posible
+    y decide él mismo, probando, qué variante le da más aciertos en ESTA
+    foto — no hereda el contraste ya ajustado para el modelo de visión, que
+    persigue un objetivo distinto (legibilidad para un LLM, no para
+    Tesseract)."""
+    from PIL import ImageOps
+    img = Image.open(io.BytesIO(image_bytes))
+    img = ImageOps.exif_transpose(img)
+    img = img.convert("RGB")
+    img = _resize_for_vision(img, max_side=2000)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
 def _prep_receipt_image(image_bytes: bytes) -> tuple[str, Optional[int], Optional[int], bytes]:
     """Normaliza una foto de boleta para mandarla a un modelo de visión:
     corrige rotación EXIF, redimensiona (sube menos pesado, sin perder los
@@ -1289,7 +1312,7 @@ def _prep_receipt_image(image_bytes: bytes) -> tuple[str, Optional[int], Optiona
         img_pil = img_pil.convert("RGB")
         upright_w, upright_h = img_pil.size
         img_pil = _resize_for_vision(img_pil, max_side=2000)
-        img_pil = ImageEnhance.Contrast(img_pil).enhance(1.8)
+        img_pil = _adaptive_contrast(img_pil)
         img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
         buf = io.BytesIO()
         img_pil.save(buf, format="JPEG", quality=95)
@@ -1750,35 +1773,40 @@ def _parse_bill_text(raw_text: str) -> Optional[dict]:
     return out
 
 
-def _populate_positions(items: list[ParsedItem], data_url: str) -> None:
+def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> None:
     """Best-effort: rellena `position_y` y, cuando hay match, la caja REAL
     de la línea de texto (`bbox_x0/y0/x1/y1`, % del ancho/alto de la foto —
     para que la banda de color en el frontend se dibuje del tamaño exacto
     del ítem, ni más angosta ni más ancha, en vez de un tamaño inventado)
     llamando al servicio interno aislado `services/ocr_position` (Tesseract,
-    probado a varias escalas hasta encontrar la que mejor lee ESTA foto en
-    particular, + emparejamiento por orden — ver ese servicio para el
-    detalle). Es opcional por diseño: si el servicio no está configurado
-    (`OCR_POSITION_URL` sin definir, p.ej. en dev local), falla, tarda más
-    del límite, o no encuentra match para algún ítem, esos campos
-    simplemente quedan en None — el frontend ya cae al reparto parejo /
-    tamaño estimado (`defaultBandPct`) en ese caso. Nunca lanza, nunca
-    bloquea la subida de la boleta por esto."""
+    probado a varias escalas y variantes de contraste hasta encontrar la
+    que mejor lee ESTA foto en particular, + emparejamiento por orden — ver
+    ese servicio para el detalle). Le manda la foto SIN el contraste/
+    nitidez ya ajustados para el modelo de visión (`_prep_for_position` —
+    ver su docstring: un contraste fijo mejora algunas fotos y empeora
+    otras, igual que pasaba con la escala) — el servicio prueba sus propias
+    variantes a partir de esa base limpia. Es opcional por diseño: si el
+    servicio no está configurado (`OCR_POSITION_URL` sin definir, p.ej. en
+    dev local), falla, tarda más del límite, o no encuentra match para
+    algún ítem, esos campos simplemente quedan en None — el frontend ya cae
+    al reparto parejo / tamaño estimado (`defaultBandPct`) en ese caso.
+    Nunca lanza, nunca bloquea la subida de la boleta por esto."""
     import os
     url = os.environ.get("OCR_POSITION_URL")
     if not url or not items:
         return
     try:
         import httpx
-        b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
+        b64 = base64.b64encode(_prep_for_position(image_bytes)).decode("ascii")
         resp = httpx.post(
             f"{url.rstrip('/')}/position",
             json={"image_b64": b64, "items": [it.name for it in items]},
-            # El servicio prueba varias escalas de la foto antes de rendirse
-            # con un ítem (ver services/ocr_position) — puede tomar un par
-            # de segundos en boletas grandes; con margen para eso + latencia
-            # de red al contenedor.
-            timeout=10.0,
+            # El servicio prueba varias escalas y, si hace falta, contraste
+            # realzado, antes de rendirse con un ítem (ver
+            # services/ocr_position) — puede tomar varios segundos en
+            # boletas grandes/difíciles; con margen para eso + latencia de
+            # red al contenedor.
+            timeout=15.0,
         )
         if resp.status_code != 200:
             return
@@ -1899,7 +1927,7 @@ def vision_parse_bill(
             )
             for it in parsed["items"]
         ]
-        _populate_positions(items, data_url)
+        _populate_positions(items, image_bytes)
         try:
             parsed_date = _parse_date(parsed["date"]) if parsed["date"] else date.today()
         except Exception:
