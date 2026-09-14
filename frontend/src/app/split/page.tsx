@@ -1942,18 +1942,29 @@ export default function SplitPage() {
                   style={{ transform: `translate(${imgPan.x}px, ${imgPan.y}px) scale(${imgScale})`, transformOrigin: "center center" }}
                 >
                   {bill.items.map((item, idx) => {
-                    const pct = bandPctFor(item, idx, bill.items.length);
+                    const total = bill.items.length;
+                    const pct = bandPctFor(item, idx, total);
                     const isDragging = markerDrag?.itemId === item.id;
                     // La banda cubre todo el ancho de la foto (mismo color exacto
                     // que la fila de la derecha, itemColor(idx) en ambos lados) —
-                    // ya no le pedimos al modelo el ancho del bloque de ítems, solo
-                    // el alto por línea (bbox_y0/y1), más rápido de generar.
-                    const hasYBbox = item.bbox_y0 != null && item.bbox_y1 != null;
+                    // ya no le pedimos al modelo el ancho del bloque de ítems.
                     const left = imgBox.offsetX;
                     const width = imgBox.width;
-                    const height = hasYBbox
-                      ? Math.max(10, ((item.bbox_y1! - item.bbox_y0!) / 100) * imgBox.height)
-                      : 26;
+                    // Alto de la banda: NO un número fijo — eso es justo lo que
+                    // causaba que se encimaran cuando el servicio de posición (o
+                    // el reparto parejo) ubica varios ítems muy juntos en una
+                    // boleta con muchas líneas. Se calcula en base a la distancia
+                    // real hasta el ítem anterior/siguiente (bandPctFor ya resuelve
+                    // posición real o reparto parejo por igual), acotada a un
+                    // rango razonable — así nunca invade al vecino, sea cual sea
+                    // la densidad de ítems en esta boleta.
+                    const prevPct = idx > 0 ? bandPctFor(bill.items[idx - 1], idx - 1, total) : null;
+                    const nextPct = idx < total - 1 ? bandPctFor(bill.items[idx + 1], idx + 1, total) : null;
+                    const gapToPrev = prevPct !== null ? pct - prevPct : null;
+                    const gapToNext = nextPct !== null ? nextPct - pct : null;
+                    const gaps = [gapToPrev, gapToNext].filter((g): g is number => g !== null && g > 0);
+                    const minGapPct = gaps.length > 0 ? Math.min(...gaps) : 100 / total;
+                    const height = Math.min(26, Math.max(10, minGapPct * 1.6 * imgBox.height / 100));
                     const top = imgBox.offsetY + (pct / 100) * imgBox.height;
                     return (
                       <div
