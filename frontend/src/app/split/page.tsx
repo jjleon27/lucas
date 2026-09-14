@@ -16,11 +16,15 @@ interface BillItem {
   id: number; name: string; qty: number; unit_price: number; line_total: number;
   position_y: number | null;
   bbox_y0: number | null; bbox_y1: number | null;
-  // Uno o más tramos horizontales reales [x0,x1] (% del ancho de la foto) —
-  // nombre+cantidad por un lado, precio por otro, cuando hay un hueco en
-  // blanco grande entre columnas (nunca un solo tramo que sombrearía
-  // también ese hueco). [] o null = sin estimar (ancho completo por defecto).
-  segments: [number, number][] | null;
+  // Uno o más tramos horizontales reales [x0,x1,y0,y1] (% del ancho/alto de
+  // la foto) — nombre+cantidad por un lado, precio por otro, cuando hay un
+  // hueco en blanco grande entre columnas (nunca un solo tramo que
+  // sombrearía también ese hueco). Cada tramo lleva su PROPIO y0/y1 — no
+  // el del ítem completo — porque nombre y precio de una misma fila suelen
+  // venir de líneas de texto con alturas distintas (fuentes con
+  // descendentes, o boleta doblada/arrugada). [] o null = sin estimar
+  // (ancho completo, alto de bbox_y0/y1, por defecto).
+  segments: [number, number, number, number][] | null;
   // El nombre+valor que dijo el modelo de visión no aparece en el texto real
   // de la foto (Tesseract, gratis) — probable alucinación. Solo informativo,
   // nunca bloquea nada — el usuario corrige si hace falta.
@@ -149,7 +153,52 @@ function Avatar({ name, color, selected, onClick, locked }: { name: string; colo
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
+// Envoltorio para subir varias boletas DISTINTAS de una — cada boleta pasa
+// por su propio flujo completo (recorte → OCR → revisar → asignar → quién
+// pagó → resumen), una por vez. Entre boleta y boleta NO se reusa el mismo
+// componente reseteando cada variable a mano (más de 25 — `assignments`,
+// `payerMode`, `finalized`, `tipMode`, etc. — el riesgo real es que quede
+// una pegada de la boleta anterior, ej. `finalized` en true mostrando el
+// resumen equivocado, en una app de plata real): en vez de eso, se cambia
+// la `key` de `SplitPageInner` para forzar un remount limpio de React, que
+// reinicia TODO su estado interno de una — la cola de fotos pendientes
+// vive acá arriba, donde sí sobrevive el remount.
 export default function SplitPage() {
+  const [remountKey, setRemountKey] = useState(0);
+  const queueRef = useRef<File[]>([]);
+  const [queuedFile, setQueuedFile] = useState<File | null>(null);
+  const [queueRemaining, setQueueRemaining] = useState(0);
+
+  function onQueueFiles(files: File[]) {
+    queueRef.current = files;
+    setQueueRemaining(files.length);
+  }
+  function onAdvanceQueue() {
+    const next = queueRef.current.shift() ?? null;
+    setQueuedFile(next);
+    setQueueRemaining(queueRef.current.length);
+    setRemountKey((k) => k + 1);
+  }
+
+  return (
+    <SplitPageInner
+      key={remountKey}
+      queuedFile={queuedFile}
+      queueRemaining={queueRemaining}
+      onQueueFiles={onQueueFiles}
+      onAdvanceQueue={onAdvanceQueue}
+    />
+  );
+}
+
+function SplitPageInner({
+  queuedFile, queueRemaining, onQueueFiles, onAdvanceQueue,
+}: {
+  queuedFile: File | null;
+  queueRemaining: number;
+  onQueueFiles: (files: File[]) => void;
+  onAdvanceQueue: () => void;
+}) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState(1);
@@ -308,10 +357,7 @@ export default function SplitPage() {
     setCropPan({ x: 0, y: 0 });
   }
 
-  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    e.target.value = ""; // permite volver a elegir la misma foto después
-    if (!f) return;
+  function loadFileIntoCrop(f: File) {
     setCropOriginalFile(f);
     setCropFile(f);
     setCropUrl(URL.createObjectURL(f));
@@ -320,6 +366,24 @@ export default function SplitPage() {
     setStraightening(false);
     setCropStage("select");
     resetCropZoomPan();
+  }
+
+  // Si esta instancia nació para procesar la siguiente foto de una cola
+  // (varias boletas subidas de una — ver el envoltorio `SplitPage` arriba),
+  // la carga sola al montar, sin esperar a que el usuario abra el picker.
+  useEffect(() => {
+    if (queuedFile) loadFileIntoCrop(queuedFile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = ""; // permite volver a elegir la misma foto después
+    if (files.length === 0) return;
+    loadFileIntoCrop(files[0]);
+    // El resto (si eligió varias boletas de una) queda en cola — se procesa
+    // una por una, cada una con su flujo completo, después de terminar esta.
+    if (files.length > 1) onQueueFiles(files.slice(1));
   }
 
   function clearCropState() {
@@ -2596,35 +2660,52 @@ export default function SplitPage() {
                     // completo, como antes.
                     const PAD_X = 2; // puntos porcentuales de margen a cada lado
                     const MIN_WIDTH_PCT = 8; // ancho mínimo por tramo, % del ancho de la foto
-                    const rawSegments = item.segments && item.segments.length > 0 ? item.segments : [[0, 100] as [number, number]];
-                    const segments = rawSegments.map(([sx0, sx1]) => {
+                    const PAD_Y = 0.6; // puntos porcentuales de margen arriba/abajo
+                    const MIN_HEIGHT_PCT = 1.6; // alto mínimo por tramo, % del alto de la foto
+                    // Alto de la banda: cuando el servicio de posición encontró un
+                    // match confiable, cada tramo usa el alto REAL de SU PROPIA
+                    // línea de texto (segmento[2]=y0, segmento[3]=y1, en % de la
+                    // foto) — nunca un alto compartido por todo el ítem. Nombre y
+                    // precio de una misma fila suelen venir de líneas Tesseract
+                    // con alturas distintas (fuentes con descendentes; mucho más
+                    // marcado si la boleta está doblada/arrugada) — usar un solo
+                    // alto para todos los tramos dejaba el del precio dibujado en
+                    // la altura del nombre, desalineado del texto real. Formato
+                    // viejo [x0,x1] (fotos leídas antes de esta migración, sin
+                    // y0/y1 propio) cae al bbox_y0/y1 del ítem completo, como antes.
+                    const rawSegments = item.segments && item.segments.length > 0 ? item.segments : [[0, 100] as unknown as [number, number, number, number]];
+                    const segments = rawSegments.map((seg) => {
+                      const [sx0, sx1, sy0, sy1] = seg;
                       const x0 = Math.max(0, sx0 - PAD_X);
                       const x1raw = Math.min(100, sx1 + PAD_X);
                       const widthPct = Math.max(MIN_WIDTH_PCT, x1raw - x0);
-                      return { left: imgBox.offsetX + (x0 / 100) * imgBox.width, width: (widthPct / 100) * imgBox.width };
+                      const left = imgBox.offsetX + (x0 / 100) * imgBox.width;
+                      const width = (widthPct / 100) * imgBox.width;
+                      const hasOwnY = sy0 != null && sy1 != null;
+                      const y0 = hasOwnY ? sy0 : item.bbox_y0;
+                      const y1 = hasOwnY ? sy1 : item.bbox_y1;
+                      let top: number, height: number;
+                      if (y0 != null && y1 != null) {
+                        const centerPct = (y0 + y1) / 2;
+                        const heightPct = Math.max(MIN_HEIGHT_PCT, Math.abs(y1 - y0) + PAD_Y * 2);
+                        top = imgBox.offsetY + (centerPct / 100) * imgBox.height;
+                        height = Math.min(40, heightPct * 1.3 * imgBox.height / 100);
+                      } else {
+                        // Sin bbox (sin match, reparto parejo, o el usuario
+                        // corrigió la posición a mano) — cae al estimado por
+                        // distancia real al vecino más cercano, acotado para
+                        // nunca invadirlo (igual que antes de esta migración).
+                        const prevPct = idx > 0 ? bandPctFor(bill.items[idx - 1], idx - 1, total) : null;
+                        const nextPct = idx < total - 1 ? bandPctFor(bill.items[idx + 1], idx + 1, total) : null;
+                        const gapToPrev = prevPct !== null ? pct - prevPct : null;
+                        const gapToNext = nextPct !== null ? nextPct - pct : null;
+                        const gaps = [gapToPrev, gapToNext].filter((g): g is number => g !== null && g > 0);
+                        const minGapPct = gaps.length > 0 ? Math.min(...gaps) : 100 / total;
+                        top = imgBox.offsetY + (pct / 100) * imgBox.height;
+                        height = Math.min(26, Math.max(10, minGapPct * 1.6 * imgBox.height / 100));
+                      }
+                      return { left, width, top, height };
                     });
-                    // Alto de la banda: cuando el servicio de posición encontró un
-                    // match confiable, usa el alto REAL de esa línea de texto
-                    // (bbox_y0/y1, en % de la foto) — así la banda cubre
-                    // literalmente el nombre+valor del ítem, ni más ni menos,
-                    // en vez de una altura inventada que en boletas con líneas
-                    // muy juntas terminaba invadiendo al ítem vecino. Si no hay
-                    // bbox (sin match, reparto parejo, o el usuario corrigió la
-                    // posición a mano — eso limpia el bbox porque ya no describe
-                    // la nueva posición), cae al estimado por distancia real al
-                    // vecino más cercano, acotado para nunca invadirlo.
-                    const hasBbox = item.bbox_y0 != null && item.bbox_y1 != null;
-                    const bboxHeightPct = hasBbox ? Math.abs((item.bbox_y1 as number) - (item.bbox_y0 as number)) : null;
-                    const prevPct = idx > 0 ? bandPctFor(bill.items[idx - 1], idx - 1, total) : null;
-                    const nextPct = idx < total - 1 ? bandPctFor(bill.items[idx + 1], idx + 1, total) : null;
-                    const gapToPrev = prevPct !== null ? pct - prevPct : null;
-                    const gapToNext = nextPct !== null ? nextPct - pct : null;
-                    const gaps = [gapToPrev, gapToNext].filter((g): g is number => g !== null && g > 0);
-                    const minGapPct = gaps.length > 0 ? Math.min(...gaps) : 100 / total;
-                    const height = hasBbox
-                      ? Math.min(40, Math.max(8, bboxHeightPct! * 1.3 * imgBox.height / 100))
-                      : Math.min(26, Math.max(10, minGapPct * 1.6 * imgBox.height / 100));
-                    const top = imgBox.offsetY + (pct / 100) * imgBox.height;
                     return (
                       <Fragment key={item.id}>
                         {segments.map((seg, segIdx) => (
@@ -2636,10 +2717,10 @@ export default function SplitPage() {
                             onPointerCancel={(e) => onBandPointerUp(e, item)}
                             className="absolute pointer-events-auto touch-none select-none rounded-sm"
                             style={{
-                              top,
+                              top: seg.top,
                               left: seg.left,
                               width: seg.width,
-                              height,
+                              height: seg.height,
                               transform: "translateY(-50%)",
                               background: itemHighlightColor(idx),
                               border: `2px solid ${itemHighlightBorderColor(idx)}`,

@@ -51,12 +51,22 @@ class PositionRequest(BaseModel):
 class Segment(BaseModel):
     x0: float
     x1: float
+    # Alto REAL (0-100 = % del alto de la foto) de la línea Tesseract de la
+    # que vino ESTE tramo en particular — no el del ítem completo. Nombre y
+    # precio de una misma fila física suelen caer en líneas Tesseract con
+    # alturas ligeramente distintas (fuentes con descendentes, boleta
+    # doblada/arrugada); si el frontend usara un solo alto compartido por
+    # ítem, el tramo del precio podría dibujarse desalineado del texto real.
+    y0: float
+    y1: float
 
 
 class ItemPosition(BaseModel):
     name: str
     position_y: Optional[float] = None  # 0-100 (centro vertical), o null si no hay match confiable
     # Alto REAL de la línea de texto emparejada (0-100 = % del alto de la foto).
+    # Se mantiene como fallback/compat — cubre TODOS los segmentos del ítem
+    # (min/max); el frontend debe preferir el y0/y1 propio de cada `Segment`.
     bbox_y0: Optional[float] = None
     bbox_y1: Optional[float] = None
     # Uno o más tramos horizontales REALES (0-100 = % del ancho de la foto) —
@@ -64,7 +74,7 @@ class ItemPosition(BaseModel):
     # blanco grande entre columnas (no un solo tramo que sombrearía también
     # ese hueco, como una barra sólida). Permite que la banda de color en el
     # frontend se dibuje solo sobre el texto real, en tantos bloques como
-    # haga falta.
+    # haga falta — cada uno con su propia altura (ver `Segment.y0/y1`).
     segments: list[Segment] = []
 
 
@@ -140,23 +150,36 @@ _ROW_SEARCH_WINDOW = 6  # cuántas líneas mirar a cada lado (ordenadas por altu
 _WORD_CLUSTER_GAP = 8.0  # % del ancho de la foto — huecos más chicos se fusionan (espacio normal entre palabras); más grandes quedan separados (columna en blanco entre nombre y precio)
 
 
-def _cluster_word_spans(word_spans: list[tuple[float, float]], gap: float) -> list[tuple[float, float]]:
-    """Junta palabras (x0,x1) en bloques contiguos — separa en bloques
-    DISTINTOS solo cuando el hueco entre una palabra y la siguiente supera
-    `gap`. Medido en boletas reales: el espacio normal entre palabras de un
-    mismo bloque es ~3-5% del ancho de la foto; el hueco en blanco entre la
-    columna de nombre y la de precio es ~40% — hay margen de sobra para
-    separarlos con un solo umbral fijo, sin depender del idioma/formato."""
+def _cluster_word_spans(word_spans: list[tuple[float, float, float, float]], gap: float) -> list[dict]:
+    """Junta palabras (x0,x1,y0,y1 — cada una con el alto REAL de la línea
+    Tesseract de la que vino) en bloques contiguos por X — separa en
+    bloques DISTINTOS solo cuando el hueco entre una palabra y la siguiente
+    supera `gap`. Medido en boletas reales: el espacio normal entre
+    palabras de un mismo bloque es ~3-5% del ancho de la foto; el hueco en
+    blanco entre la columna de nombre y la de precio es ~40% — hay margen
+    de sobra para separarlos con un solo umbral fijo, sin depender del
+    idioma/formato.
+
+    Cada bloque resultante lleva su PROPIO y0/y1 (min/max de las líneas que
+    aportaron sus palabras) — no el de la línea base del ítem. Necesario
+    porque nombre y precio de una misma fila física suelen venir de líneas
+    Tesseract con alturas ligeramente distintas (por descendentes de
+    fuente, o mucho más marcado cuando la boleta está doblada/arrugada);
+    si todos los bloques comparten un solo y0/y1, el del precio puede
+    quedar dibujado en la altura del nombre, desalineado del texto real."""
     if not word_spans:
         return []
     spans = sorted(word_spans)
-    clusters = [list(spans[0])]
-    for x0, x1 in spans[1:]:
+    clusters = [[spans[0][0], spans[0][1], spans[0][2], spans[0][3]]]
+    for x0, x1, y0, y1 in spans[1:]:
         if x0 - clusters[-1][1] <= gap:
-            clusters[-1][1] = max(clusters[-1][1], x1)
+            c = clusters[-1]
+            c[1] = max(c[1], x1)
+            c[2] = min(c[2], y0)
+            c[3] = max(c[3], y1)
         else:
-            clusters.append([x0, x1])
-    return [(c[0], c[1]) for c in clusters]
+            clusters.append([x0, x1, y0, y1])
+    return [{"x0": c[0], "x1": c[1], "y0": c[2], "y1": c[3]} for c in clusters]
 
 
 def _row_segments(lines: list[dict], idx: int) -> dict:
@@ -177,7 +200,7 @@ def _row_segments(lines: list[dict], idx: int) -> dict:
     idioma, mayúsculas, largo del nombre/valor, ni de si hay descuento u
     otro formato — así generaliza a cualquier boleta sin reglas por caso."""
     base = lines[idx]
-    word_spans = list(base["word_spans"])
+    word_spans = [(x0, x1, base["y0"], base["y1"]) for x0, x1 in base["word_spans"]]
     lo = max(0, idx - _ROW_SEARCH_WINDOW)
     hi = min(len(lines), idx + _ROW_SEARCH_WINDOW + 1)
     for j in range(lo, hi):
@@ -189,7 +212,7 @@ def _row_segments(lines: list[dict], idx: int) -> dict:
         inter = max(0.0, bottom - top)
         union = max(base["y1"], other["y1"]) - min(base["y0"], other["y0"])
         if union > 0 and inter / union >= _ROW_OVERLAP_MIN:
-            word_spans.extend(other["word_spans"])
+            word_spans.extend((x0, x1, other["y0"], other["y1"]) for x0, x1 in other["word_spans"])
     segments = _cluster_word_spans(word_spans, _WORD_CLUSTER_GAP)
     return {**base, "segments": segments}
 
@@ -257,12 +280,176 @@ def _clahe_variant(img: Image.Image) -> Optional[Image.Image]:
         return None
 
 
-def _run_scale(base_img: Image.Image, items: list[str], scale: float) -> tuple[list[Optional[dict]], int, list[dict]]:
+_SKEW_MIN_DEGREES = 3.0  # bajo esto no vale la pena enderezar — ruido normal de detección en fotos ya derechas
+
+
+def _hough_skew_angle(img: Image.Image, max_angle: float = 25.0) -> float:
+    """Estimación GRUESA del ángulo (grados) en que el texto de la foto está
+    inclinado respecto al marco — 0 si está derecha. Usa líneas de Hough
+    sobre bordes (Canny + HoughLinesP), NO Tesseract (gratis, corre siempre
+    que hace falta sin sumar otra llamada a OCR): cada línea recta detectada
+    (borde de renglón de texto, línea divisoria de la boleta, etc.) aporta
+    su propio ángulo; se toma la MEDIANA de las que caen cerca de la
+    horizontal — robusta a outliers (un borde de mesa en diagonal, un logo)
+    porque en una boleta real la enorme mayoría de líneas rectas son
+    renglones de texto, todos alineados entre sí. Precisa a ~1-3°, no más
+    (ver `_detect_skew_angle` para el refinamiento fino)."""
+    import cv2
+    import numpy as np
+    w, h = img.size
+    scale = min(1.0, 1000 / max(w, h))
+    small = img.resize((max(1, round(w * scale)), max(1, round(h * scale)))) if scale < 1.0 else img
+    gray = cv2.cvtColor(np.array(small.convert("RGB")), cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 360, threshold=80,
+        minLineLength=max(1, w * scale * 0.05), maxLineGap=8,
+    )
+    if lines is None:
+        return 0.0
+    angles = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        if x2 == x1:
+            continue
+        angle = float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle > 90:
+            angle -= 180
+        if angle < -90:
+            angle += 180
+        if abs(angle) <= max_angle:
+            angles.append(angle)
+    return float(np.median(angles)) if angles else 0.0
+
+
+def _refine_skew_angle(img: Image.Image, coarse: float, span: float = 2.5, step: float = 0.1) -> float:
+    """Afina la estimación gruesa de Hough con projection profile — para
+    cada ángulo candidato en una ventana ANGOSTA alrededor de `coarse`,
+    rota una versión binarizada de la foto y mide qué tan "picuda" (alta
+    varianza) queda la suma de píxeles de texto por fila: con texto
+    perfectamente horizontal, cada renglón cae en una banda angosta de
+    alta densidad separada por blancos, maximizando la varianza. Es el
+    método más citado para esto, pero probado en vivo en boletas reales
+    queda dominado por la SILUETA del recibo (no el texto) a partir de
+    ~8° de búsqueda — por eso acá se usa solo para REFINAR una ventana
+    angosta (±2.5° por defecto) alrededor de lo que ya entregó Hough,
+    donde ese problema no aparece, en vez de para la búsqueda completa."""
+    import cv2
+    import numpy as np
+    w, h = img.size
+    scale = min(1.0, 700 / max(w, h))
+    small = img.resize((max(1, round(w * scale)), max(1, round(h * scale)))) if scale < 1.0 else img
+    gray = cv2.cvtColor(np.array(small.convert("RGB")), cv2.COLOR_RGB2GRAY)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    bh, bw = binary.shape
+    diag = int(np.ceil(np.hypot(bw, bh)))
+    canvas = np.zeros((diag, diag), dtype=np.uint8)
+    oy, ox = (diag - bh) // 2, (diag - bw) // 2
+    canvas[oy:oy + bh, ox:ox + bw] = binary
+
+    def score(angle: float) -> float:
+        M = cv2.getRotationMatrix2D((diag / 2, diag / 2), angle, 1.0)
+        rotated = cv2.warpAffine(canvas, M, (diag, diag), flags=cv2.INTER_NEAREST, borderValue=0)
+        profile = rotated.sum(axis=1).astype(np.float64)
+        return float(np.var(profile))
+
+    candidates = np.arange(coarse - span, coarse + span + step, step)
+    scores = [score(a) for a in candidates]
+    return float(candidates[int(np.argmax(scores))])
+
+
+def _detect_skew_angle(img: Image.Image) -> float:
+    """Ángulo (grados) en que el texto de la foto está inclinado respecto
+    al marco — 0 si está derecha o no se detectó nada confiable. Combina
+    las dos técnicas anteriores: Hough para una estimación gruesa robusta
+    (inmune a la silueta del recibo, pero con ~1-3° de error — insuficiente
+    en boletas con mucho texto apretado, donde ese margen ya tuerce el
+    emparejamiento), refinada por projection profile en una ventana angosta
+    alrededor de esa estimación (ahí SÍ es preciso, porque a esa escala no
+    entra en juego el problema de la silueta). Nunca debe romper el resto
+    del servicio — 0.0 si cv2 no está disponible o algo falla."""
+    try:
+        coarse = _hough_skew_angle(img)
+        if abs(coarse) < 0.5:  # ya está prácticamente derecha — no vale la pena refinar
+            return coarse
+        return _refine_skew_angle(img, coarse)
+    except Exception:
+        return 0.0
+
+
+def _rotate_expand(img: Image.Image, angle: float):
+    """Rota la imagen ENTERA sin recortar contenido (equivalente a
+    `Image.rotate(angle, expand=True)` de PIL) pero calculado con cv2 para
+    quedarse con la matriz afín exacta — se necesita después para deshacer
+    la rotación de las coordenadas que devuelve Tesseract sobre esta imagen
+    (ver `_unrotate_lines`). Devuelve la imagen rotada, la matriz afín
+    ORIGINAL→ROTADA, y los tamaños (ancho, alto) de ambas."""
+    import cv2
+    import numpy as np
+    arr = np.array(img.convert("RGB"))
+    h, w = arr.shape[:2]
+    center = (w / 2.0, h / 2.0)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    cos, sin = abs(M[0, 0]), abs(M[0, 1])
+    new_w = int(round(h * sin + w * cos))
+    new_h = int(round(h * cos + w * sin))
+    M[0, 2] += new_w / 2.0 - center[0]
+    M[1, 2] += new_h / 2.0 - center[1]
+    rotated = cv2.warpAffine(arr, M, (new_w, new_h), borderValue=(255, 255, 255))
+    return Image.fromarray(rotated), M, (w, h), (new_w, new_h)
+
+
+def _unrotate_lines(lines: list[dict], M, orig_size: tuple[int, int], rot_size: tuple[int, int]) -> list[dict]:
+    """Convierte x0/x1/y0/y1/word_spans de cada línea — calculados por
+    Tesseract sobre la imagen ENDEREZADA para leer mejor — de vuelta a %
+    de la foto ORIGINAL, que es el marco de referencia que espera el resto
+    del pipeline (y el frontend, que dibuja sobre la foto sin rotar).
+    Deshace la rotación aplicando la transformación afín inversa a las 4
+    esquinas de cada caja y tomando el rectángulo alineado a los ejes que
+    las contiene. Ese rectángulo queda un poco más ancho que el texto real
+    (inevitable: un rectángulo sin rotar no puede calzar exacto sobre texto
+    en ángulo) — mismo trade-off que ya acepta el resto del sistema al
+    dibujar recuadros sin rotación."""
+    import cv2
+    import numpy as np
+    Minv = cv2.invertAffineTransform(M)
+    ow, oh = orig_size
+    rw, rh = rot_size
+
+    def unrotate_box(x0pct, x1pct, y0pct, y1pct):
+        corners = np.array([
+            [x0pct / 100 * rw, y0pct / 100 * rh], [x1pct / 100 * rw, y0pct / 100 * rh],
+            [x0pct / 100 * rw, y1pct / 100 * rh], [x1pct / 100 * rw, y1pct / 100 * rh],
+        ])
+        pts = np.hstack([corners, np.ones((4, 1))]) @ Minv.T
+        return (
+            pts[:, 0].min() / ow * 100, pts[:, 0].max() / ow * 100,
+            pts[:, 1].min() / oh * 100, pts[:, 1].max() / oh * 100,
+        )
+
+    out = []
+    for line in lines:
+        x0, x1, y0, y1 = unrotate_box(line["x0"], line["x1"], line["y0"], line["y1"])
+        word_spans = []
+        for wx0, wx1 in line["word_spans"]:
+            wx0o, wx1o, _, _ = unrotate_box(wx0, wx1, line["y0"], line["y1"])
+            word_spans.append((wx0o, wx1o))
+        out.append({**line, "x0": x0, "x1": x1, "y0": y0, "y1": y1, "word_spans": word_spans})
+    return out
+
+
+def _run_scale(
+    base_img: Image.Image, items: list[str], scale: float,
+    transform: Optional[tuple] = None,
+) -> tuple[list[Optional[dict]], int, list[dict]]:
     w, h = base_img.size
     im = base_img if scale == 1.0 else base_img.resize(
         (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
     )
     lines = _tesseract_lines(im)
+    if transform is not None:
+        M, orig_size = transform
+        lines = _unrotate_lines(lines, M, orig_size, im.size)
     matches = _match_items_to_lines(items, lines)
     return matches, sum(1 for m in matches if m is not None), lines
 
@@ -304,7 +491,20 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
     independientes entre sí y ya de por sí se iban a correr todas en serie
     (nunca había early-stop en este caso), paralelizarlas no cambia qué
     resultado gana (ver `_best_of`), solo el tiempo de reloj: el peor caso
-    pasa de la SUMA de todas las llamadas a la más LENTA de ellas."""
+    pasa de la SUMA de todas las llamadas a la más LENTA de ellas.
+
+    También en ese mismo caso difícil (nunca en el camino rápido) se prueba
+    una variante con la foto ENDEREZADA: una foto sacada en ángulo (no solo
+    boleta doblada — el cuadro entero inclinado) hace que Tesseract agrupe
+    mal las líneas de texto (su propio análisis de layout asume texto
+    aprox. horizontal), lo que rompe tanto el armado de "misma fila
+    física" (`_row_segments`) como el orden de lectura que asume el
+    emparejamiento — ninguna heurística downstream puede recuperar texto
+    que Tesseract ya agrupó mal en el paso anterior. Se detecta el ángulo
+    (`_detect_skew_angle`, sin costo de OCR) y, si supera el umbral mínimo,
+    se prueba TAMBIÉN esa variante — compite en el mismo torneo que las
+    demás (`_best_of`, gana solo si empareja estrictamente más ítems),
+    nunca se asume que enderezar ayuda."""
     std_img = _standard_variant(img)
     w, h = std_img.size
     scales = _candidate_scales(max(w, h))
@@ -314,14 +514,38 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
         return matches, lines
 
     enhanced = _clahe_variant(img)
+
+    skew_angle = _detect_skew_angle(std_img)
+    deskew_transform = None
+    deskewed_std = deskewed_enhanced = None
+    if abs(skew_angle) >= _SKEW_MIN_DEGREES:
+        deskewed_std, M, orig_size, _ = _rotate_expand(std_img, skew_angle)
+        deskew_transform = (M, orig_size)
+        if enhanced is not None:
+            deskewed_enhanced, _, _, _ = _rotate_expand(enhanced, skew_angle)
+
     with ThreadPoolExecutor(max_workers=8) as ex:
         std_futures = [ex.submit(_run_scale, std_img, items, s) for s in scales[1:]]
         clahe_futures = [ex.submit(_run_scale, enhanced, items, s) for s in scales] if enhanced is not None else []
+        deskew_futures = []
+        if deskewed_std is not None:
+            deskew_futures.append(ex.submit(_run_scale, deskewed_std, items, 1.0, deskew_transform))
+        if deskewed_enhanced is not None:
+            deskew_futures.append(ex.submit(_run_scale, deskewed_enhanced, items, 1.0, deskew_transform))
+
         matches, count, lines = _best_of([f.result() for f in std_futures], (matches, count, lines))
         if clahe_futures:
             clahe_matches, clahe_count, clahe_lines = _best_of([f.result() for f in clahe_futures[1:]], clahe_futures[0].result())
             if clahe_count > count:  # CLAHE gana SOLO si mejora estrictamente — misma regla de siempre
                 matches, count, lines = clahe_matches, clahe_count, clahe_lines
+        if deskew_futures:
+            dm, dc, dl = deskew_futures[0].result()
+            for f in deskew_futures[1:]:
+                m2, c2, l2 = f.result()
+                if c2 > dc:
+                    dm, dc, dl = m2, c2, l2
+            if dc > count:  # enderezar gana SOLO si mejora estrictamente — misma regla de siempre
+                matches, count, lines = dm, dc, dl
     return matches, lines
 
 
@@ -340,11 +564,20 @@ def position(req: PositionRequest) -> PositionResponse:
         if m is None:
             items_out.append(ItemPosition(name=name))
         else:
+            segs = m["segments"]
+            # bbox_y0/y1 a nivel ítem = rango que cubre TODOS sus segmentos —
+            # se mantiene solo como fallback/compat; el frontend debe preferir
+            # el y0/y1 propio de cada segmento (ver `Segment`).
+            bbox_y0 = min((s["y0"] for s in segs), default=m["y0"])
+            bbox_y1 = max((s["y1"] for s in segs), default=m["y1"])
             items_out.append(ItemPosition(
                 name=name,
                 position_y=round((m["y0"] + m["y1"]) / 2, 1),
-                bbox_y0=round(m["y0"], 1), bbox_y1=round(m["y1"], 1),
-                segments=[Segment(x0=round(s[0], 1), x1=round(s[1], 1)) for s in m["segments"]],
+                bbox_y0=round(bbox_y0, 1), bbox_y1=round(bbox_y1, 1),
+                segments=[
+                    Segment(x0=round(s["x0"], 1), x1=round(s["x1"], 1), y0=round(s["y0"], 1), y1=round(s["y1"], 1))
+                    for s in segs
+                ],
             ))
     return PositionResponse(items=items_out, ocr_lines=[l["text"] for l in lines])
 

@@ -1920,7 +1920,12 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
             it.position_y = r.get("position_y")
             it.bbox_y0 = r.get("bbox_y0")
             it.bbox_y1 = r.get("bbox_y1")
-            it.segments = [[s["x0"], s["x1"]] for s in r.get("segments") or []]
+            # [x0, x1, y0, y1] por tramo — cada uno con su PROPIO alto real
+            # (no el del ítem completo): nombre y precio de una misma fila
+            # suelen venir de líneas Tesseract con alturas distintas (más
+            # marcado aún si la boleta está doblada/arrugada) — ver
+            # Segment.y0/y1 en services/ocr_position/app/main.py.
+            it.segments = [[s["x0"], s["x1"], s["y0"], s["y1"]] for s in r.get("segments") or []]
         return payload.get("ocr_lines") or []
     except Exception as _exc:  # noqa: BLE001
         print(f"[ocr] servicio de posición no disponible ({_exc}) — reparto parejo")
