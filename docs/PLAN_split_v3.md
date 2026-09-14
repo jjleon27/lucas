@@ -781,3 +781,77 @@ pasaron de sombrear "Mesa N°6"/"Usuario Valeria Ortega"/"Total Final" a
 sombrear exactamente "Coca Cola Light", "Agua Mineral Sin Gas", etc.
 pytest: mismas 3 fallas preexistentes. Commiteado (`373824f`), pusheado,
 deployado.
+
+### Iteración 2026-09-14 (cont. 18) — grilla más densa, fila completa, contraste adaptativo, recorte en etapas, WhatsApp con detalle
+
+Racha de 4 pedidos seguidos del usuario sobre lo mismo y sobre compartir:
+
+**Grilla apenas visible**: se pidió más densidad y más contraste — pasó a
+dos niveles (líneas finas cada 2.5%/5%, gruesas y casi opacas cada 25%).
+
+**"Solo se colorea el ítem, debe colorearse también la cantidad y el
+valor"**: Tesseract a veces separa cantidad/nombre/precio en bloques de
+texto DISTINTOS cuando hay mucho espacio en blanco entre columnas — el
+nombre matcheaba bien pero la caja quedaba angosta. Fix geométrico
+(`_expand_to_full_row` en `services/ocr_position`): agranda el ancho para
+cubrir toda la fila física buscando, cerca en el orden de lectura, otras
+líneas que compartan casi la misma altura (traslape vertical ≥60%) — no
+depende de idioma/mayúsculas/largo/formato, generaliza a cualquier
+boleta. Verificado con captura real y consulta directa a la API de
+producción: bbox_x0≈9%, bbox_x1≈84% (cubre cantidad+nombre+precio).
+
+**"Aumentar el contraste, busca en GitHub qué se usa para boletas
+claras/oscuras"**: se encontró que el código YA tenía CLAHE (contraste
+adaptativo local, técnica estándar de preprocesamiento OCR) implementado
+para el camino clásico de Tesseract (`_preprocess`, usado por
+`run_ocr`/`/upload`) — nunca se había llevado al servicio de posición. Se
+probó usarlo SIEMPRE ahí en vez del contraste fijo (×1.8) y EMPEORÓ varias
+boletas que ya leían bien (97%→79% en el set de prueba de 9 boletas). Fix:
+el servicio prueba PRIMERO la variante estándar (ya probada, la más
+barata) y solo escala a CLAHE si no logra emparejar el 100% de los ítems
+— nunca paga el costo extra en el caso común. Resultado: **100% (70/70
+ítems)** en las 9 boletas del eval set, incluida `montana_bellavista`
+(antes 1/3, la única que de verdad necesitaba CLAHE). El servicio ahora
+recibe la foto SIN el contraste ya ajustado para el modelo de visión
+(`_prep_for_position` en `backend/app/ocr.py`) — decide su propio
+contraste, con un objetivo distinto al de un LLM.
+
+**Velocidad**: se pidió evaluar con Fable cómo acelerar sin arriesgar
+precisión. Diagnóstico (confirmado por Fable): `pytesseract.image_to_data`
+shellea a un binario externo — la espera libera el GIL, así que
+`ThreadPoolExecutor` es la herramienta correcta. Camino rápido (7/9
+boletas, la escala 1.0 sin reescalar ya empareja el 100%): SIN CAMBIOS,
+sigue siendo 1 sola llamada a Tesseract. Camino lento (no alcanzó el 100%
+con la escala barata): antes corría hasta 8 llamadas secuenciales
+(escalas estándar + escalas CLAHE); ahora, confirmado que hace falta el
+camino lento, se lanzan en paralelo el resto de escalas estándar + todas
+las de CLAHE — el tiempo de reloj queda acotado por la más lenta, no por
+la suma. Mismo resultado exacto (100%, 70/70) — `montana_bellavista` bajó
+de 2.53s a 0.94s. También `--oem 1` explícito (LSTM-only, ya era lo que
+se usaba en la práctica).
+
+**Recorte en dos etapas + volver atrás**: el usuario notó una boleta
+chueca y pidió una grilla fija para poder mover/recortar/girar hasta que
+el texto quede derecho — y después pidió específicamente que el flujo
+fuera: primero recortar (la selección "acerca" la imagen, pasa a llenar
+el cuadro), después girar sobre el resultado ya recortado, con un botón
+para deshacer y volver a recortar desde cero. `cropStage` ("select" |
+"straighten") separa el paso de recorte (recuadro arrastrable + zoom/pan)
+del paso de enderezar (90°/fino + grilla, sin recuadro). "Volver a
+recortar" restaura la foto ORIGINAL (guardada aparte en
+`cropOriginalFile`) para empezar de cero. Zoom/pan de la foto implementado
+con Pointer Events unificados (no touch+mouse por separado, para no
+chocar con los eventos del recuadro de recorte) — el recorte final
+invierte la transformación de zoom/pan (`containerPctToNatural`) para
+recortar exactamente lo que el usuario ve en pantalla.
+
+**Mensaje de WhatsApp con detalle completo**: pasó de un resumen de una
+línea por persona a: ítems con su costo y quién los consumió, quién pagó,
+y el balance de cada uno. Reutiliza `itemCostFor`/`unitsFor` (las mismas
+funciones que arman el desglose en pantalla) para que el texto compartido
+sea exactamente consistente con lo que el usuario ya revisó.
+
+pytest: mismas 3 fallas preexistentes. Build de frontend verificado.
+Commiteado (`e932b0c`, `420f763`), pusheado, deployado. Verificado en
+producción vía captura + consulta directa a la API (`fetch` con el token
+de sesión desde la consola del navegador) — no solo visual.
