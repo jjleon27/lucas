@@ -1445,3 +1445,77 @@ vez corrige el valor mostrado).
 
 **Pendiente de confirmar en producción**: que la próxima subida real del
 usuario efectivamente baje de 15s.
+
+---
+
+## Cont. 29 (2026-09-15) — panel de revisión de Fable + intento fail-safe revertido con datos reales
+
+Tras el plan de Fable (cont. 28: recomendación "no migrar", investigó Donut/
+LayoutLMv3/markitdown/Textract/Azure/Google/PaddleOCR/ensembles), se corrió
+un panel de 3 agentes revisores (rigor de investigación, adversarial,
+viabilidad de ingeniería) pedido explícitamente por el usuario antes de
+ejecutar nada. Hallazgos que corrigieron el plan original:
+
+- **n=9 es más débil de lo que parecía**: una de las 9 boletas es de Madrid
+  (no chilena); el propio historial del proyecto muestra que ese mismo set
+  se usó para AJUSTAR el pipeline día a día (no es holdout real); varianza
+  documentada entre corridas del mismo código: ±3-4 puntos porcentuales.
+- **Hueco real de investigación**: Fable nunca buscó proveedores
+  especializados en recibos (no document-AI genérico) — el panel adversarial
+  encontró Taggun, que anuncia soporte literal de RUT/boleta chilena.
+  Pendiente de probar con datos propios (requiere que el usuario cree la
+  cuenta/trial).
+- **Google Document AI Expense Parser SÍ soporta español** (`es` confirmado
+  en `docs.cloud.google.com/document-ai/docs/processors-list`, verificado
+  directo por mí tras una contradicción entre 2 de los 3 paneles) — Fable lo
+  había descartado como "dudoso" sin verificar la fuente primaria.
+  Queda como candidato a probar con datos propios, igual que Azure.
+  Pendiente de que el usuario cree la cuenta.
+- **`danes_vitacura` no es un "bug puntual"**: el trust-gate de
+  `_suspect_items` se autodesactiva (no acusa a nadie) justo cuando
+  Tesseract no puede confiar en la foto — que es la MISMA condición (foto
+  oscura/papel degradado) que hace que el modelo de visión alucine. Falla
+  correlacionada por diseño, no un umbral mal puesto.
+- Cita de Fable "≥800 ejemplos para superar prompting con LLM" no se pudo
+  verificar independientemente — parece confundir el tamaño del training
+  split de CORD con un hallazgo real. Descartada.
+- El descarte de Fable del ensemble/voting paralelo (CE-OCR) confundía
+  "secuencial" (lo que causó los 30s de cont. 28) con "paralelo" (que el
+  propio proyecto ya sabe hacer bien, ej. `_warm_position_service`) — queda
+  como opción real a evaluar más adelante, no descartada por buena razón.
+
+**Ejecutado tras el panel**:
+1. **Intento de fail-safe en `_suspect_items`** (marcar TODA la boleta
+   sospechosa cuando el trust cae bajo el gate, en vez de a nadie) —
+   implementado, y ANTES de aceptarlo se probó contra las 9 oficiales + 25
+   fotos reales nuevas de `/Users/kako2/Downloads/Boletas/` (carpeta que el
+   usuario pidió usar de ahora en adelante). Resultado real: el trust cae
+   bajo 0.5 en 13/25 fotos (52%), la mayoría boletas leídas BIEN — "marcar
+   todo" es demasiado ruido. Se probó también sacar el gate por completo
+   (chequear siempre): eso marcaba en falso 5/6 ítems de `cuenta_valeria`,
+   una boleta verificada 100% correcta (cont. 26) — Tesseract simplemente
+   lee mal ESE formato aunque el modelo de visión la lea perfecto. De las 3
+   variantes medidas, el diseño ORIGINAL (silencio total cuando Tesseract
+   no es confiable) sigue siendo el que menos ruido genera con datos
+   reales. **Revertido a como estaba** — `danes_vitacura` queda como límite
+   conocido, no resuelto por esta vía. Lección aplicada una vez más: medir
+   con datos reales ANTES de aceptar un cambio "lógicamente correcto".
+2. **Costo real medido, no estimado**: `ai_usage.py` ya tenía toda la
+   infraestructura (`price_for`, `record`, `monthly_summary`, endpoint
+   `/ai/usage`) pero le faltaban los precios de `gpt-5.6-luna`/
+   `gpt-4.1-mini`/`gpt-5-mini` en `_PRICES` — sin eso el costo de dividir
+   boletas se calculaba como $0 falso. Agregados los precios reales
+   verificados contra `developers.openai.com/api/docs/pricing`.
+3. **PaddleOCR descartado** sin tocar código — riesgo real de empeorar el
+   cold-start ya documentado (cont. 27/28) + conflicto de versión de numpy
+   + granularidad de bbox incompatible con el clustering actual.
+
+**Pendiente, requiere acción del usuario** (no ejecutable por mí solo):
+- Crear cuenta/trial en Google Document AI y Taggun, correr las boletas
+  reales contra ambos, comparar con `run_eval.py` — cierra la pregunta de
+  "hay algo mejor" con datos propios en vez de blogs de marketing.
+- Seguir agregando boletas reales diversas (formato/iluminación/comercio)
+  como holdout real, separado de las que se usan para ajustar prompts —
+  la carpeta `/Users/kako2/Downloads/Boletas/` (25 fotos) ya es un buen
+  punto de partida, usarla de ahora en adelante para validar cambios de
+  `ocr.py`/`ocr_position` antes de darlos por buenos.

@@ -23,6 +23,15 @@ _PRICES: dict[str, tuple[float, float]] = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o":      (2.50, 10.00),
     "gpt-4-turbo": (10.00, 30.00),
+    # Usados por vision_parse_bill (backend/app/ocr.py) — split de cuentas.
+    # Faltaban acá: price_for() caía al default (0.0, 0.0) y el costo real
+    # de dividir boletas se reportaba como $0 sin avisar (encontrado en la
+    # revisión de panel de 2026-09-15, docs/PLAN_split_v3.md). Precios
+    # verificados contra developers.openai.com/api/docs/pricing, no
+    # estimados.
+    "gpt-5.6-luna": (0.20, 1.20),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-5-mini":   (0.25, 2.00),
     # Anthropic
     "claude-haiku-4-5-20251001": (0.80, 4.00),
     "claude-sonnet-4-6":          (3.00, 15.00),

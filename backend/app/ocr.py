@@ -1833,6 +1833,24 @@ def _suspect_items(items: list[ParsedItem], ocr_lines: list[str]) -> list[bool]:
     se marca ningún ítem — evita acusar en falso cuando el problema es del
     propio Tesseract, no del modelo de visión.
 
+    Intento real de "fail-safe" (2026-09-15, revertido con datos): se probó
+    marcar TODA la boleta como sospechosa cuando el trust cae bajo el gate,
+    en vez de a nadie — razonado en que la boleta que sí falla en el eval
+    (`danes_vitacura`, foto oscura) tiene ese patrón. Medido contra las 9
+    boletas oficiales + 25 fotos reales nuevas
+    (`/Users/kako2/Downloads/Boletas/`): el trust cae bajo 0.5 en 13 de 25
+    fotos reales (52%) — la mayoría boletas leídas BIEN, no mal — así que
+    "marcar todo" volvía la señal inútil por exceso de ruido. La alternativa
+    de sacar el gate por completo (chequear siempre nombre+precio) tampoco
+    sirve: en `cuenta_valeria` (verificada 100% correcta, cont. 26) marcaba
+    5 de 6 ítems como sospechosos en falso, porque Tesseract simplemente lee
+    mal ESE formato de boleta aunque el modelo de visión la lea perfecto.
+    De las 3 variantes medidas con datos reales, el silencio (no acusar a
+    nadie cuando Tesseract no es confiable) sigue siendo la que menos ruido
+    genera — se mantiene así. El caso `danes_vitacura` queda como límite
+    conocido y aceptado (ver docs/PLAN_split_v3.md), no resuelto por esta
+    vía; ver ese doc para el trade-off consciente con self-consistency.
+
     Un ítem se marca sospechoso solo cuando fallan DOS señales a la vez
     (nombre Y precio) — un error de OCR benigno (nombre con una letra mal
     pero precio correcto) no alcanza; hace falta que ni el nombre ni el
