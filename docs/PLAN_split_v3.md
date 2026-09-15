@@ -1519,3 +1519,34 @@ ejecutar nada. Hallazgos que corrigieron el plan original:
   la carpeta `/Users/kako2/Downloads/Boletas/` (25 fotos) ya es un buen
   punto de partida, usarla de ahora en adelante para validar cambios de
   `ocr.py`/`ocr_position` antes de darlos por buenos.
+
+---
+
+## Cont. 30 (2026-09-15) — usuario reporta 30s de nuevo: medido real (~16-17s), probados 2 modelos alternativos con datos frescos, ninguno gana
+
+Log real de producción (`vercel logs`, bill_id=160): `_read(gpt-5.6-luna)
+=10.64s` + `_reformat=3.62s` + posición (~2s, contenedor ya estaba tibio
+por el warm-up de cont. 27) = **~16-17s servidor**, no 30s — pero sigue
+sobre el objetivo de <10-15s.
+
+Antes de tocar nada, se probaron con las 9 boletas oficiales (datos
+frescos, no confiando en comparaciones viejas):
+- `gpt-4.1-mini`: 80.5% precisión (peor — `cuenta_valeria` y
+  `lider_quilicura`, que hoy dan 100%, empiezan a fallar). No más rápido
+  de forma consistente (`bar_autoctono` 15.0s, peor que luna).
+- `gpt-5-mini`: 86.1% precisión (peor) Y más lento (`bar_autoctono` 23.9s,
+  `danes_vitacura` 21.0s) — pierde en las dos dimensiones a la vez.
+
+Ningún modelo alternativo gana. Confirma con datos de HOY lo que
+`config.py` ya documentaba de una comparación anterior: `gpt-5.6-luna`
+sigue siendo la mejor opción real disponible. El costo de ~5-11s de la
+lectura de visión es estructural al enfoque (LLM de visión), no un bug.
+
+**Lo que sí se hizo**: como la latencia real no se puede bajar más sin
+sacrificar precisión (que el usuario exige igual de fuerte), se atacó la
+espera PERCIBIDA en vez de la real — técnica de UX estándar, cero cambio
+de latencia real. El spinner de "Leyendo boleta…" (mudo, 15+ segundos) pasa
+a ciclar por fases reales ("Subiendo foto…" → "Leyendo boleta…" →
+"Extrayendo ítems…" → "Ubicando cada ítem en la foto…") cronometradas
+aproximadamente a los tiempos reales medidos. `frontend/src/app/split/
+page.tsx`: `loadingPhase`/`startLoadingPhases`/`LOADING_PHASES`.

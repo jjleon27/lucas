@@ -240,6 +240,26 @@ function SplitPageInner({
   const [people, setPeople] = useState<Person[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(false);
+  // Mensaje de progreso durante la lectura de la boleta — la LLAMADA en sí
+  // no se puede acortar más (medido: ~5-11s la lectura de visión + ~2-4s
+  // el reformateo + posición, ver docs/PLAN_split_v3.md cont. 30 — 2
+  // modelos más baratos probados con datos reales, ambos peores en
+  // precisión y uno además más lento). Lo que SÍ se puede hacer es que la
+  // espera se sienta más corta: un spinner mudo de 15s se siente eterno,
+  // ir mostrando en qué paso real va (aunque sea aproximado por tiempo, no
+  // por progreso exacto del backend) reduce la espera percibida — técnica
+  // de UX estándar, no cambia ni un milisegundo de latencia real.
+  const [loadingPhase, setLoadingPhase] = useState(0);
+  const LOADING_PHASES = ["Subiendo foto…", "Leyendo boleta…", "Extrayendo ítems…", "Ubicando cada ítem en la foto…"];
+  function startLoadingPhases(): () => void {
+    setLoadingPhase(0);
+    const timers = [
+      setTimeout(() => setLoadingPhase(1), 1200),
+      setTimeout(() => setLoadingPhase(2), 7000),
+      setTimeout(() => setLoadingPhase(3), 11000),
+    ];
+    return () => timers.forEach(clearTimeout);
+  }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -737,6 +757,7 @@ function SplitPageInner({
 
   async function handleFile(file: File) {
     setLoading(true);
+    const stopPhases = startLoadingPhases();
     setAdvItems(new Set()); setAdvOpen(null);
     try {
       const today = new Date().toISOString().split("T")[0];
@@ -745,7 +766,7 @@ function SplitPageInner({
       setBill(b);
       setStep(2);
     } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error al leer boleta"); }
-    finally { setLoading(false); }
+    finally { setLoading(false); stopPhases(); }
   }
 
   async function handleManual() {
@@ -2219,7 +2240,7 @@ function SplitPageInner({
                 onClick={() => !loading && fileRef.current?.click()}
               >
                 {loading ? (
-                  <><div className="w-10 h-10 border-4 border-indigo-300 border-t-indigo-600 rounded-full animate-spin" /><p className="text-slate-500 text-sm">Leyendo boleta…</p></>
+                  <><div className="w-10 h-10 border-4 border-indigo-300 border-t-indigo-600 rounded-full animate-spin" /><p className="text-slate-500 text-sm">{LOADING_PHASES[loadingPhase]}</p></>
                 ) : (
                   <><Camera size={40} className="text-indigo-400" /><p className="font-semibold text-slate-700 text-lg">Subir boleta</p><p className="text-slate-400 text-sm">Foto o imagen</p></>
                 )}
