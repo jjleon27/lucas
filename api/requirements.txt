@@ -18,7 +18,7 @@ passlib[bcrypt]==1.7.4
 pillow==10.4.0
 pillow-heif==0.18.0
 numpy==2.1.1
-openai==1.51.0
+openai==1.99.0  # >=1.70 necesario para reasoning_effort en chat.completions.create -- este archivo (no backend/requirements.txt) es el que Vercel realmente instala para la funcion serverless (vive junto a api/index.py); estaba desalineado desde el fix de cont. 23, reasoning_effort nunca estuvo activo de verdad en produccion hasta ahora (2026-09-18)
 anthropic==0.125.0
 httpx==0.27.2
 python-dotenv==1.0.1
