@@ -1,0 +1,19 @@
+{
+  "image": "images-15.jpeg",
+  "source": "Boleta Sushi Plop SpA (venta de sushi, El Abeto 8527, Pudahuel). 3 ítems, sin ambigüedad.",
+  "currency": "CLP",
+  "merchant_contains": "sushi plop",
+  "date": "2021-03-17",
+  "amount": 8490,
+  "total_neto": 7134,
+  "iva_amount": 1356,
+  "item_count": 3,
+  "items_subtotal": 8490,
+  "items_lenient": false,
+  "items": [
+    {"name": "Gyosas", "quantity": 1, "line_total": 2990},
+    {"name": "Hosomaki", "quantity": 1, "line_total": 2500},
+    {"name": "Hand Roll", "quantity": 1, "line_total": 3000}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 8.490 = TOTAL impreso. IVA impreso ($1.356) usado para derivar total_neto=7.134."
+}

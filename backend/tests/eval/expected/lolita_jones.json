@@ -1,0 +1,28 @@
+{
+  "image": "images-24.jpeg",
+  "source": "Boleta Lolita Jones (Alonso de Córdova). Screenshot de Instagram, 12 ítems, reconciliación exacta.",
+  "currency": "CLP",
+  "merchant_contains": "lolita jones",
+  "date": "2026-04-04",
+  "amount": 135600,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 12,
+  "items_subtotal": 135600,
+  "items_lenient": false,
+  "items": [
+    {"name": "Pasta Crab San Lucas", "quantity": 1, "line_total": 16100},
+    {"name": "Taco Carnitas", "quantity": 1, "line_total": 7700},
+    {"name": "Aperol Spritz", "quantity": 1, "line_total": 9000},
+    {"name": "Yuca Fries", "quantity": 1, "line_total": 8000},
+    {"name": "Pork Belly", "quantity": 1, "line_total": 13900},
+    {"name": "Guacamole A La Mesa", "quantity": 1, "line_total": 10900},
+    {"name": "Bistec Y Chile Relleno", "quantity": 1, "line_total": 25500},
+    {"name": "Hendrick's", "quantity": 1, "line_total": 21000},
+    {"name": "+Ginger Ale", "quantity": 3, "line_total": 3000},
+    {"name": "Bacardi Carta Blanca", "quantity": 1, "line_total": 15000},
+    {"name": "+Mojito", "quantity": 2, "line_total": 3000},
+    {"name": "Coca Cola", "quantity": 1, "line_total": 2500}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 135.600 = Total General Mesa/Consumo Cliente impreso. amount SIN Propina Sugerida (13.560), consistente con el resto del set."
+}

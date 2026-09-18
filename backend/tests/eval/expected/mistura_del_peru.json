@@ -1,0 +1,29 @@
+{
+  "image": "images-14.jpeg",
+  "source": "Boleta Mistura del Perú (restaurante peruano, Providencia/Santiago). 13 ítems, reconciliación exacta.",
+  "currency": "CLP",
+  "merchant_contains": "mistura",
+  "date": null,
+  "amount": 121400,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 13,
+  "items_subtotal": 121400,
+  "items_lenient": false,
+  "items": [
+    {"name": "Pisco Sour Vaticano Dos Maracuya", "quantity": 3, "line_total": 33600},
+    {"name": "Jugo de Mango", "quantity": 1, "line_total": 3000},
+    {"name": "Copa Espumante", "quantity": 3, "line_total": 8400},
+    {"name": "Leche Tigre Vaticano", "quantity": 1, "line_total": 8400},
+    {"name": "Ceviche Mistura", "quantity": 1, "line_total": 10900},
+    {"name": "Lomo Saltado", "quantity": 1, "line_total": 10500},
+    {"name": "Pescado Salsa Jaiva", "quantity": 1, "line_total": 10200},
+    {"name": "Pescado Mistura Gratinado", "quantity": 1, "line_total": 10200},
+    {"name": "Aji de Gallina", "quantity": 1, "line_total": 9500},
+    {"name": "Tiramisu", "quantity": 1, "line_total": 4900},
+    {"name": "Suspiro Limeña", "quantity": 1, "line_total": 4900},
+    {"name": "Chocopisco", "quantity": 1, "line_total": 4900},
+    {"name": "Agua Mineral S/Gas", "quantity": 1, "line_total": 2000}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 121.400 = Sub Total/A Pagar impreso. Nota: la foto muestra un pie de página cortado con 'Sugerida 10%' (propina) sin monto visible -- amount=121.400 es el subtotal SIN propina, consistente con el resto del set."
+}

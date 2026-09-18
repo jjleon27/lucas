@@ -1,0 +1,24 @@
+{
+  "image": "images-18.jpeg",
+  "source": "Boleta 'El Parrón de Pomaire' (Puerto Montt/Pomaire). Screenshot de foto compartida en X/Twitter con texto superpuesto arriba (ajeno a la boleta).",
+  "currency": "CLP",
+  "merchant_contains": "parron",
+  "date": "2022-02-06",
+  "amount": 55000,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 8,
+  "items_subtotal": 55000,
+  "items_lenient": true,
+  "items": [
+    {"name": "Humitas", "quantity": 2, "line_total": 21000},
+    {"name": "Pastel Vegetariano", "quantity": 1, "line_total": 9900},
+    {"name": "Agua Mineral Sin Gas", "quantity": 2, "line_total": 3800},
+    {"name": "Natural Frutilla", "quantity": 2, "line_total": 6200},
+    {"name": "Limonada Menta Jengibre", "quantity": 1, "line_total": 3500},
+    {"name": "Pepsi Zero", "quantity": 1, "line_total": 1900},
+    {"name": "Porción Papas Fritas", "quantity": 1, "line_total": 4800},
+    {"name": "Schop Artesanal", "quantity": 1, "line_total": 3800}
+  ],
+  "notes": "Verificado a mano (2026-09-18): mi propia suma da 54.900, el Subtotal impreso es 55.000 (diferencia de $100 -- la Propina Sugerida 10%=5.500 SÍ confirma que 55.000 es el subtotal real, así que hay un error de $100 en alguna de mis lecturas de línea, no en el total). items_lenient=true por este desajuste chico conocido; amount=55.000 usa el impreso, no mi suma."
+}

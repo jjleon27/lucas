@@ -1650,242 +1650,143 @@ def vision_parse(
         return None
 
 
-# ---------- Bill-split OCR: lectura libre + reformateo barato ----------
-# `vision_parse` (arriba) usa un prompt JSON con MUCHOS campos (bbox por ítem,
-# IVA/neto, categoría, cuotas, bank_hint — necesarios para /upload, que también
-# lee cartolas bancarias multi-transacción). Para el split de cuentas (siempre
-# UNA boleta con ítems) el pipeline pasó por 3 etapas hoy (2026-09-11):
-#   1. JSON completo → el modelo se saltaba ítems en boletas con líneas
-#      repetidas (boleta real "Bar Autóctono", 17 ítems, 7 líneas casi
-#      idénticas) y era más lento.
-#   2. Texto plano pero con un formato fijo "cantidad | nombre | total" →
-#      mejor, pero SIGUE siendo una restricción de formato: en otra boleta
-#      real ("Bar La Providencia", columna de precios impresa desalineada de
-#      los nombres) el modelo confundía qué precio iba con qué ítem. Se
-#      probó pedirle explícitamente que emparejara por orden, que verificara
-#      su propia suma — nada lo arregló.
-#   3. **Lectura totalmente libre** (sin pedirle NINGÚN formato — el modelo
-#      responde como quiera: tabla markdown, lista con viñetas, numerada,
-#      lo que le salga) — verificado 3/3 exacto en la misma boleta donde
-#      el formato fijo fallaba. Pedirle CUALQUIER estructura, por mínima
-#      que parezca, le cuesta precisión en boletas visualmente difíciles.
-# El costo de la lectura libre: la respuesta no es parseable directo (cada
-# llamada elige un formato distinto). Se resuelve con un SEGUNDO paso barato
-# — sin ver la foto, solo texto — que reordena la respuesta ya correcta a
-# nuestro formato fijo (`_REFORMAT_PROMPT_BILL`, `gpt-4.1-nano`, ~2-3s,
-# costo mínimo porque no es una llamada de visión). Este segundo paso nunca
-# lee la boleta ni decide valores — solo reformatea texto que ya está bien,
-# así que no puede reintroducir el problema de la etapa 2.
+# ---------- Bill-split OCR: Structured Outputs + racing ----------
+# Historial: se probaron 3 pipelines de texto libre/formato fijo (JSON
+# completo, "cantidad|nombre|total" fijo, lectura 100% libre + reformateo
+# en 2 llamadas) — ver docs/PLAN_split_v3.md conts. 11-13 para ese
+# historial. El 2026-09-18 se reemplazó todo eso por Structured Outputs
+# (la Responses API de OpenAI, `text.format.json_schema` con
+# `strict: true`) tras medir las 8 arquitecturas candidatas contra 28
+# boletas reales verificadas a mano (cont. 36-37): el SDK GARANTIZA JSON
+# válido contra el schema — se acabó el parseo de texto propio (regex
+# sobre "cantidad|nombre|total", que rompía cuando el modelo desviaba el
+# formato) — y el modelo puede decir `null` cuando genuinamente no está
+# seguro de un número, una señal de incertidumbre mucho más limpia que
+# cruzar contra el texto de Tesseract (ver `needs_review` en
+# `vision_parse_bill`, ya no depende del servicio de posición).
 #
-# NO agregar restricciones de formato al prompt de LECTURA (`_RECEIPT_PROMPT_BILL`)
-# sin volver a probar contra una boleta difícil real primero — ver
-# docs/PLAN_split_v3.md para el historial completo de intentos.
+# 1 sola llamada de visión (no 2) — el reformateo de texto libre ya no
+# hace falta porque el modelo devuelve el JSON directo, con schema
+# forzado. Con racing (2 copias en paralelo, gana la que responda
+# primero, ver `_race_structured_bill_read`) para la cola de latencia
+# (medido: p99 de tiempo-al-primer-token 4.2s→1.2s con esta técnica,
+# fuente real: myhoai.com "A simple fix for LLM tail latency").
 #
-# CATEGORY y CURRENCY no se piden: no se usan en ningún lado del flujo de
-# bill-split (bill.total_amount sale de sumar BillItem.line_total, no de
-# esto; Bill no tiene columna category). AMOUNT sí se mantiene — es la única
-# señal que se usa para decidir si hay que reintentar (ver más abajo).
-#
-# Por eso el split usa su propio prompt/parser/función — no comparte
-# `_RECEIPT_PROMPT`/`vision_parse` con /upload, así no se toca su manejo de
-# cartolas/cuotas/bank_hint (que sigue igual, sin cambios en este commit).
-_RECEIPT_PROMPT_BILL = (
-    "Dame en texto esta boleta, con el nombre del local, la fecha, los "
-    "items en ese orden con su cantidad y valor, y el total del consumo "
-    "(sin la propina sugerida si la hay)."
+# La guía explícita de cantidad×precio unitario abajo ataca la causa real
+# de las peores fallas medidas (boletas de supermercado con "6 x $1.550"
+# donde el modelo leía el precio UNITARIO como si fuera el total de línea
+# — confirmado con datos reales contra jumbo_cencosud/lider_rancagua/
+# lider_pajaritos/lider_2007, las 4 peores del set de 28). Es una regla
+# GENERAL (ningún nombre de producto ni boleta específica mencionados),
+# no una regla por caso — deliberado, para no overfitear al set de prueba.
+_BILL_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "merchant": {"type": "string", "description": "Nombre del local, o cadena vacía si no aparece"},
+        "date": {"type": ["string", "null"], "description": "Fecha de la boleta si aparece, o null"},
+        "printed_subtotal": {
+            "type": ["number", "null"],
+            "description": "El SUBTOTAL o TOTAL impreso en la boleta, o null si no aparece uno claro. Se usa solo como referencia, no reemplaza a 'amount'.",
+        },
+        "amount": {"type": "number", "description": "Total del consumo (SIN la propina sugerida si la hay)"},
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Nombre del ítem tal como aparece impreso"},
+                    "quantity": {"type": ["number", "null"], "description": "Cantidad de unidades, o null si genuinamente no se puede determinar — NO ADIVINES, usa 1 solo si es razonablemente obvio que es 1."},
+                    "line_total": {"type": ["number", "null"], "description": "Precio TOTAL de ESA línea completa (cantidad × precio unitario YA multiplicado), no el precio unitario. Si la boleta muestra 'cantidad x precio_unitario' por separado, multiplícalos vos. Si genuinamente no se puede leer el valor con confianza, usa null — NO INVENTES un número."},
+                },
+                "required": ["name", "quantity", "line_total"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["merchant", "date", "printed_subtotal", "amount", "items"],
+    "additionalProperties": False,
+}
+
+_BILL_PROMPT = (
+    "Lee esta boleta/comanda chilena y extrae cada ítem de consumo en el mismo "
+    "orden en que aparecen impresos, con máxima precisión. No incluyas la línea "
+    "de total/subtotal/propina como si fuera un ítem — pero SÍ copiá el "
+    "subtotal impreso (si hay uno claro) en 'printed_subtotal'.\n\n"
+    "REGLA CRÍTICA sobre cantidad y precio: muchas boletas de supermercado "
+    "muestran 'CANTIDAD x PRECIO UNITARIO' en una línea separada del nombre "
+    "del producto. NUNCA confundas el precio UNITARIO con el TOTAL de la "
+    "línea — si no hay un total de línea ya multiplicado impreso, multiplicá "
+    "vos cantidad × precio unitario para dar line_total. Si una boleta repite "
+    "la MISMA línea de producto varias veces seguidas (mismo código de barras, "
+    "mismo precio), sumá esas repeticiones en una sola entrada con quantity=N "
+    "y line_total=la suma de todas — no las repitas como entradas separadas.\n\n"
+    "Si genuinamente no podés leer un número con confianza real (foto "
+    "borrosa, tapada, muy chica), usá null en ese campo — NUNCA inventes un "
+    "valor solo para completar el JSON."
 )
 
-_REFORMAT_PROMPT_BILL = """Convierte el texto que te paso (ya correcto, no cambies ningún valor) a líneas con este formato exacto, una por PRODUCTO, sin encabezado ni texto extra:
-cantidad|nombre|total_de_esa_línea_sin_signos_de_pesos_ni_puntos
 
-NO incluyas como si fuera un producto la línea de "Total"/"Consumo"/subtotal
-— esa NO es un ítem, va aparte en AMOUNT más abajo. Si una línea no trae
-cantidad explícita (p.ej. un descuento), usa 1.
+def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None, db=None) -> Optional[dict]:
+    """2 llamadas IDÉNTICAS a la Responses API en paralelo, gana la que
+    responda primero — mismo patrón validado en services/split_lab.py
+    (cont. 34), acá aplicado a Structured Outputs en vez de streaming de
+    texto libre. Llama a OpenAI directo (no via ai.provider) porque la
+    Responses API con json_schema es una forma nueva que esa capa
+    multi-proveedor todavía no expone — mismo criterio ya usado en
+    routers/split_lab.py. Loguea el uso/costo de la copia ganadora
+    igual que ai.provider (ver `_log_usage`), para no perder la métrica
+    de costo real por ausencia de este cambio."""
+    import queue
+    import threading
+    from openai import OpenAI
+    from .ai.provider import _log_usage, LLMResponse
 
-Al final agrega estas 3 líneas con los datos reales que encuentres en el texto:
-MERCHANT: nombre del local que aparece en el texto (o vacío si no aparece)
-DATE: fecha que aparece en el texto, o null si no aparece
-AMOUNT: el consumo/total (número, sin la propina sugerida)"""
-
-
-def _parse_bill_text(raw_text: str) -> Optional[dict]:
-    """Parsea la respuesta de texto plano de `_RECEIPT_PROMPT_BILL` a un dict
-    {merchant, date, amount, items: [{name, quantity, line_total}]}.
-
-    El prompt es deliberadamente mínimo (ver comentario arriba) y no le fuerza
-    un formato rígido al modelo más allá de "cantidad | nombre | total" por
-    ítem — en la práctica el header (MERCHANT/DATE/AMOUNT) a veces sale en
-    líneas separadas y a veces en una sola línea separado por comas, así que
-    esos 3 campos se buscan con una regex sobre el texto completo (no por
-    posición de línea) en vez de asumir una estructura exacta. Cualquier
-    línea con 2+ "|" se trata como ítem. Devuelve None si no se pudo extraer
-    nada útil (ni AMOUNT ni ningún ítem)."""
-    import re as _re
-
-    out: dict = {"merchant": "", "date": None, "amount": 0.0, "items": []}
-
-    # El nombre del local puede traer comas de verdad (una dirección), así
-    # que el límite de captura no es la coma — es la siguiente etiqueta
-    # conocida (DATE:/AMOUNT:) o el final del texto. Si el modelo llegó a
-    # juntar MERCHANT y DATE en una sola línea sin nombre real, esto corta
-    # justo ahí en vez de comerse "DATE: ..." como si fuera el nombre.
-    m = _re.search(r"MERCHANT:\s*([^\n]*?)(?=\s*(?:DATE:|AMOUNT:|$))", raw_text, _re.IGNORECASE)
-    if m:
-        out["merchant"] = m.group(1).strip()[:200]
-    m = _re.search(r"DATE:\s*([^,\n]+)", raw_text, _re.IGNORECASE)
-    if m:
-        v = m.group(1).strip()
-        out["date"] = None if v.lower() in ("null", "none", "") else v
-    m = _re.search(r"AMOUNT:\s*([\d.,]+)", raw_text, _re.IGNORECASE)
-    if m:
-        out["amount"] = _to_float(m.group(1))
-
-    for line in raw_text.splitlines():
-        s = line.strip()
-        parts = s.split("|")
-        if len(parts) < 3:
-            continue
-        qty_raw = parts[0].strip()
-        try:
-            # Ojo: la boleta suele imprimir la cantidad como "1.00"/"2.00"
-            # (con decimales) — hay que parsearla como número real, NO sacar
-            # solo los dígitos con regex (eso convierte "1.00" en "100": el
-            # punto desaparece y el "00" se pega al "1"). Bug real visto en
-            # prod: "1.00 Frutilla Spritz" terminó guardado como cantidad=100.
-            # Se reusa _to_float (ya sabe distinguir miles de decimales, y ya
-            # interpreta un "-" como negativo) en vez de un parseo nuevo.
-            qty = int(round(_to_float(qty_raw))) or 1
-        except Exception:
-            qty = 1
-        # Cantidad siempre positiva y acotada — mismo límite (999) que ya usan
-        # los ítems agregados a mano (ItemAdd/ItemPatch). Esto también cubre,
-        # de forma general, cualquier línea donde el modelo puso un valor
-        # negativo en la columna de cantidad (p.ej. una línea de descuento
-        # "-990 | Descuento | -990"): _to_float ya lo lee como -990, y este
-        # límite lo lleva a 1 igual que a cualquier otra cantidad inválida —
-        # sin necesitar un caso especial para "empieza con -".
-        qty = max(1, min(qty, 999))
-        name = parts[1].strip()
-        if not name:
-            continue
-        line_total = _to_float(parts[2])
-        out["items"].append({"name": name[:200], "quantity": qty, "line_total": line_total})
-
-    if out["amount"] <= 0 and not out["items"]:
+    if not settings.openai_api_key:
         return None
-    return out
+    client = OpenAI(api_key=settings.openai_api_key, timeout=60.0)
+    q: "queue.Queue" = queue.Queue()
 
+    def worker(idx: int):
+        try:
+            resp = client.responses.create(
+                model=model,
+                input=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": _BILL_PROMPT},
+                        {"type": "input_image", "image_url": image_data_url, "detail": "high"},
+                    ],
+                }],
+                text={"format": {"type": "json_schema", "name": "receipt", "strict": True, "schema": _BILL_ITEM_SCHEMA}},
+                reasoning={"effort": "low"},
+            )
+            q.put((idx, resp))
+        except Exception as exc:  # noqa: BLE001
+            q.put((idx, exc))
 
-_NAME_COVERAGE_OK = 0.60  # cobertura mínima del nombre dentro de una línea real de la foto
-_TESSERACT_TRUST_GATE = 0.5  # Tesseract se considera confiable en esta foto si cubrió bien >=50% de los ítems
-_MIN_OCR_LINES_FOR_TRUST = 5  # menos que esto, Tesseract no leyó nada útil de la foto
-
-
-def _norm_txt(s: str) -> str:
-    """Minúsculas y sin tildes/diacríticos — para comparar contra OCR que a
-    veces pierde acentos/eñes ("Plátano"/"Platano", "Champiñones"/"Champinones")."""
-    s = unicodedata.normalize("NFKD", s.lower())
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    return " ".join(s.split())
-
-
-def _name_coverage(name: str, ocr_lines: list[str]) -> float:
-    """Mejor fracción del NOMBRE que aparece literal (como bloque contiguo)
-    en alguna línea real que Tesseract leyó de la foto. Se usa el bloque
-    común más largo (no un ratio global tipo SequenceMatcher.ratio()),
-    porque la línea real trae también cantidad y precio que diluirían un
-    ratio simple — a un nombre corto dentro de una línea larga le iría mal
-    con un ratio global aunque esté completo y literal ahí."""
-    n = _norm_txt(name)
-    if not n:
-        return 0.0
-    best = 0.0
-    for ln in ocr_lines:
-        ln_norm = _norm_txt(ln)
-        m = SequenceMatcher(None, n, ln_norm).find_longest_match(0, len(n), 0, len(ln_norm))
-        if m.size / len(n) > best:
-            best = m.size / len(n)
-            if best >= 1.0:
-                break
-    return best
-
-
-def _suspect_items(items: list[ParsedItem], ocr_lines: list[str]) -> list[bool]:
-    """True = este ítem probablemente NO existe en la boleta real — el
-    modelo de visión lo alucinó. Se detecta cruzando su nombre Y su precio
-    contra el texto que Tesseract ya leyó de la MISMA foto (gratis, se
-    calcula de todas formas para posicionar la banda de color — ver
-    `_populate_positions`) — sin gastar tokens de LLM extra.
-
-    Por qué hace falta esto y no alcanza con comparar la suma total: un
-    modelo que ya emitió el total tiende a mantenerse globalmente
-    consistente con él, así que dos ítems mal leídos pueden CANCELARSE en
-    la suma (visto en producción: "Mojito Ginger $5.000" + "Plátano Green
-    $13.300" en vez de "Nordic Ginger $1.500" + "Plateada Greda $15.800" —
-    la suma daba exacta pese a 2 de 6 ítems inventados). La suma es un
-    chequeo de AGREGADO; la alucinación es un fenómeno POR FILA — hace
-    falta una señal por ítem, no solo del total.
-
-    Señal RELATIVA, no absoluta: solo se confía en "este nombre no aparece
-    en el texto" si Tesseract efectivamente leyó bien ESTA foto (si la
-    mayoría de los OTROS ítems sí tienen respaldo). Si Tesseract fracasó en
-    esta foto (muy lavada, muy chica, etc.), no hay evidencia de nada y no
-    se marca ningún ítem — evita acusar en falso cuando el problema es del
-    propio Tesseract, no del modelo de visión.
-
-    Intento real de "fail-safe" (2026-09-15, revertido con datos): se probó
-    marcar TODA la boleta como sospechosa cuando el trust cae bajo el gate,
-    en vez de a nadie — razonado en que la boleta que sí falla en el eval
-    (`danes_vitacura`, foto oscura) tiene ese patrón. Medido contra las 9
-    boletas oficiales + 25 fotos reales nuevas
-    (`/Users/kako2/Downloads/Boletas/`): el trust cae bajo 0.5 en 13 de 25
-    fotos reales (52%) — la mayoría boletas leídas BIEN, no mal — así que
-    "marcar todo" volvía la señal inútil por exceso de ruido. La alternativa
-    de sacar el gate por completo (chequear siempre nombre+precio) tampoco
-    sirve: en `cuenta_valeria` (verificada 100% correcta, cont. 26) marcaba
-    5 de 6 ítems como sospechosos en falso, porque Tesseract simplemente lee
-    mal ESE formato de boleta aunque el modelo de visión la lea perfecto.
-    De las 3 variantes medidas con datos reales, el silencio (no acusar a
-    nadie cuando Tesseract no es confiable) sigue siendo la que menos ruido
-    genera — se mantiene así. El caso `danes_vitacura` queda como límite
-    conocido y aceptado (ver docs/PLAN_split_v3.md), no resuelto por esta
-    vía; ver ese doc para el trade-off consciente con self-consistency.
-
-    Un ítem se marca sospechoso solo cuando fallan DOS señales a la vez
-    (nombre Y precio) — un error de OCR benigno (nombre con una letra mal
-    pero precio correcto) no alcanza; hace falta que ni el nombre ni el
-    precio tengan respaldo en la foto, que es justo el patrón de una
-    alucinación real (inventa un producto Y le pone un precio que no
-    corresponde a nada de lo impreso)."""
-    if len(ocr_lines) < _MIN_OCR_LINES_FOR_TRUST or not items:
-        return [False] * len(items)
-
-    coverages = [_name_coverage(it.name, ocr_lines) for it in items]
-    trust = sum(c >= _NAME_COVERAGE_OK for c in coverages) / len(coverages)
-    if trust < _TESSERACT_TRUST_GATE:
-        return [False] * len(items)  # Tesseract no fue confiable en esta foto — no acusar a nadie
-
-    amounts_in_photo: set[int] = set()
-    for ln in ocr_lines:
-        for tok in re.findall(r"\d[\d.,]*\d|\d", ln):
-            v = _parse_clp(tok)
-            if v > 0:
-                amounts_in_photo.add(int(round(v)))
-
-    def _amount_seen(it: ParsedItem) -> bool:
-        # Tolerancia chica (5%, mínimo 2) en vez de igualdad exacta: Tesseract
-        # también se equivoca en dígitos sueltos en fotos difíciles (probado
-        # en vivo: "1.500" leído como "1509") — un precio CORRECTO no debería
-        # marcarse sospechoso solo porque el propio OCR clásico le erró un
-        # dígito. Una alucinación real (precio inventado sin relación al
-        # impreso) sigue quedando muy afuera de esta tolerancia.
-        target = it.line_total if it.line_total is not None else it.price * it.quantity
-        if target <= 0:
-            return False
-        tol = max(2.0, target * 0.05)
-        return any(abs(a - target) <= tol for a in amounts_in_photo)
-
-    return [cov < _NAME_COVERAGE_OK and not _amount_seen(it) for it, cov in zip(items, coverages)]
+    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(2)]
+    for th in threads:
+        th.start()
+    idx, result = q.get()
+    while isinstance(result, Exception):
+        print(f"[ocr] _race_structured_bill_read: una copia falló ({result})")
+        try:
+            idx, result = q.get(timeout=60.0)
+        except Exception:
+            return None  # las 2 copias fallaron
+    try:
+        usage = result.usage
+        _log_usage(db, user_id, LLMResponse(
+            text="", prompt_tokens=usage.input_tokens, completion_tokens=usage.output_tokens,
+            model=model, provider="openai",
+        ), "parse_bill")
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[ocr] usage logging failed: {_exc}")
+    try:
+        return json.loads(result.output_text)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ocr] respuesta no parseable como JSON: {exc}")
+        return None
 
 
 _position_client: "Optional[object]" = None  # httpx.Client, tipado como object para no importar httpx al nivel de módulo
@@ -2006,155 +1907,77 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
 def vision_parse_bill(
     image_bytes: bytes, *, db=None, user_id=None,
 ) -> Optional[ParseResult]:
-    """Igual que `vision_parse` pero solo para el split de cuentas (una boleta,
-    nunca una cartola con varias transacciones). Dos pasos (ver comentario
-    completo junto a `_RECEIPT_PROMPT_BILL` arriba):
-      1. Lectura LIBRE de la foto — sin pedirle ningún formato — es lo que
-         midió mejor precisión en boletas visualmente difíciles.
-      2. Reformateo barato (texto, sin ver la foto, `gpt-4.1-nano`) de esa
-         respuesta ya correcta a nuestro formato fijo parseable. Nunca lee la
-         boleta ni decide valores, solo reordena texto — no puede reintroducir
-         el problema de precisión que tenía pedir un formato en el paso 1.
+    """Lee una boleta para el split de cuentas (una boleta, nunca una
+    cartola con varias transacciones) — 1 sola llamada de visión con
+    Structured Outputs + racing, ver `_race_structured_bill_read` para el
+    porqué (2026-09-18, reemplaza el pipeline de 2 llamadas de texto libre +
+    reformateo que hubo hasta acá — ver docs/PLAN_split_v3.md cont. 36-38
+    para la comparación real contra 28 boletas verificadas a mano que llevó
+    a este cambio).
 
-    Sin reintento con un segundo modelo (se sacó del todo el 2026-09-14,
-    ver `_evaluate` más abajo para la evidencia real de por qué). La única
-    red de seguridad es `needs_review` por ítem, gratis, vía
-    `_suspect_items` cruzando contra el texto que Tesseract ya lee de la
-    misma foto para calcular la posición.
-
-    position_y/bbox_*/needs_review por ítem salen de `_populate_positions`
-    → el servicio interno de Tesseract (`services/ocr_position`) — best
-    effort, gratis (no gasta tokens de LLM), nunca bloquea: si no hay match
-    confiable esos campos quedan en su default (posición pareja por índice
-    en el frontend, `needs_review=False`).
-    """
-    if not ai_provider.is_available():
+    `needs_review` por ítem sale directo de que el propio modelo haya
+    devuelto `null` en cantidad o precio (incertidumbre nativa, ver
+    `_BILL_ITEM_SCHEMA`) — ya NO depende de `services/ocr_position` (que
+    sigue llamándose acá abajo, pero solo para `position_y`/`bbox_*`/
+    `segments`, la posición real en la foto — best effort, gratis, nunca
+    bloquea: si no hay match esos campos quedan en su default y el
+    frontend cae al reparto parejo)."""
+    if not settings.openai_api_key:
         return None
     try:
         # Despierta el contenedor de posición YA, en paralelo con la visión
-        # (ver docstring de `_warm_position_service`) — no se espera su
-        # resultado acá, solo se lanza en un hilo aparte para que el cold
-        # start corra mientras el LLM lee la foto, no después.
+        # — no se espera su resultado acá, solo se lanza en un hilo aparte
+        # para que el cold start corra mientras el LLM lee la foto, no después.
         import threading
         threading.Thread(target=_warm_position_service, daemon=True).start()
 
         data_url, upright_w, upright_h, _ = _prep_receipt_image(image_bytes)
 
-        def _read(model: str) -> str:
-            """Paso 1: lectura libre de la foto, sin pedirle formato."""
-            t0 = time.time()
-            try:
-                resp = ai_provider.vision_text(
-                    system_prompt=_RECEIPT_PROMPT_BILL,
-                    user_text="Lee la boleta.",
-                    image_data_url=data_url,
-                    model=model,
-                    temperature=0.0,
-                    purpose="parse_bill",
-                    user_id=user_id,
-                    db=db,
-                )
-                return resp.text if resp and resp.text else ""
-            except Exception as _exc:  # noqa: BLE001
-                print(f"[ocr] vision_text (bill) failed: {_exc}")
-                return ""
-            finally:
-                # timing por paso — ver docs/PLAN_split_v3.md cont. 21 (loop de
-                # optimización, Fase 0.1): permite saber, con datos reales y no
-                # supuestos, cuál de los pasos pesa más antes de optimizar velocidad.
-                print(f"[ocr][timing] _read({model})={time.time()-t0:.2f}s")
-
-        def _reformat(free_text: str) -> str:
-            """Paso 2: reordena la lectura libre (ya correcta) a nuestro
-            formato fijo — texto plano, no ve la imagen, barato y rápido."""
-            t0 = time.time()
-            try:
-                resp = ai_provider.chat_completion(
-                    messages=[
-                        {"role": "system", "content": _REFORMAT_PROMPT_BILL},
-                        {"role": "user", "content": free_text},
-                    ],
-                    model="gpt-4.1-mini",  # nano confundía la línea de "Total" con un ítem más (visto en pruebas 2026-09-11) — mini es igual de barato/rápido para texto puro (no ve la foto) y no tuvo ese problema
-                    temperature=0.0,
-                    purpose="parse_bill_reformat",
-                    user_id=user_id,
-                    db=db,
-                )
-                return resp.text if resp and resp.text else ""
-            except Exception as _exc:  # noqa: BLE001
-                print(f"[ocr] chat_completion (reformat bill) failed: {_exc}")
-                return ""
-            finally:
-                print(f"[ocr][timing] _reformat={time.time()-t0:.2f}s")
-
-        def _read_and_structure(model: str) -> Optional[dict]:
-            free_text = _read(model)
-            if not free_text:
-                return None
-            structured = _reformat(free_text)
-            return _parse_bill_text(structured) if structured else None
-
-        parsed = _read_and_structure(settings.openai_vision_model_bill)
-        if parsed is None:
+        t0 = time.time()
+        parsed = _race_structured_bill_read(
+            data_url, model=settings.openai_vision_model_bill, user_id=user_id, db=db,
+        )
+        print(f"[ocr][timing] _read={time.time()-t0:.2f}s")
+        if not parsed or not parsed.get("items"):
             print("[ocr] vision_parse_bill: respuesta vacía/no parseable")
             return None
 
-        def _build_items(parsed_dict: dict) -> list[ParsedItem]:
-            # line_total ya es el total de ESA línea (el prompt pide "valor
-            # total de esa línea", no precio unitario) — NO multiplicar por
-            # quantity de nuevo, ya la incluye. (Bug real encontrado en
-            # pruebas 2026-09-11: duplicaba la cantidad acá, inflaba la suma
-            # y disparaba reescalamientos innecesarios en boletas que en
-            # realidad leía bien.)
-            return [
-                ParsedItem(
-                    name=it["name"],
-                    price=round(it["line_total"] / it["quantity"]) if it["quantity"] else it["line_total"],
-                    quantity=it["quantity"],
-                    line_total=it["line_total"],  # total real leído — bills.py lo usa tal cual, no qty*price
-                )
-                for it in parsed_dict["items"]
-            ]
+        items: list[ParsedItem] = []
+        for it in parsed["items"]:
+            name = (it.get("name") or "").strip()
+            if not name:
+                continue
+            qty_raw = it.get("quantity")
+            lt_raw = it.get("line_total")
+            # El modelo devolvió null -> genuinamente no supo leer este
+            # número (ver _BILL_PROMPT: "NO INVENTES, usa null") -> esa es
+            # la señal de needs_review, no un valor inventado por nosotros.
+            uncertain = qty_raw is None or lt_raw is None
+            qty = max(1, min(int(round(qty_raw)) if qty_raw else 1, 999))
+            lt = float(lt_raw) if lt_raw is not None else 0.0
+            items.append(ParsedItem(
+                name=name[:200],
+                price=round(lt / qty) if qty else lt,
+                quantity=qty,
+                line_total=lt,
+                needs_review=uncertain,
+            ))
+        if not items:
+            print("[ocr] vision_parse_bill: 0 ítems tras filtrar")
+            return None
 
-        def _evaluate(parsed_dict: dict) -> dict:
-            """Arma los ítems, les pide posición (Tesseract, gratis — no
-            gasta tokens de LLM) y con ese mismo resultado detecta cuáles
-            probablemente alucinó el modelo (`_suspect_items`, vía
-            `needs_review` por ítem — la red de seguridad real, gratis).
+        _populate_positions(items, image_bytes)
 
-            El reintento completo (releer TODA la boleta con un segundo
-            modelo cuando la suma no cuadraba o había ítems sospechosos) se
-            sacó del todo el 2026-09-14 — evaluado a fondo con Fable, con
-            datos reales, no por intuición (ver docs/PLAN_split_v3.md cont.
-            24): desde que `reasoning_effort="low"` hizo la lectura
-            consistente (cont. 21), ese umbral dejó de dispararse en el set
-            oficial (0/9 en 7 corridas distintas). En el único caso real que
-            SÍ lo disparaba fuera del set oficial (una boleta de 23 ítems,
-            probada 3 veces en producción), el reintento dio EXACTAMENTE el
-            mismo resultado que el original las 3 veces — nunca ayudó, solo
-            agregó ~35-45s (2 llamadas más a un modelo que el propio código
-            ya documentaba como "puede ser PEOR en boletas difíciles").
-            `needs_review` nunca dependió del reintento para funcionar."""
-            built_items = _build_items(parsed_dict)
-            ocr_lines = _populate_positions(built_items, image_bytes)
-            flags = _suspect_items(built_items, ocr_lines)
-            for it, flag in zip(built_items, flags):
-                it.needs_review = flag
-            return {"parsed": parsed_dict, "items": built_items}
-
-        cand = _evaluate(parsed)
-        parsed = cand["parsed"]
-        items = cand["items"]
         try:
-            parsed_date = _parse_date(parsed["date"]) if parsed["date"] else date.today()
+            parsed_date = _parse_date(parsed["date"]) if parsed.get("date") else date.today()
         except Exception:
             parsed_date = date.today()
 
         receipt = ParsedReceipt(
-            amount=float(parsed["amount"] or sum(i.price * i.quantity for i in items)),
+            amount=float(parsed.get("amount") or sum(i.price * i.quantity for i in items)),
             date=parsed_date,
-            merchant=parsed["merchant"] or "",
-            category="Otros",  # no se usa en el flujo de bill-split (ver comentario del prompt)
+            merchant=(parsed.get("merchant") or "")[:200],
+            category="Otros",  # no se usa en el flujo de bill-split
             currency="CLP",    # ídem — bill.currency se fija al crear la boleta, no desde OCR
             is_income=False,
             items=items,

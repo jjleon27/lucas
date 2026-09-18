@@ -1,0 +1,28 @@
+{
+  "image": "DeOCnv4XcAAMtX4.jpg",
+  "source": "Boleta Abarrotes Económicos S.A. (Walmart Chile, Curicó). Papel térmico arrugado. Sin descuentos, reconciliación exacta con SUBTOTAL/EFECTIVO.",
+  "currency": "CLP",
+  "merchant_contains": "abarrotes",
+  "date": "2018-05-27",
+  "amount": 20230,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 11,
+  "item_count_max": 17,
+  "items_subtotal": 20230,
+  "items_lenient": false,
+  "items": [
+    {"name": "Aceite Marav", "quantity": 1, "line_total": 1090},
+    {"name": "Arom Vainill", "quantity": 1, "line_total": 1350},
+    {"name": "S.Calo Choc", "quantity": 6, "line_total": 1500},
+    {"name": "Arroz Blue B", "quantity": 1, "line_total": 840},
+    {"name": "V Choclillo", "quantity": 1, "line_total": 6730},
+    {"name": "Ceylan Prem", "quantity": 1, "line_total": 1490},
+    {"name": "Cera Liquida", "quantity": 1, "line_total": 1520},
+    {"name": "Cloro Lavan", "quantity": 1, "line_total": 1090},
+    {"name": "PackX8Calan", "quantity": 2, "line_total": 1980},
+    {"name": "TP Acuenta", "quantity": 1, "line_total": 1450},
+    {"name": "Fid Espiral", "quantity": 1, "line_total": 1190}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 20.230 = SUBTOTAL/EFECTIVO impreso. 'TOTAL NUMERO DE ARTIC VEND = 17' cuenta unidades (S.Calo Choc x6, PackX8Calan x2), no líneas — item_count_max=17 por eso."
+}

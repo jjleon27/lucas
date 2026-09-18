@@ -1,0 +1,18 @@
+{
+  "image": "images-9.jpeg",
+  "source": "Boleta chica de sandwichería/restaurant (nombre de local no visible en la foto, solo 'Numero de restaurant: 20318'). Simple, sin ambigüedad.",
+  "currency": "CLP",
+  "merchant_contains": null,
+  "date": null,
+  "amount": 3000,
+  "total_neto": 2521,
+  "iva_amount": 479,
+  "item_count": 2,
+  "items_subtotal": 3000,
+  "items_lenient": false,
+  "items": [
+    {"name": "Sand. Cheese", "quantity": 1, "line_total": 1000},
+    {"name": "S. Pollo Jr Dlx", "quantity": 2, "line_total": 2000}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 3.000 = TOTAL impreso."
+}

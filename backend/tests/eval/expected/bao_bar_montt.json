@@ -1,0 +1,21 @@
+{
+  "image": "images-22.jpeg",
+  "source": "Boleta Bao Bar (Manuel Montt #925, Providencia). Foto con sombra fuerte sobre la mitad del papel.",
+  "currency": "CLP",
+  "merchant_contains": "bao bar",
+  "date": "2020-01-29",
+  "amount": 21300,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 5,
+  "items_subtotal": 21300,
+  "items_lenient": false,
+  "items": [
+    {"name": "Papas Fritas", "quantity": 1, "line_total": 3500},
+    {"name": "Bao Mix", "quantity": 2, "line_total": 13800},
+    {"name": "Sprite Zero", "quantity": 1, "line_total": 1500},
+    {"name": "Limonada", "quantity": 1, "line_total": 2500},
+    {"name": "Cordirellano", "quantity": 1, "line_total": 0}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 21.300 = SUBTOTAL/TOTAL A PAGAR impreso (Cordirellano a $0, quizás cortesía -- confirmado porque la suma da exacto igual incluyéndolo en $0). amount=21.300 es SIN la propina sugerida (2.130), consistente con el resto del set."
+}

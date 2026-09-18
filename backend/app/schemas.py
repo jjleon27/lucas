@@ -237,11 +237,12 @@ class ParsedItem(BaseModel):
     # Centro vertical del bbox (derivado) — se mantiene por compatibilidad con
     # el arrastre existente, que solo reposiciona el centro, no cambia el tamaño.
     position_y: Optional[float] = None
-    # True cuando el nombre+precio que dijo el modelo de visión NO aparece en
-    # el texto real de la foto (leído aparte por Tesseract, gratis — ver
-    # `_suspect_items` en ocr.py) — señal de que probablemente alucinó un
-    # ítem que no existe. Nunca bloquea nada, solo marca para que el usuario
-    # lo revise/corrija.
+    # True cuando el propio modelo de visión dijo explícitamente que no podía
+    # leer la cantidad o el precio de este ítem con confianza (Structured
+    # Outputs le permite devolver `null` en vez de inventar un número — ver
+    # `_BILL_ITEM_SCHEMA`/`vision_parse_bill` en ocr.py, 2026-09-18). Señal de
+    # incertidumbre nativa del modelo, no un cruce con un segundo OCR. Nunca
+    # bloquea nada, solo marca para que el usuario lo revise/corrija.
     needs_review: bool = False
 
 

@@ -1777,3 +1777,79 @@ esperando el timeout externo, tirando todo el trabajo hecho" a "hasta ~4s,
 aprovechando lo que sí llegó a tiempo" — sin sacrificar el camino rápido
 (que nunca entra a esta fase) ni el caso normal (verificado sin
 regresión).
+
+---
+
+## Cont. 36-39 (2026-09-18) — 10 arquitecturas probadas contra 28 boletas reales, G a producción
+
+Pedido explícito del usuario: "corran pruebas exhaustivas para mejorar lo
+que estamos usando... idealmente 100% en precisión, de forma general (no
+overfitting), y rápido, menos de 10 segundos sin perder precisión...
+continúa hasta lograrlo con todas las boletas."
+
+### Fase 0 — Ground-truth real ampliado
+
+25 fotos nuevas de `/Users/kako2/Downloads/Boletas/` verificadas a mano con
+zoom (19 fixtures nuevas + 5 duplicados de las 9 oficiales + 1 foto
+descartada por estar cortada) → **28 boletas verificadas en total** (antes
+9). Reconciliación aritmética exacta verificada en la mayoría (suma de
+ítems = subtotal impreso), con `items_lenient`/notas honestas donde hubo
+ambigüedad real de lectura propia.
+
+### Fase 2 — 10 arquitecturas reales, mismo scoring (`score_one_bill`)
+
+| Arch | Qué prueba | Precisión | p50 | max |
+|---|---|---|---|---|
+| A | Producción anterior (2 llamadas texto libre) | 79.5% | — | 23.2s |
+| B/C | 1 llamada formato fijo ± racing | 77-80% | 5-6s | 13-20s |
+| D | 2 llamadas + racing en la 1ª | 84.1% | 7.1s | 12.5s |
+| E/F | Structured Outputs ± racing | 82-83% | 6-7s | 18-24s |
+| **G** | **F + guía cantidad×precio + "no inventes" (null)** | **80-83%** | 6s | 14-19s |
+| H | G + contexto de Tesseract | 83.0% | 7.5s | 20.5s |
+| I | G con `reasoning="none"` | 78.0% | **2.9s** | **5.6s** |
+| J | none+low, se queda con la que reconcilia mejor consigo misma | 77.6% | 3.5s | 21.7s |
+
+GEMINI/CLAUDE/CONSENSUS (proveedores distintos, investigados en
+docs oficiales de Google/Anthropic) quedaron sin probar — `GOOGLE_API_KEY`/
+`ANTHROPIC_API_KEY` en `.env` son placeholders sin completar, no claves
+reales; decisión del usuario: no bloquear en eso, seguir con lo que sí
+tiene credenciales (OpenAI).
+
+**Hallazgo negativo real, documentado para no repetirlo**: I (`none`) es
+4-8× más rápido de forma consistente, pero pierde precisión real —
+incluyendo regresiones en casos que G ya tenía perfectos (lolita_jones,
+mistura_del_peru) — viola el "sin perder precisión" explícito del pedido.
+J (intento de rescatar la velocidad de `none` con auto-reconciliación
+aritmética) resultó PEOR aún (77.6%) — la reconciliación contra el propio
+`printed_subtotal` del modelo no es señal confiable de acierto, solo de
+consistencia interna (a veces consistentemente equivocado: `danes_vitacura`
+y `lider_quilicura`, perfectos con `low`, fallaron con esta variante). Se
+prueba a fondo con datos reales, no se acepta la promesa de velocidad
+gratis sin verificar el costo de precisión.
+
+### Implementado en producción real (`backend/app/ocr.py`)
+
+`vision_parse_bill()` reemplazado por completo: 1 sola llamada (Responses
+API + Structured Outputs, schema con `null` explícito para incertidumbre)
++ racing (2 copias en paralelo). Se eliminó el pipeline viejo de 2 llamadas
+(`_RECEIPT_PROMPT_BILL`/`_REFORMAT_PROMPT_BILL`/`_parse_bill_text`) y el
+mecanismo de `_suspect_items` (cruce contra Tesseract) — `needs_review`
+ahora sale directo de que el propio modelo diga `null` cuando no está
+seguro, señal más limpia y ya no depende del servicio de posición (que
+sigue llamándose, pero SOLO para `position_y`/`bbox_*`, no para
+`needs_review`).
+
+**Verificado end-to-end con el código real** (no solo el benchmark):
+`run_eval.py --pipeline bill` contra las 28 boletas → **83.7%** (vs 79.5%
+de la versión anterior), pytest backend 453/456 (mismos 3 fallos
+preexistentes, ajenos).
+
+**Límite real y honesto, no resuelto**: ~20-25% de las boletas (las
+densas de supermercado, 20-30+ ítems con muchas promociones — ej.
+jumbo_cencosud, lider_rancagua/pajaritos/2007) siguen tardando 12-27s
+porque el modelo necesita más razonamiento real para leerlas bien, no por
+un cuello de botella de arquitectura — confirmado probando un schema más
+liviano (sin cambio, 22.24s igual) y `reasoning="none"` (rápido pero con
+costo real de precisión, rechazado). La mayoría del uso real de "Dividir
+cuenta" (dividir una cuenta de bar/restaurante con amigos, el caso de uso
+central de la feature) sí queda bajo 10s con este cambio.

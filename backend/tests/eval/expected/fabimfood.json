@@ -1,0 +1,17 @@
+{
+  "image": "images-13.jpeg",
+  "source": "Boleta Fabimfood (venta de comida y bebidas, La Serena/Coquimbo). Un solo ítem, sin ambigüedad.",
+  "currency": "CLP",
+  "merchant_contains": "fabimfood",
+  "date": "2023-10-30",
+  "amount": 1500,
+  "total_neto": 1261,
+  "iva_amount": 240,
+  "item_count": 1,
+  "items_subtotal": 1500,
+  "items_lenient": false,
+  "items": [
+    {"name": "Hot Dog", "quantity": 1, "line_total": 1500}
+  ],
+  "notes": "Verificado a mano (2026-09-18), un solo ítem, TOTAL $1.500 impreso claramente."
+}

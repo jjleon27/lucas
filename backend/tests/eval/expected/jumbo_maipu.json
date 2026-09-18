@@ -1,0 +1,27 @@
+{
+  "image": "ExMB89kVoAktfCD.jpg",
+  "source": "Boleta Cencosud Retail (Jumbo, Av. Américo Vespucio #1001, Maipú). Descuento 'JUMBO OFERTAS' al final. Reconciliación exacta verificada a mano.",
+  "currency": "CLP",
+  "merchant_contains": null,
+  "date": "2021-02-27",
+  "amount": 18864,
+  "total_neto": 15852,
+  "iva_amount": 3012,
+  "item_count": 11,
+  "items_subtotal": 18864,
+  "items_lenient": false,
+  "items": [
+    {"name": "M M Singles Milk C", "quantity": 1, "line_total": 850},
+    {"name": "Chocolate Orly", "quantity": 1, "line_total": 989},
+    {"name": "Gall Oreo Sixpak", "quantity": 1, "line_total": 1209},
+    {"name": "Ciruelas Dagen S C", "quantity": 2, "line_total": 3780},
+    {"name": "Pack Fibractiv642g", "quantity": 3, "line_total": 5487},
+    {"name": "Descuento Jumbo Ofertas", "quantity": 1, "line_total": -1017},
+    {"name": "Lecheentrelagos4u", "quantity": 1, "line_total": 1559},
+    {"name": "Barra 200g 30 Un", "quantity": 1, "line_total": 1899},
+    {"name": "Pepsi Zero Pet", "quantity": 1, "line_total": 919},
+    {"name": "Coca Cola Light Pe", "quantity": 1, "line_total": 2490},
+    {"name": "B.Reut.Durabag Gra", "quantity": 1, "line_total": 699}
+  ],
+  "notes": "Verificado a mano (2026-09-18), reconciliación EXACTA (19.881 subtotal - 1.017 descuento = 18.864 = TOTAL/T.CREDITO, y 15.852 neto + 3.012 IVA = 18.864). item_count=11 en el array (10 productos + 1 descuento), corregido arriba a 11."
+}

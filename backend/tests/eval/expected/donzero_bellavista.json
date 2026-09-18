@@ -1,0 +1,19 @@
+{
+  "image": "images-16.jpeg",
+  "source": "Boleta 'Chapas Don70' (Bellavista, Pío Nono 77). Foto difícil: sostenida en la mano, ángulo torcido, dedos tapando parte del papel, movimiento. Incluye un paquete 'Barra Libre' (open bar) donde varios tragos individuales aparecen a $0 por estar incluidos en el paquete -- no se pudo leer con confianza el desglose exacto de esa sección, se consolidó en un solo ítem.",
+  "currency": "CLP",
+  "merchant_contains": null,
+  "date": "2023-07-18",
+  "amount": 35880,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 3,
+  "items_subtotal": 35880,
+  "items_lenient": true,
+  "items": [
+    {"name": "Cachapa Queso Mano L", "quantity": 1, "line_total": 4990},
+    {"name": "Cachapa Gratinada", "quantity": 1, "line_total": 4990},
+    {"name": "Barra Libre (paquete)", "quantity": 1, "line_total": 25900}
+  ],
+  "notes": "Foto de baja confianza (sostenida en mano, ángulo, dedos tapando texto). Totales SÍ legibles con confianza: Total General Mesa $39.468, Consumo Cliente $35.880, Propina Sugerida $3.588. La sección 'Barra Libre' (pernil, 2x Barra Libre, Aperol, cacique, mojito, copa de vino, daiquiri, tricolor) aparece con varias líneas en $0 -- se consolidó en un solo ítem 'Barra Libre (paquete)' = 35.880-9.980(cachapas)=25.900 en vez de forzar un desglose que no se puede leer con confianza real. items_lenient=true por esta simplificación; no usar item_count_max de línea individual aquí."
+}

@@ -1,0 +1,20 @@
+{
+  "image": "nota_venta.png",
+  "source": "Nota de Venta de ferretería (RJC Software Limitada, Av. Suecia, Providencia) -- no es un caso típico de 'dividir cuenta' (bar/restaurante) pero es un documento real con ítems/cantidad/valor, útil como caso de estrés fuera de dominio. Formato limpio (PDF/digital, no papel térmico), cantidad y precio unitario impresos por separado del total de línea.",
+  "currency": "CLP",
+  "merchant_contains": "rjc",
+  "date": "2017-09-29",
+  "amount": 172169,
+  "total_neto": 144680,
+  "iva_amount": 27489,
+  "item_count": 4,
+  "items_subtotal": 144680,
+  "items_lenient": false,
+  "items": [
+    {"name": "1/4 Rodon Madera 20x20x3 MT", "quantity": 6, "line_total": 7560},
+    {"name": "Abrasadera Cremallera 2.8 P 3A", "quantity": 10, "line_total": 9240},
+    {"name": "Abrasadera Escape 4", "quantity": 22, "line_total": 91520},
+    {"name": "Aceite Tipo A Caja Transmision Automatica 946CC", "quantity": 15, "line_total": 36360}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 144.680 = SUB TOTAL impreso; +19% IVA = 172.169 = TOTAL impreso (documento limpio, sin ambigüedad). amount=172.169 (el TOTAL final, a diferencia del resto del set que usa el consumo sin propina -- acá no hay propina, es venta de ferretería, así que TOTAL es lo correcto)."
+}

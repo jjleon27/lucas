@@ -1,0 +1,19 @@
+{
+  "image": "images-19.jpeg",
+  "source": "Boleta Comercial CW Chile Ltda (restaurant autoservicio, San Crescente/Las Condes). 3 ítems, sin ambigüedad.",
+  "currency": "CLP",
+  "merchant_contains": null,
+  "date": "2019-07-05",
+  "amount": 9370,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 3,
+  "items_subtotal": 9370,
+  "items_lenient": false,
+  "items": [
+    {"name": "Wok Carne", "quantity": 1, "line_total": 4190},
+    {"name": "Wok Pollo", "quantity": 1, "line_total": 4190},
+    {"name": "Arrolla Prim", "quantity": 3, "line_total": 990}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 9.370 = TOTAL/TARJETA impreso."
+}

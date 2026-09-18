@@ -1,0 +1,21 @@
+{
+  "image": "FLZ4-dhXwAYx8Gf.jpg",
+  "source": "Boleta Britt Chile Ltda (duty-free, aeropuerto Arturo Merino Benítez). Boleta digital limpia, sin ambigüedad. Hay una segunda foto de la MISMA boleta en mayor resolución (FLZ4-dhXwAYx8Gf.jpg-large.jpeg) -- mismo ground-truth aplica a ambas.",
+  "currency": "CLP",
+  "merchant_contains": "britt",
+  "date": "2022-02-12",
+  "amount": 8300,
+  "total_neto": 6975,
+  "iva_amount": 1325,
+  "item_count": 5,
+  "items_subtotal": 8300,
+  "items_lenient": false,
+  "items": [
+    {"name": "Frac Clasica 130 Grs", "quantity": 1, "line_total": 1300},
+    {"name": "Galleta Vino 160 Grs", "quantity": 1, "line_total": 1600},
+    {"name": "Agua Boike 500 Cc Con Gas", "quantity": 1, "line_total": 1800},
+    {"name": "Kem Piña Pet 0.5 L", "quantity": 1, "line_total": 1800},
+    {"name": "Ginger Ale Pet 0.5 L", "quantity": 1, "line_total": 1800}
+  ],
+  "notes": "Verificado a mano (2026-09-18), suma exacta = 8.300 = SubTotal/Total impreso."
+}
