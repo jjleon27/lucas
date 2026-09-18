@@ -1596,3 +1596,47 @@ producción (medir contra las 9 boletas oficiales + carpeta Boletas/), se
 decide si esto reemplaza el paso de lectura del pipeline actual — recién
 ahí se reincorporan participantes/reparto/pago, reusando lo que ya
 funciona en `bills.py`/`split/page.tsx`, no reescribiéndolo.
+
+---
+
+## Cont. 32 (2026-09-18) — el bug real detrás de TODA la lentitud de la sesión: `api/requirements.txt` vs `backend/requirements.txt`
+
+Al probar el streaming de `/split-lab` en producción, salió un error visible
+(`TypeError: unexpected keyword argument 'reasoning_effort'`) — el MISMO
+síntoma del incidente crítico de cont. 23, que se había dado por resuelto
+hace días. Investigado: **Vercel instala las dependencias de la función
+serverless desde `api/requirements.txt`** (vive junto al entrypoint real,
+`api/index.py`), NO desde `backend/requirements.txt`. El fix de cont. 23
+(`openai==1.51.0` → `1.99.0`) se aplicó solo al segundo — el primero se
+quedó pegado en `1.51.0` todo este tiempo.
+
+Como `vision_text()` en `provider.py` ya tenía el fallback defensivo
+(reintenta sin `reasoning_effort` si el SDK no lo soporta, para no volver a
+romper el split como en cont. 23), el error nunca se vio: cada llamada en
+producción caía al fallback EN SILENCIO. `reasoning_effort="low"` —la
+optimización que en cont. 21 había medido -36% de tiempo (22.5s→14.5s)— NO
+estuvo activa ni una sola vez en producción real desde que se implementó.
+Todas las mediciones de "16-17s, ya no hay más que optimizar" de cont. 27,
+28, 29 y 30 se hicieron con esta degradación silenciosa activa, sin que
+nada en los logs lo delatara.
+
+Se descubrió recién ahora porque el nuevo endpoint `/split-lab/ocr-stream`
+llama a la API de OpenAI DIRECTO (sin pasar por `provider.py`, sin el
+fallback defensivo) — el error salió a la superficie por primera vez.
+
+**Fix**: `openai==1.51.0` → `1.99.0` en `api/requirements.txt`.
+
+**Verificado en producción real, antes/después, con la misma boleta**:
+- Antes (bill_id=160, cont. 30): `_read=10.64s`
+- Después (bill_id=161, mismo día, foto `bar_autoctono`): **`_read=4.40s`**
+  — 2.4× más rápido. `_reformat=2.35s`. **Total `/bills/{id}/ocr`: 11.0s**
+  (antes 16-17s), ya bajo el objetivo de 15s y cerca del de 10s.
+
+Lección aplicada, otra vez: un fix verificado localmente y "desplegado" no
+está realmente activo hasta que se verifica CONTRA EL DEPLOY REAL — local
+usa `backend/requirements.txt`; Vercel usa `api/requirements.txt`. Dos
+archivos de dependencias para el mismo servicio es un riesgo real de
+divergencia silenciosa — vale la pena evaluar unificarlos (ej. que
+`api/requirements.txt` se genere a partir de `backend/requirements.txt` en
+vez de mantenerse a mano por separado) en una sesión futura, sin apurarlo
+ahora.
