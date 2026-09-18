@@ -595,6 +595,39 @@ function SplitPageInner({
     );
   }
 
+  // Última etapa antes de subir — recorte/giro ya dejan la foto en el
+  // encuadre correcto, pero no la achican: una foto de celular sigue
+  // pesando varios MB. Confirmado en vivo (2026-09-18, misma foto: 6s en
+  // /split-lab con esto, ~20s acá sin esto) que ESA subida sin comprimir
+  // era la diferencia real. El backend igual redimensiona a ~2048px antes
+  // de mandarla a OpenAI (`_prep_receipt_image`, ver backend/app/ocr.py) —
+  // comprimir acá a 2000px no le quita nada que el pipeline no fuera a
+  // descartar de todas formas (mismo criterio ya aplicado en
+  // frontend/src/app/split-lab/page.tsx).
+  function compressForUpload(file: File): Promise<File> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const MAX_SIDE = 2000;
+        const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.round(img.naturalWidth * scale);
+        const h = Math.round(img.naturalHeight * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { resolve(file); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob((blob) => {
+          resolve(blob ? new File([blob], file.name.replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" }) : file);
+        }, "image/jpeg", 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
   async function cropImageToFile(file: File, rect: { x: number; y: number; w: number; h: number }): Promise<File> {
     const url = URL.createObjectURL(file);
     try {
@@ -755,11 +788,12 @@ function SplitPageInner({
     await handleFile(f);
   }
 
-  async function handleFile(file: File) {
+  async function handleFile(rawFile: File) {
     setLoading(true);
     const stopPhases = startLoadingPhases();
     setAdvItems(new Set()); setAdvOpen(null);
     try {
+      const file = await compressForUpload(rawFile);
       const today = new Date().toISOString().split("T")[0];
       let b = await createBill({ date: today });
       b = await ocrBill(b.id, file);

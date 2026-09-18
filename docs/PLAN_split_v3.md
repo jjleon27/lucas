@@ -1674,3 +1674,53 @@ Candidato más probable: la escalada de `_match_best_effort` (varias
 escalas + CLAHE) en una boleta grande/difícil. Requiere la foto real que
 causó esto (bill_id=163) para diagnosticar con datos, no se investigó a
 fondo todavía por el apuro de cortar la espera muerta primero.
+
+---
+
+## Cont. 34 (2026-09-18) — comprimir foto en "Dividir cuenta" + racing (2 llamadas en paralelo) en SPLIT
+
+Usuario hizo una comparación real muy útil: misma foto, `/split-lab` 6s,
+"Dividir cuenta" ~20s. Aisló el problema: el flujo real nunca comprimía la
+foto antes de subir (SPLIT sí, desde cont. 33). **Fix**: mismo
+`compressForUpload` (máx 2000px, JPEG 0.85) portado a
+`frontend/src/app/split/page.tsx`, aplicado en `handleFile()` justo antes
+de `ocrBill()`.
+
+Investigado con fuentes reales, no inventado (el usuario insistió en pedir
+esto explícitamente):
+- [OpenAI API — Latency optimization guide](https://developers.openai.com/api/docs/guides/latency-optimization):
+  confirma streaming como "the single most effective approach" (ya
+  implementado) — no cubre tail latency específicamente.
+- [OpenAI API — Images & Vision guide](https://developers.openai.com/api/docs/guides/images-vision):
+  con `detail:"high"` (lo que usa este proyecto), la API igual redimensiona
+  a ~2048px de lado para modelos de esta generación — comprimir a 2000px
+  en el cliente no pierde nada que el servidor no fuera a descartar de
+  todas formas. Para OCR específicamente recomiendan `detail:"original"` en
+  vez de `"high"` (preserva hasta 6000px) — no se cambió, implica más
+  "parches"/tokens/latencia, lo contrario de lo que se pedía hoy; queda
+  anotado como opción real para mejorar precisión más adelante.
+- [myhoai.com — "A simple fix for LLM tail latency"](https://engineering.myhoai.com/posts/a-simple-fix-for-llm-tail-latency/):
+  el usuario mismo reportó variancia real en vivo (misma foto, subidas
+  consecutivas a `/split-lab`: 0.8s-14s) — confirmado también en logs
+  reales (`[split-lab][timing]`, 5 de 6 pruebas 0.8-5.4s, 1 de 6 en 14.3s).
+  Coincide con "distribución de cola pesada" (normal en LLMs). La técnica
+  con datos reales de esa fuente: mandar la misma solicitud 2 veces en
+  paralelo y quedarse con la que responda primero — p99 de tiempo-al-
+  primer-token medido ahí: 4.2s→1.2s. Costo: duplica llamadas al modelo
+  (2x volumen).
+
+**Implementado en `/split-lab` únicamente** (el laboratorio, no el flujo
+real todavía — no se valida algo así en producción real sin medirlo
+primero ahí): `_race_streams()` en `backend/app/routers/split_lab.py`,
+dispara 2 llamadas idénticas en hilos separados, entrega tokens de la que
+responda primero, descarta la otra. Verificado localmente: 3/3 corridas
+dieron 17/17 ítems correctos, cada corrida con el hilo ganador alternando
+(0, 0, 1) — confirma que la carrera realmente elige la más rápida, no
+siempre la misma.
+
+**Pendiente**: medir con más corridas reales si el racing efectivamente
+achica la cola lenta (el efecto es sobre el PERCENTIL 99, raro por
+definición — 3 corridas no alcanzan para verlo, hace falta usar la sección
+varias veces más). Si se confirma que ayuda, evaluar llevarlo al flujo
+real de `/bills/{id}/ocr` — ahí el costo doble sí pesa más (2 llamadas de
+`_read` en vez de 1, sobre el flujo que de verdad se usa a diario).
