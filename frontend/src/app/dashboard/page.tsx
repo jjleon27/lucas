@@ -235,6 +235,7 @@ export default function DashboardPage() {
               <a href="/cartola" className="btn-ghost w-full">Importar cartola (PDF)</a>
               <a href="/chat" className="btn-ghost w-full">{t("dashboard.askLucas")}</a>
               <a href="/split" className="btn-ghost w-full">{t("dashboard.splitBill")}</a>
+              <a href="/split-lab" className="btn-ghost w-full text-amber-600">⚡ SPLIT (laboratorio de velocidad)</a>
             </div>
           </div>
         </div>

@@ -1550,3 +1550,49 @@ a ciclar por fases reales ("Subiendo foto…" → "Leyendo boleta…" →
 "Extrayendo ítems…" → "Ubicando cada ítem en la foto…") cronometradas
 aproximadamente a los tiempos reales medidos. `frontend/src/app/split/
 page.tsx`: `loadingPhase`/`startLoadingPhases`/`LOADING_PHASES`.
+
+---
+
+## Cont. 31 (2026-09-18) — sección "SPLIT" (laboratorio): streaming, no modelo mágico
+
+Usuario insistió en que ChatGPT lee una boleta en 2-4s y acusó pruebas mal
+hechas. Se probó la hipótesis real antes de descartarla: llamada directa a
+`gpt-5.6-luna` con `stream=True` (nunca antes probado en este proyecto,
+todo el pipeline esperaba la respuesta COMPLETA antes de mostrar nada).
+Resultado real: **primer token de texto visible a los 4.5s**, boleta
+completa (bar_autoctono, 17 ítems con repetidos) leída en 6.2s. El modelo
+no es más rápido de lo medido antes — lo que cambia es que la app nunca
+mostraba nada hasta que TODO (lectura + reformateo + posición) terminaba,
+~16-17s después. ChatGPT sí hace streaming por defecto; nosotros nunca lo
+habíamos implementado.
+
+Pedido explícito del usuario: sección nueva aislada ("SPLIT", `/split-lab`)
+para probar esto de cero SIN tocar `/split` (que ya funciona: participantes,
+reparto, pago, liquidación). Implementado:
+
+- `backend/app/routers/split_lab.py` — endpoint `POST /split-lab/ocr-stream`,
+  SSE. Prompt DISTINTO al de producción (`_LAB_PROMPT`, formato semi-fijo
+  `cantidad | nombre | valor` una línea por ítem) — se vuelve a probar
+  forzar formato en el único paso, esta vez a propósito, porque es
+  justamente la pregunta a responder con datos (cont. 13 había encontrado
+  que esto empeoraba precisión con el prompt/parser viejo; con streaming +
+  parser de líneas completas el trade-off puede ser distinto). Reutiliza
+  SOLO `_prep_receipt_image` de `ocr.py` — nada más se duplica. No toca
+  `Bill`/`BillItem`, no persiste nada todavía.
+- `frontend/src/app/split-lab/page.tsx` — sube foto, parsea SSE a mano
+  (fetch + ReadableStream, no EventSource nativo porque hace falta POST +
+  header Authorization), muestra cronómetro real corriendo y cada ítem
+  apenas llega. Link "⚡ SPLIT (laboratorio de velocidad)" en el dashboard.
+
+Verificado local (sin FastAPI/DB, lógica de parseo pura contra streaming
+real): 17/17 líneas parseadas sin error, primer ítem 5.07s, total 6.22s.
+Falta verificar en producción real de Vercel si el runtime de Python
+efectivamente hace streaming byte a byte o bufferea la respuesta completa
+igual (la incógnita real de infra) — pendiente del próximo deploy+prueba.
+
+Plan: una vez validado que streaming funciona de punta a punta en Vercel Y
+que la precisión con este prompt/parser nuevo es al menos igual a la de
+producción (medir contra las 9 boletas oficiales + carpeta Boletas/), se
+decide si esto reemplaza el paso de lectura del pipeline actual — recién
+ahí se reincorporan participantes/reparto/pago, reusando lo que ya
+funciona en `bills.py`/`split/page.tsx`, no reescribiéndolo.
