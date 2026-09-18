@@ -44,17 +44,50 @@ export default function SplitLabPage() {
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
   }
 
+  // Fotos de celular sin comprimir suelen pesar 5-10MB — con datos móviles
+  // eso solo de SUBIR puede tardar más que el modelo entero, y el
+  // cronómetro de esta página (arranca al elegir la foto, no cuando el
+  // servidor recién la recibe) lo cuenta igual, aunque no sea culpa del
+  // modelo. El backend igual reescala a ~2048px de lado largo antes de
+  // mandarla a OpenAI (`_prep_receipt_image`) — subirla ya más chica no
+  // pierde nada que el propio pipeline no fuera a descartar de todas
+  // formas, y ahorra justo el tramo de subida que más varía con la red.
+  function compressForUpload(file: File): Promise<File> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const MAX_SIDE = 2000;
+        const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.round(img.naturalWidth * scale);
+        const h = Math.round(img.naturalHeight * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { resolve(file); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob((blob) => {
+          resolve(blob ? new File([blob], file.name.replace(/\.\w+$/, "") + ".jpg", { type: "image/jpeg" }) : file);
+        }, "image/jpeg", 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const rawFile = e.target.files?.[0];
     e.target.value = "";
-    if (!file) return;
-    setImgPreview((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(file); });
+    if (!rawFile) return;
+    setImgPreview((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(rawFile); });
     setItems([]); setFirstItemT(null); setTotalT(null); setError(null); setNowT(0);
     setRunning(true);
     startRef.current = performance.now();
     tickRef.current = setInterval(() => setNowT((performance.now() - startRef.current) / 1000), 100);
 
     try {
+      const file = await compressForUpload(rawFile);
       const token = getToken();
       const form = new FormData();
       form.append("file", file);

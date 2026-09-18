@@ -93,6 +93,7 @@ async def ocr_stream(
     leídos). Nunca toca `Bill`/`BillItem` — es un sandbox de lectura, no
     persiste nada todavía."""
     image_bytes = await file.read()
+    print(f"[split-lab][timing] imagen recibida: {len(image_bytes)/1024:.0f}KB")
 
     def gen():
         t0 = time.time()
@@ -100,6 +101,7 @@ async def ocr_stream(
         n_items = 0
         try:
             data_url, _, _, _ = _prep_receipt_image(image_bytes)
+            print(f"[split-lab][timing] _prep_receipt_image={time.time()-t0:.2f}s")
         except Exception as exc:  # noqa: BLE001
             yield _sse("error", {"message": f"no se pudo preparar la imagen: {exc}"})
             return
@@ -176,6 +178,7 @@ async def ocr_stream(
                     })
 
         total_t = time.time() - t0
+        print(f"[split-lab][timing] primer_item={first_item_t if first_item_t else '-'} total={total_t:.2f}s n_items={n_items}")
         yield _sse("done", {
             "n_items": n_items, "total_amount": total_amount,
             "first_item_t": round(first_item_t, 2) if first_item_t else None,
