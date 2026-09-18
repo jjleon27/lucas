@@ -1724,3 +1724,56 @@ definición — 3 corridas no alcanzan para verlo, hace falta usar la sección
 varias veces más). Si se confirma que ayuda, evaluar llevarlo al flujo
 real de `/bills/{id}/ocr` — ahí el costo doble sí pesa más (2 llamadas de
 `_read` en vez de 1, sobre el flujo que de verdad se usa a diario).
+
+---
+
+## Cont. 35 (2026-09-18) — causa raíz real del timeout del servicio de posición: contención de CPU sin presupuesto de tiempo
+
+Usuario reportó que "Dividir cuenta" seguía en ~20s pese al fix de
+compresión. Logs reales (bills 167, 168): `_read`+`_reformat` ya rápidos
+(6-9s), pero **"servicio de posición no disponible (timed out)"** en
+AMBAS — el timeout de 7s (cont. 33) se agotaba entero sin servir de nada,
+2 veces seguidas. No es un caso raro, es recurrente.
+
+Perfilado con datos reales (no más ajustes de timeout a ciegas — el
+usuario ya había señalado que eso era "parchar sin sentido"): descargué la
+boleta difícil de 22 ítems ya conocida (bill150, cont. 27) y corrí
+`_match_best_effort` localmente, en MI máquina de 8 núcleos. **La misma
+llamada, sin cambiar una línea, dio 23.07s una vez y 1.65s la siguiente**
+— 14× de diferencia. Causa: la fase de escalada (multi-escala + CLAHE +
+enderezado) lanza hasta 8 procesos de Tesseract en paralelo
+(`ThreadPoolExecutor(max_workers=8)`) y ESPERA A QUE TODOS TERMINEN, sin
+ningún tope de tiempo interno — bajo contención de CPU (del contenedor
+compartido de Vercel, o de cualquier otra carga), en vez de acercarse a
+"la más lenta" (la suposición de diseño original), se acerca a la SUMA con
+overhead de más. Confirmado induciendo contención real (4 llamadas
+simultáneas desde el mismo proceso): sin el fix se dispara sin control;
+con el fix, queda acotado en ~3.6s con la misma calidad de resultado.
+
+**Fix real**: `_ESCALATION_BUDGET_S = 4.0` en
+`services/ocr_position/app/main.py` — la fase de escalada usa
+`concurrent.futures.wait(futures, timeout=4.0)` en vez de esperar cada
+`.result()` sin límite; se queda con lo mejor que haya TERMINADO dentro
+del presupuesto (mismo criterio de desempate de siempre, `_best_of`
+aplanado en una sola pasada — verificado matemáticamente equivalente
+cuando nada se corta por tiempo). Los hilos que no llegan a tiempo quedan
+abandonados (`shutdown(wait=False)`) en vez de bloquear la respuesta.
+
+**Verificado, no prometido**:
+- Boleta difícil (22 ítems) localmente: 3/3 corridas 1.4-1.7s (antes
+  variaba 1.65s-23s).
+- Con contención inducida real (4 llamadas paralelas, ~32 procesos
+  Tesseract compitiendo): 4/4 acotadas en ~3.6s, mismo resultado (8/22).
+- Eval completo del servicio de posición (`tests/eval_position.py
+  --geometry`): 69/70 (98.6%), 0 overlaps — **idéntico al resultado con el
+  código VIEJO** (confirmado con `git stash`: el 16/17 de `bar_autoctono`
+  ya pasaba antes, es variancia preexistente de Tesseract, no algo que
+  rompió este cambio).
+- pytest backend: 453/456 (mismos 3 fallos preexistentes de `vision_parse`,
+  ajenos).
+
+Con esto, el peor caso real de "Dividir cuenta" pasa de "hasta 7s
+esperando el timeout externo, tirando todo el trabajo hecho" a "hasta ~4s,
+aprovechando lo que sí llegó a tiempo" — sin sacrificar el camino rápido
+(que nunca entra a esta fase) ni el caso normal (verificado sin
+regresión).

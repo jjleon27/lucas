@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import base64
 import io
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -282,6 +283,8 @@ def _clahe_variant(img: Image.Image) -> Optional[Image.Image]:
 
 _SKEW_MIN_DEGREES = 3.0  # bajo esto no vale la pena enderezar — ruido normal de detección en fotos ya derechas
 
+_ESCALATION_BUDGET_S = 4.0  # tope real de reloj para la fase de escalada (multi-escala + CLAHE + enderezado) de _match_best_effort — ver su docstring: medido 23.07s vs 1.65s para la MISMA llamada, pura contención de CPU; devolver lo mejor que llegó a tiempo es mejor que esperar indefinido o que el caller tire todo por timeout externo. El camino rápido (1 sola escala, el caso común) nunca pasa por acá, no lo afecta.
+
 
 def _hough_skew_angle(img: Image.Image, max_angle: float = 25.0) -> float:
     """Estimación GRUESA del ángulo (grados) en que el texto de la foto está
@@ -491,7 +494,22 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
     independientes entre sí y ya de por sí se iban a correr todas en serie
     (nunca había early-stop en este caso), paralelizarlas no cambia qué
     resultado gana (ver `_best_of`), solo el tiempo de reloj: el peor caso
-    pasa de la SUMA de todas las llamadas a la más LENTA de ellas.
+    pasa de la SUMA de todas las llamadas a la más LENTA de ellas — EN TEORÍA.
+
+    En la práctica (medido 2026-09-18, misma boleta difícil de 22 ítems,
+    misma máquina, sin cambiar una línea de código): la MISMA llamada dio
+    23.07s una vez y 1.65s la siguiente — 14× de diferencia, pura
+    contención de CPU (8 procesos de Tesseract compitiendo por núcleos
+    reales, que en un contenedor puede haber muchos menos que
+    `max_workers`). "Paralelo" no es gratis cuando no hay núcleo libre para
+    cada hilo — en el peor caso, en vez de la más LENTA, se acerca a la
+    SUMA con overhead de más. Por eso `_ESCALATION_BUDGET_S` abajo: un
+    presupuesto de tiempo real para esta fase — se toma lo mejor que haya
+    TERMINADO dentro del presupuesto, no lo que falte. Devolver el mejor
+    resultado parcial a tiempo es estrictamente mejor que devolver el
+    resultado perfecto tarde (el caller igual tiene su propio timeout de
+    red — sin este presupuesto interno, ese timeout externo tira TODO el
+    trabajo ya hecho a la basura, sin aprovechar nada).
 
     También en ese mismo caso difícil (nunca en el camino rápido) se prueba
     una variante con la foto ENDEREZADA: una foto sacada en ángulo (no solo
@@ -524,28 +542,36 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
         if enhanced is not None:
             deskewed_enhanced, _, _, _ = _rotate_expand(enhanced, skew_angle)
 
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        std_futures = [ex.submit(_run_scale, std_img, items, s) for s in scales[1:]]
-        clahe_futures = [ex.submit(_run_scale, enhanced, items, s) for s in scales] if enhanced is not None else []
-        deskew_futures = []
+    # Una sola lista ordenada — el orden importa para el desempate de
+    # `_best_of` (>estricto, primero gana), así que se conserva el mismo
+    # orden de siempre: escalas estándar, luego CLAHE, luego enderezado.
+    ex = ThreadPoolExecutor(max_workers=8)
+    try:
+        futures = [ex.submit(_run_scale, std_img, items, s) for s in scales[1:]]
+        if enhanced is not None:
+            futures += [ex.submit(_run_scale, enhanced, items, s) for s in scales]
         if deskewed_std is not None:
-            deskew_futures.append(ex.submit(_run_scale, deskewed_std, items, 1.0, deskew_transform))
+            futures.append(ex.submit(_run_scale, deskewed_std, items, 1.0, deskew_transform))
         if deskewed_enhanced is not None:
-            deskew_futures.append(ex.submit(_run_scale, deskewed_enhanced, items, 1.0, deskew_transform))
+            futures.append(ex.submit(_run_scale, deskewed_enhanced, items, 1.0, deskew_transform))
 
-        matches, count, lines = _best_of([f.result() for f in std_futures], (matches, count, lines))
-        if clahe_futures:
-            clahe_matches, clahe_count, clahe_lines = _best_of([f.result() for f in clahe_futures[1:]], clahe_futures[0].result())
-            if clahe_count > count:  # CLAHE gana SOLO si mejora estrictamente — misma regla de siempre
-                matches, count, lines = clahe_matches, clahe_count, clahe_lines
-        if deskew_futures:
-            dm, dc, dl = deskew_futures[0].result()
-            for f in deskew_futures[1:]:
-                m2, c2, l2 = f.result()
-                if c2 > dc:
-                    dm, dc, dl = m2, c2, l2
-            if dc > count:  # enderezar gana SOLO si mejora estrictamente — misma regla de siempre
-                matches, count, lines = dm, dc, dl
+        deadline = time.time() + _ESCALATION_BUDGET_S
+        done, pending = _futures_wait(futures, timeout=max(0.0, deadline - time.time()))
+        if pending:
+            print(f"[ocr_position] presupuesto de {_ESCALATION_BUDGET_S}s agotado — "
+                  f"{len(pending)}/{len(futures)} variante(s) sin terminar, usando lo mejor que haya llegado a tiempo")
+        for f in futures:
+            if f not in done:
+                continue
+            m, c, l = f.result()
+            if c > count:
+                matches, count, lines = m, c, l
+    finally:
+        # No esperar a los hilos abandonados (shutdown(wait=True), el
+        # default, bloquearía igual hasta que terminen todos — justo lo que
+        # el presupuesto de arriba existe para evitar). Siguen corriendo
+        # solos hasta terminar por su cuenta; no bloquean esta respuesta.
+        ex.shutdown(wait=False)
     return matches, lines
 
 
