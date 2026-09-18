@@ -1970,8 +1970,16 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
             # realzado, antes de rendirse con un ítem (ver
             # services/ocr_position) — puede tomar varios segundos en
             # boletas grandes/difíciles; con margen para eso + latencia de
-            # red al contenedor.
-            timeout=15.0,
+            # red al contenedor. Bajado de 15.0 a 7.0 (2026-09-18): en
+            # producción real (bill_id=163) este timeout se agotó ENTERO —
+            # el usuario esperó los 15s completos sin que sirvieran de nada
+            # (cayó al fallback igual). Los casos que SÍ funcionan miden
+            # 2-5s en logs reales (bills 160-162) — un caso que no termina
+            # en 7s tiene la misma pinta de no terminar en 15s tampoco, así
+            # que no vale la pena hacer esperar al doble sin ganar nada a
+            # cambio; simplemente cae al reparto parejo/sin needs_review
+            # más rápido en vez de más lento.
+            timeout=7.0,
         )
         if resp.status_code != 200:
             return []

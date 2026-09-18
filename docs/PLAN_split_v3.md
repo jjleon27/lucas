@@ -1640,3 +1640,37 @@ divergencia silenciosa — vale la pena evaluar unificarlos (ej. que
 `api/requirements.txt` se genere a partir de `backend/requirements.txt` en
 vez de mantenerse a mano por separado) en una sesión futura, sin apurarlo
 ahora.
+
+---
+
+## Cont. 33 (2026-09-18) — usuario prueba en vivo: 40s reales, causa fue el timeout del servicio de posición
+
+Usuario probó la app real (no el lab) tras el fix de cont. 32 y reportó
+~40s. Log real (`vercel logs`, bill_id=163): `_read=11.37s` (ya con el fix
+de reasoning_effort activo, razonable) + `_reformat=1.56s`, pero después:
+**`servicio de posición no disponible (The read operation timed out) —
+reparto parejo`** — el cliente HTTP esperó el timeout COMPLETO (15.0s) sin
+que sirviera de nada, y cayó al fallback igual. ~28s de los ~40s reportados
+fueron esta espera muerta, no la lectura del modelo.
+
+El contenedor SÍ estaba tibio (el GET /health de warm-up respondió rápido,
+sin secuencia de arranque) — el problema fue que el POST /position real
+tardó más de 15s en esta boleta específica (el contenedor terminó
+respondiendo bien, solo que tarde: log del lado del contenedor muestra 200
+OK varios segundos después de que nuestro cliente ya se había rendido).
+
+**Fix acotado**: bajar el timeout del cliente de 15.0s a 7.0s en
+`_populate_positions` (`backend/app/ocr.py`). No se puede saltar el
+servicio de posición por completo mientras esto se soluciona de raíz — a
+diferencia de las franjas de color (apagadas), `needs_review` (el ítem con
+borde ámbar cuando el modelo probablemente alucinó) SÍ sigue activo en la
+UI hoy y depende del mismo `ocr_lines` que devuelve este servicio. Con 7s:
+los casos normales (2-5s medidos en bills 160-162) siguen andando igual;
+los casos que se cuelgan esperan la mitad de tiempo por nada, no el doble.
+
+**Pendiente, no resuelto todavía**: por qué el servicio de posición tarda
+>15s en ciertas boletas cuando el contenedor está tibio — no es cold start.
+Candidato más probable: la escalada de `_match_best_effort` (varias
+escalas + CLAHE) en una boleta grande/difícil. Requiere la foto real que
+causó esto (bill_id=163) para diagnosticar con datos, no se investigó a
+fondo todavía por el apuro de cortar la espera muerta primero.
