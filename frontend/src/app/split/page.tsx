@@ -1312,10 +1312,22 @@ function SplitPageInner({
     setAdvVals(seed);
   }
 
-  // Quiénes están involucrados HOY en un ítem — vía shares (modo avanzado)
-  // si ya tiene, si no vía los chips/unidades del modo simple.
+  // Quiénes están involucrados HOY en un ítem — vía `item.shares` SOLO si
+  // este ítem ya pasó por el editor avanzado (`advItems`, mismo criterio
+  // que ya usa `itemFullyAssigned` más abajo) — si no, vía los chips/
+  // unidades del modo simple (`assignments`/`isPersonOn`).
+  //
+  // Bug real encontrado (2026-10-01): `toggleChip` (la selección simple con
+  // los círculos de colores) SOLO actualiza el estado local `assignments`
+  // — nunca llama a `postShares`, así que `item.shares` en el servidor se
+  // queda con el reparto PAREJO por defecto que `add_item` siembra al
+  // crear el ítem, sin importar qué chips se hayan tocado en pantalla.
+  // Mirar `item.shares` primero (como hacía antes) devolvía ESE reparto
+  // parejo viejo para cualquier ítem de selección simple — nunca la
+  // selección real de chips — y por eso "aplicar a los demás" terminaba
+  // agarrando ítems que en pantalla tenían gente distinta marcada.
   function participantSetOf(item: BillItem): Set<number> {
-    if (item.shares.length > 0) return new Set(item.shares.map((s) => s.participant_id));
+    if (advItems.has(item.id)) return new Set(item.shares.map((s) => s.participant_id));
     return new Set((bill?.participants ?? []).filter((p) => isPersonOn(item, p.id)).map((p) => p.id));
   }
 
