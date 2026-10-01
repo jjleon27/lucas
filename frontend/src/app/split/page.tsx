@@ -236,6 +236,13 @@ function SplitPageInner({
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [step, setStep] = useState(1);
+  // Hasta qué paso ya se avanzó de verdad en esta boleta (completando la
+  // acción que corresponde — recortar, asignar todo, elegir quién pagó).
+  // Permite volver atrás para revisar algo sin perder el avance: "siguiente"
+  // puede volver a saltar hasta acá sin tener que repetir la acción, pero
+  // nunca salta a un paso que todavía no se validó/completó de verdad.
+  const [maxStepReached, setMaxStepReached] = useState(1);
+  useEffect(() => { setMaxStepReached((m) => Math.max(m, step)); }, [step]);
   const [bill, setBill] = useState<Bill | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -792,6 +799,7 @@ function SplitPageInner({
     setLoading(true);
     const stopPhases = startLoadingPhases();
     setAdvItems(new Set()); setAdvOpen(null);
+    setMaxStepReached(1); // boleta nueva — el avance de la anterior no aplica acá
     try {
       const file = await compressForUpload(rawFile);
       const today = new Date().toISOString().split("T")[0];
@@ -806,6 +814,7 @@ function SplitPageInner({
   async function handleManual() {
     setLoading(true);
     setAdvItems(new Set()); setAdvOpen(null);
+    setMaxStepReached(1); // boleta nueva — el avance de la anterior no aplica acá
     try {
       const b = await createBill({ date: new Date().toISOString().split("T")[0] });
       setBill(b); setStep(2);
@@ -2106,6 +2115,16 @@ function SplitPageInner({
           <button onClick={() => step > 1 ? setStep(step - 1) : router.back()} className="text-slate-400 hover:text-slate-700">
             <ChevronLeft size={22} />
           </button>
+          {/* Avanzar de vuelta a un paso ya completado (ej. volviste a
+              revisar un ítem y querés volver a donde estabas) — nunca salta
+              a un paso que todavía no se validó/completó de verdad, ese
+              salto sigue dependiendo del botón de acción de cada paso
+              ("Asignar", "¿Quién pagó?", etc.). */}
+          {step < maxStepReached && (
+            <button onClick={() => setStep(step + 1)} className="text-slate-400 hover:text-slate-700">
+              <ChevronRight size={22} />
+            </button>
+          )}
           <h1 className="font-bold text-slate-800 flex-1">
             {stepLabels[step]}
             {queueRemaining > 0 && <span className="ml-2 text-xs font-medium text-indigo-500">+{queueRemaining} en cola</span>}
