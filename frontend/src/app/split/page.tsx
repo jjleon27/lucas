@@ -336,6 +336,8 @@ function SplitPageInner({
   const [advOpen, setAdvOpen] = useState<number | null>(null);
   const [advMode, setAdvMode] = useState<"units" | "percent" | "amount">("percent");
   const [advVals, setAdvVals] = useState<Record<number, string>>({});
+  // "Aplicar a los demás ítems con las mismas personas" — ver sameParticipantSetItems.
+  const [applyAdvToSiblings, setApplyAdvToSiblings] = useState(false);
 
   // Step 2 — image panel (split-screen viewer + drawing canvas)
   const [leftW, setLeftW] = useState(0.30); // fraction 0-1 for left image panel width
@@ -370,6 +372,12 @@ function SplitPageInner({
   const [payerMode, setPayerMode] = useState<"me" | "other" | "split">("me");
   const [payerSplitUnit, setPayerSplitUnit] = useState<"$" | "%">("$");
   const [otherPayer, setOtherPayer] = useState<number | null>(null);
+  // Participantes cuyo % en "Pagamos varios" el usuario escribió a mano —
+  // el resto (no tocados) se recalcula solo para que la suma dé siempre
+  // 100%, en vez de obligar a hacer la resta a mano (pedido explícito,
+  // 2026-10-01). Se limpia junto con multiAmounts cada vez que cambia el
+  // modo ($/%)  — ver el botón de abajo.
+  const [manualPayerPct, setManualPayerPct] = useState<Set<number>>(new Set());
   const [multiAmounts, setMultiAmounts] = useState<Record<number, string>>({});
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
 
@@ -799,7 +807,7 @@ function SplitPageInner({
     setLoading(true);
     const stopPhases = startLoadingPhases();
     setAdvItems(new Set()); setAdvOpen(null);
-    setMaxStepReached(1); // boleta nueva — el avance de la anterior no aplica acá
+    setMaxStepReached(1); setManualPayerPct(new Set()); // boleta nueva — nada de la anterior aplica acá
     try {
       const file = await compressForUpload(rawFile);
       const today = new Date().toISOString().split("T")[0];
@@ -814,7 +822,7 @@ function SplitPageInner({
   async function handleManual() {
     setLoading(true);
     setAdvItems(new Set()); setAdvOpen(null);
-    setMaxStepReached(1); // boleta nueva — el avance de la anterior no aplica acá
+    setMaxStepReached(1); setManualPayerPct(new Set()); // boleta nueva — nada de la anterior aplica acá
     try {
       const b = await createBill({ date: new Date().toISOString().split("T")[0] });
       setBill(b); setStep(2);
@@ -1296,11 +1304,39 @@ function SplitPageInner({
   function openAdv(item: BillItem) {
     setAdvOpen(item.id);
     setAdvMode("percent");
+    setApplyAdvToSiblings(false);
     const seed: Record<number, string> = {};
     if (item.shares.length) {
       item.shares.forEach((s) => { seed[s.participant_id] = String(Math.round(s.weight * 100)); });
     }
     setAdvVals(seed);
+  }
+
+  // Quiénes están involucrados HOY en un ítem — vía shares (modo avanzado)
+  // si ya tiene, si no vía los chips/unidades del modo simple.
+  function participantSetOf(item: BillItem): Set<number> {
+    if (item.shares.length > 0) return new Set(item.shares.map((s) => s.participant_id));
+    return new Set((bill?.participants ?? []).filter((p) => isPersonOn(item, p.id)).map((p) => p.id));
+  }
+
+  // Otros ítems de la boleta con EXACTAMENTE las mismas personas que las que
+  // tienen un % > 0 ahora mismo en el editor avanzado (no las que tenía el
+  // ítem antes de abrir el editor — el usuario puede estar cambiando quién
+  // entra mientras escribe los nuevos %). Usado para ofrecer "aplicar
+  // también a estos" en vez de tener que repetir el mismo reparto a mano
+  // ítem por ítem cuando varios los consumieron exactamente las mismas
+  // personas (pedido explícito, 2026-10-01).
+  function sameParticipantSetItems(item: BillItem): BillItem[] {
+    if (!bill) return [];
+    const target = new Set(
+      bill.participants.map((p) => p.id).filter((pid) => (parseFloat(advVals[pid] || "0") || 0) > 0),
+    );
+    if (target.size === 0) return [];
+    return bill.items.filter((other) => {
+      if (other.id === item.id) return false;
+      const otherSet = participantSetOf(other);
+      return otherSet.size === target.size && [...target].every((pid) => otherSet.has(pid));
+    });
   }
 
   async function applyAdv(item: BillItem) {
@@ -1323,12 +1359,30 @@ function SplitPageInner({
     }
     const wsum = shares.reduce((s, x) => s + x.weight, 0);
     shares[shares.length - 1].weight += 1 - wsum;   // que sume exactamente 1
+
+    // Capturado ANTES de aplicar (sameParticipantSetItems lee advVals, que
+    // no cambia acá, pero por claridad se fija la lista una sola vez).
+    const siblings = advMode === "percent" && applyAdvToSiblings ? sameParticipantSetItems(item) : [];
+
     setBusy(true);
     try {
-      const b = await postShares(bill.id, item.id, shares);
+      let b = await postShares(bill.id, item.id, shares);
+      const appliedIds = new Set([item.id]);
+      // Mismo % (mismo arreglo de weights, ya relativo — no depende del
+      // line_total de cada ítem) aplicado uno por uno a cada ítem hermano,
+      // encadenando el bill actualizado para no pisar cambios entre sí.
+      for (const sib of siblings) {
+        b = await postShares(b.id, sib.id, shares);
+        appliedIds.add(sib.id);
+      }
       setBill(b);
-      setAdvItems((prev) => new Set(prev).add(item.id));
+      setAdvItems((prev) => {
+        const n = new Set(prev);
+        appliedIds.forEach((id) => n.add(id));
+        return n;
+      });
       setAdvOpen(null);
+      setApplyAdvToSiblings(false);
     } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
     finally { setBusy(false); }
   }
@@ -1798,6 +1852,40 @@ function SplitPageInner({
   const splitOk = bill
     ? (payerSplitUnit === "%" ? Math.abs(splitSum - 100) <= 0.5 : Math.abs(splitSum - bill.total_amount) <= 1)
     : false;
+
+  // "Pagamos varios" en % — al escribir el % de una persona, esa queda
+  // "fija" y el resto (las que el usuario todavía no tocó) se reparte el
+  // porcentaje restante en partes iguales entre ellas, para que la suma dé
+  // siempre 100% sin tener que calcular la resta a mano. Si se borra el
+  // campo de una persona, vuelve a quedar libre (se recalcula con las
+  // demás libres otra vez).
+  function onPayerPercentChange(pid: number, raw: string) {
+    if (!bill) return;
+    const nextManual = new Set(manualPayerPct);
+    if (raw.trim() === "") nextManual.delete(pid); else nextManual.add(pid);
+    setManualPayerPct(nextManual);
+
+    const ids = bill.participants.map((p) => p.id);
+    const next: Record<number, string> = { ...multiAmounts, [pid]: raw };
+    const lockedSum = ids
+      .filter((id) => nextManual.has(id))
+      .reduce((s, id) => s + (parseFloat(next[id] || "0") || 0), 0);
+    const unlocked = ids.filter((id) => !nextManual.has(id));
+    const remaining = Math.max(0, 100 - lockedSum);
+    if (unlocked.length > 0) {
+      const base = Math.floor((remaining / unlocked.length) * 10) / 10; // 1 decimal
+      let assigned = 0;
+      unlocked.forEach((id, idx) => {
+        if (idx === unlocked.length - 1) {
+          next[id] = (Math.round((remaining - assigned) * 10) / 10).toString();
+        } else {
+          next[id] = base.toString();
+          assigned += base;
+        }
+      });
+    }
+    setMultiAmounts(next);
+  }
 
   // Pre-finalize: compute "Yo" total locally from current shares so the summary
   // card doesn't show $0 while the backend still has owes_amount=0.
@@ -2549,7 +2637,7 @@ function SplitPageInner({
                               <div className="mt-3 pt-3 border-t border-slate-200/70 space-y-2">
                                 <div className="flex gap-1">
                                   {([["percent", "%"], ["units", "unidades"], ["amount", "montos"]] as const).map(([m, lbl]) => (
-                                    <button key={m} type="button" onClick={() => { setAdvMode(m); setAdvVals({}); }}
+                                    <button key={m} type="button" onClick={() => { setAdvMode(m); setAdvVals({}); setApplyAdvToSiblings(false); }}
                                       className={`px-2.5 py-1 text-[11px] rounded-lg border ${advMode === m ? "bg-indigo-600 text-white border-indigo-600" : "border-slate-300 text-slate-500 bg-white"}`}>
                                       {lbl}
                                     </button>
@@ -2570,6 +2658,13 @@ function SplitPageInner({
                                     </div>
                                   );
                                 })}
+                                {advMode === "percent" && sameParticipantSetItems(item).length > 0 && (
+                                  <label className="flex items-start gap-2 text-[11px] text-slate-500 pt-1 cursor-pointer">
+                                    <input type="checkbox" className="mt-0.5" checked={applyAdvToSiblings}
+                                      onChange={(e) => setApplyAdvToSiblings(e.target.checked)} />
+                                    <span>Aplicar este mismo % a {sameParticipantSetItems(item).length} ítem(s) más con exactamente estas mismas personas</span>
+                                  </label>
+                                )}
                                 <div className="flex items-center justify-between text-[11px] pt-1">
                                   <span className="text-slate-400">
                                     {advMode === "percent" ? "deben sumar 100%"
@@ -2643,7 +2738,7 @@ function SplitPageInner({
                 <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>
                   <div className="flex gap-1 justify-end">
                     {(["$", "%"] as const).map((u) => (
-                      <button key={u} type="button" onClick={() => { setPayerSplitUnit(u); setMultiAmounts({}); }}
+                      <button key={u} type="button" onClick={() => { setPayerSplitUnit(u); setMultiAmounts({}); setManualPayerPct(new Set()); }}
                         className={`px-2.5 py-1 text-xs rounded-lg border ${payerSplitUnit === u ? "bg-indigo-600 text-white border-indigo-600" : "border-slate-200 text-slate-500"}`}>
                         {u === "$" ? "Montos" : "Porcentaje"}
                       </button>
@@ -2654,7 +2749,8 @@ function SplitPageInner({
                       <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0" style={{ background: p.color }}>{initials(p.name)}</div>
                       <span className="flex-1 text-sm text-slate-700">{p.name}</span>
                       <div className="flex items-center gap-1">
-                        <input type="number" inputMode="decimal" className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" placeholder="0" value={multiAmounts[p.id] ?? ""} onChange={(e) => setMultiAmounts((m) => ({ ...m, [p.id]: e.target.value }))} />
+                        <input type="number" inputMode="decimal" className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" placeholder="0" value={multiAmounts[p.id] ?? ""}
+                          onChange={(e) => payerSplitUnit === "%" ? onPayerPercentChange(p.id, e.target.value) : setMultiAmounts((m) => ({ ...m, [p.id]: e.target.value }))} />
                         <span className="text-xs text-slate-400 w-3">{payerSplitUnit}</span>
                       </div>
                     </div>
