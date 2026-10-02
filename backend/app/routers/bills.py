@@ -729,6 +729,57 @@ def finalize_bill(
     return _bill_out(bill)
 
 
+@router.post("/{bill_id}/reopen")
+def reopen_bill(
+    bill_id: int,
+    current: UserOut = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Deshace `finalize` para poder editar ítems/reparto/quién pagó y
+    volver a finalizar — pedido explícito del usuario (2026-10-01): no
+    había forma de corregir una división ya hecha sin borrar la boleta
+    entera y repetir todo de cero.
+
+    Vuelve el estado a "assigned" (como estaba justo antes de finalizar) y
+    borra las `BillDebt` ya calculadas (se recrean al volver a finalizar,
+    con los números corregidos). Si esta boleta ya había guardado un gasto
+    (`transaction_id`), esa Transaction se BORRA acá — mismo motivo que
+    borrarla manualmente desde /transactions (reusa esa limpieza, incluido
+    el emparejamiento de transferencia si lo tenía) — porque su monto salía
+    del reparto viejo que se está por cambiar; si el usuario vuelve a
+    marcar "guardar como gasto" al re-finalizar, se crea una nueva con el
+    monto correcto. El frontend avisa de esto ANTES de llamar acá (acción
+    con efecto real sobre el historial de gastos del usuario)."""
+    bill = _get_bill(bill_id, current.id, db)
+    if bill.status != "finalized":
+        raise HTTPException(400, "La boleta no está finalizada")
+
+    db.query(BillDebt).filter(BillDebt.bill_id == bill_id).delete()
+
+    if bill.transaction_id:
+        tx = db.query(Transaction).filter(
+            Transaction.id == bill.transaction_id, Transaction.user_id == current.id,
+        ).first()
+        if tx:
+            if tx.linked_transaction_id:
+                linked = db.query(Transaction).filter(
+                    Transaction.id == tx.linked_transaction_id, Transaction.user_id == current.id,
+                ).first()
+                if linked:
+                    linked.linked_transaction_id = None
+                    db.flush()
+                    db.delete(linked)
+            tx.linked_transaction_id = None
+            db.flush()
+            db.delete(tx)
+        bill.transaction_id = None
+
+    bill.status = "assigned"
+    db.commit()
+    db.refresh(bill)
+    return _bill_out(bill)
+
+
 # ── Saldo combinado de varias boletas ───────────────────────────────────────────
 
 @router.post("/combine-settlement")

@@ -101,6 +101,64 @@ def test_finalize_saves_expense_when_toggle_on(client, h, other_person):
     assert tx["category"] == "Bares y Salidas"
 
 
+def test_reopen_allows_editing_and_refinalize_without_duplicate_transaction(client, h, other_person):
+    """Pedido real del usuario (2026-10-01): poder corregir una división ya
+    finalizada sin borrar la boleta entera. Reopen debe: volver a 'assigned',
+    borrar la Transaction vieja (su monto salía del reparto que se va a
+    cambiar), y dejar re-finalizar con los números nuevos sin crear una
+    Transaction duplicada."""
+    b = _new_bill(client, h, other_person)
+    bid = b["id"]
+    me = next(p for p in b["participants"] if p["is_me"])
+    pedro = next(p for p in b["participants"] if not p["is_me"])
+    it1, it2 = b["items"][0]["id"], b["items"][1]["id"]
+    # primer reparto: todo mío
+    for it in (it1, it2):
+        client.post(f"/bills/{bid}/shares", json={"item_id": it, "shares": [
+            {"participant_id": me["id"], "weight": 1.0}]}, headers=h)
+    client.post(f"/bills/{bid}/set-payers", json=[{"participant_id": me["id"], "paid_amount": 20000}], headers=h)
+    r = client.post(f"/bills/{bid}/finalize", json={"save_to_expense": True}, headers=h)
+    assert r.status_code == 200, r.text
+    first_tx_id = r.json()["transaction_id"]
+    assert first_tx_id is not None
+    assert r.json()["my_share"] == 20000
+
+    r = client.post(f"/bills/{bid}/reopen", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "assigned"
+    assert body["transaction_id"] is None
+    # la transaction vieja ya no existe
+    txs = client.get("/transactions", headers=h).json()
+    assert not any(t["id"] == first_tx_id for t in txs)
+
+    # corrige el reparto: ahora 50/50
+    for it in (it1, it2):
+        client.post(f"/bills/{bid}/shares", json={"item_id": it, "shares": [
+            {"participant_id": me["id"], "percent": 50}, {"participant_id": pedro["id"], "percent": 50}],
+        }, headers=h)
+    r = client.post(f"/bills/{bid}/finalize", json={"save_to_expense": True}, headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["my_share"] == 10000  # corregido, no sigue en 20.000
+    second_tx_id = body["transaction_id"]
+    assert second_tx_id is not None
+    # (SQLite puede reusar el mismo id numérico tras borrar la fila vieja —
+    # no es relevante, lo que importa es que exista UNA sola transacción
+    # viva con el monto corregido, no dos.)
+
+    txs = client.get("/transactions", headers=h).json()
+    assert len([t for t in txs if t["id"] == second_tx_id]) == 1  # ninguna duplicada
+    tx = next(t for t in txs if t["id"] == second_tx_id)
+    assert tx["amount"] == 10000
+
+
+def test_reopen_requires_finalized_bill(client, h, other_person):
+    b = _new_bill(client, h, other_person)  # draft, nunca finalizada
+    r = client.post(f"/bills/{b['id']}/reopen", headers=h)
+    assert r.status_code == 400
+
+
 def test_finalize_no_expense_still_persists_split(client, h, other_person):
     b = _new_bill(client, h, other_person)
     bid = b["id"]

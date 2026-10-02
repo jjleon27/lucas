@@ -87,6 +87,7 @@ const setPayers = (billId: number, payers: { participant_id: number; paid_amount
   billReq<Bill>(`/bills/${billId}/set-payers`, { method: "POST", body: JSON.stringify(payers) });
 const finalizeBill = (billId: number, opts: { account_id?: number; category?: string; save_to_expense?: boolean }) =>
   billReq<Bill>(`/bills/${billId}/finalize`, { method: "POST", body: JSON.stringify(opts) });
+const reopenBill = (billId: number) => billReq<Bill>(`/bills/${billId}/reopen`, { method: "POST" });
 
 interface BillListRow {
   id: number; merchant: string; date: string; total_amount: number; status: string;
@@ -1780,6 +1781,33 @@ function SplitPageInner({
     finally { setLoading(false); }
   }
 
+  // Reabrir una división ya finalizada para corregirla — pedido explícito
+  // del usuario (2026-10-01): no había forma de editar sin borrar la
+  // boleta entera. Si ya había un gasto guardado, reopen en el backend lo
+  // BORRA (su monto salía del reparto que se está por cambiar) — se avisa
+  // acá antes de llamar, porque es un efecto real sobre el historial de
+  // gastos del usuario, no algo para hacer en silencio.
+  async function handleReopen() {
+    if (!bill) return;
+    if (bill.transaction_id) {
+      const ok = window.confirm(
+        "Esta división ya tiene un gasto guardado. Al editarla se va a quitar ese gasto " +
+        "(se vuelve a crear, con el monto correcto, cuando la guardes de nuevo). ¿Editar igual?",
+      );
+      if (!ok) return;
+    }
+    setLoading(true);
+    try {
+      const b = await reopenBill(bill.id);
+      setBill(b);
+      seedFromBill(b);
+      setFinalized(false);
+      setMaxStepReached((m) => Math.max(m, 4));
+      setStep(3);
+    } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); }
+    finally { setLoading(false); }
+  }
+
   // Mensaje para compartir: detalle completo, no solo el total por persona —
   // el usuario pidió que el grupo vea qué pidió cada quien, cuánto costó
   // cada ítem, quién pagó y el balance final, para no tener que explicarlo
@@ -2945,6 +2973,11 @@ function SplitPageInner({
             {finalized && queueRemaining > 0 && (
               <button onClick={onAdvanceQueue} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3.5 rounded-xl flex items-center justify-center gap-2">
                 Siguiente boleta ({queueRemaining} {queueRemaining === 1 ? "restante" : "restantes"})
+              </button>
+            )}
+            {finalized && (
+              <button onClick={handleReopen} disabled={loading} className="flex items-center justify-center gap-2 w-full border border-slate-200 text-slate-600 font-medium py-3 rounded-xl disabled:opacity-50">
+                <Pencil size={16} /> Editar división
               </button>
             )}
             {finalized && <button onClick={() => router.push("/dashboard")} className="w-full text-sm text-slate-500 underline py-2">Cerrar</button>}
