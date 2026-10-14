@@ -14,11 +14,21 @@ ningún país/moneda/formato en particular (auditoría 2026-10-14):
 """
 from datetime import date
 
-# Reusa la app + DB en memoria + fixtures del test de integración del split.
-from tests.test_split_integration import client, auth_headers  # noqa: F401
+import pytest
+
+# Reusa la app + DB en memoria del test de integración del split (mismo
+# setup de entorno/stubs), con su propio usuario para no chocar con el suyo.
+from tests.test_split_integration import client  # noqa: F401
 
 from app import ocr
 from app.schemas import ParsedItem, ParsedReceipt
+
+
+@pytest.fixture(scope="module")
+def auth_headers(client):  # noqa: F811
+    r = client.post("/auth/signup", json={"email": "ocrgen@test.com", "password": "OcrGen1234!", "locale": "es"})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
 def _new_bill(client, headers, d="2026-01-15"):
