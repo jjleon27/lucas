@@ -1,0 +1,38 @@
+{
+  "image": "libreria_rex_1977_handwritten.jpg",
+  "source": "Boleta manuscrita 'Serie A' de Librería Rex Ltda. (Huérfanos 635, Santiago), 1977: 1 cassette. Papel amarillento con manchas y timbre en relieve.",
+  "source_url": "https://www.flickr.com/photos/55665672@N02/14815052995/",
+  "license": "All rights reserved (Flickr) — no se redistribuye",
+  "currency": "CLP",
+  "merchant_contains": "rex",
+  "date": null,
+  "amount": 165,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 1,
+  "items_subtotal": 165,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "1 Cassette Port.",
+      "quantity": 1,
+      "line_total": 165
+    }
+  ],
+  "notes": "Total manuscrito '$165.-' cruzando las dos columnas de valor (la 2ª columna angosta era de centavos en el formulario; un cassette a $1,65 en 1977 no es plausible -> 165 pesos). El '$' manuscrito parece un '4' (riesgo de leer 4165). Ítem manuscrito '1 Cassette Port.' sin precio de línea (el total es el precio). Fecha manuscrita sobre las casillas, ilegible/ambigua ('31 x 11 77' o similar, año 1977 confirmado por el título de la foto) -> date=null; además _parse_date_strict descarta fechas de >3 años por diseño. Partes de la cabecera tachadas con plumón. CLP de 1977 (escudo->peso 1975): moneda correcta CLP. Caso de estrés de manuscrito+papel viejo, no típico de dividir cuenta.",
+  "tags": [
+    "clp",
+    "chile",
+    "handwritten",
+    "old_paper",
+    "stain",
+    "dollar_sign_like_digit",
+    "centavos_column",
+    "ambiguous_date",
+    "roman_or_unclear_month",
+    "redacted_header",
+    "single_item"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/2903/14815052995_65fd8c1aea_k.jpg",
+  "image_sha256": "ac135d6c22ec580a015a137b652800578bf31ad30013aaf9847075d041f92907"
+}

@@ -1,0 +1,38 @@
+{
+  "image": "vertice_puertonatales_handwritten.jpg",
+  "source": "Boleta de venta y servicios manuscrita (talonario preimpreso rosado, duplicado cliente) de Vértice S.A., Puerto Natales / Torres del Paine — cobro de un sitio de camping.",
+  "source_url": "https://www.flickr.com/photos/62313790@N00/8361109245/",
+  "license": "CC BY 2.0 (Flickr)",
+  "currency": "CLP",
+  "merchant_contains": "vertice",
+  "date": "2011-12-16",
+  "amount": 4000,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 1,
+  "items_subtotal": 4000,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Sitio",
+      "quantity": 1,
+      "line_total": 4000
+    }
+  ],
+  "notes": "Reconciliación EXACTA: 1 sitio 4.000 = TOTAL $ 4.000. Montos manuscritos con guion final ('4.000-', convención chilena para cerrar la cifra) — no es negativo. Fecha en casillas DIA/MES/AÑO manuscritas 16 / 12 / 2011. Línea diagonal manuscrita que anula los renglones vacíos (no es un ítem) y timbre circular SII encima. Mucho texto impreso de cabecera (sucursales, RUT, teléfonos) que no son montos. No es restaurante (camping) pero es el formato estándar de boleta manual chilena.",
+  "tags": [
+    "clp",
+    "chile",
+    "handwritten",
+    "preprinted_form",
+    "trailing_dash_amount",
+    "date_boxes",
+    "stamp",
+    "crossed_out_lines",
+    "many_header_numbers",
+    "scan",
+    "lodging"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/8508/8361109245_e79baa69bc_k.jpg",
+  "image_sha256": "94243353888a25ead0025650ad8f25f363c4a0ee9701d32ebf459a40a526fce9"
+}

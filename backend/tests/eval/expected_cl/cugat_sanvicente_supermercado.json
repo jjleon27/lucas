@@ -1,0 +1,44 @@
+{
+  "image": "cugat_sanvicente_supermercado.jpg",
+  "source": "Boleta electrónica Supermercados Cugat (Super Mercados Central Ltda, Genaro Lisboa 165, San Vicente de Tagua Tagua). Foto de boleta térmica larga (incluye voucher Transbank y ticket de estacionamiento) adjunta a una rendición de compra publicada por el SII en su portal de Transparencia Activa ('otras compras').",
+  "source_url": "https://www.sii.cl/transparencia/otras_compras/5256aaa.pdf",
+  "license": "unknown (documento público de Transparencia Activa del SII; no se redistribuye)",
+  "currency": "CLP",
+  "merchant_contains": "cugat",
+  "date": "2026-06-23",
+  "amount": 33320,
+  "total_neto": 28000,
+  "iva_amount": 5320,
+  "item_count": 2,
+  "items_subtotal": 33320,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Toalla de Papel F",
+      "quantity": 6,
+      "line_total": 29940
+    },
+    {
+      "name": "Limp. WC Harpic Adhesivo Lava",
+      "quantity": 2,
+      "line_total": 3380
+    }
+  ],
+  "notes": "Reconciliación EXACTA: 6,000 x 4.990 = 29.940; 2,000 x 1.690 = 3.380; 29.940 + 3.380 = 33.320 = TOTAL = T.VISA = MONTO del voucher. IVA impreso solo como línea informativa 'El IVA de esta boleta es: $ 5.320' (33.320/1,19 = 28.000 neto; 28.000 + 5.320 = 33.320) — total_neto calculado, no impreso. Trampas: (1) cantidad con COMA y 3 decimales ('6,000' = 6 unidades, NO 6000) sobre una línea separada del nombre; (2) '*LP**1x$4990' es texto de promo dentro de la descripción, no un ítem ni cantidad; (3) código EAN de 14 dígitos pegado al nombre; (4) el monto aparece 3 veces (TOTAL, T.VISA, voucher MONTO/TOTAL) — no sumar; (5) línea de IVA informativa NO debe ir a charges. Boleta muy larga (aspect 3.5) con timbre PDF417 en medio.",
+  "tags": [
+    "clp",
+    "chile",
+    "supermarket",
+    "qty_x_unit_subline",
+    "comma_decimal_qty",
+    "barcode_in_name",
+    "promo_text_in_name",
+    "iva_informative_line",
+    "long_receipt",
+    "card_voucher_attached",
+    "repeated_total",
+    "thermal"
+  ],
+  "image_fetch_url": "https://www.sii.cl/transparencia/otras_compras/5256aaa.pdf#page=3 (imagen embebida extraída con `pdfimages -j -f 3 -l 3`)",
+  "image_sha256": "d177c14eef879eb4de9d0d145283d80f969b991dac84310803a457960990a72a"
+}

@@ -1,0 +1,63 @@
+{
+  "image": "bistro_propina_sugerida.jpg",
+  "source": "Pre-cuenta ('CUENTA Nro. 00065471', mesa 38) de Asian Bistro (Santiago), 9-jun-2007, con TRES líneas de propina sugerida (10%, 12% y 15%).",
+  "source_url": "https://www.flickr.com/photos/19724985@N05/1950910853/",
+  "license": "All rights reserved (Flickr) — no se redistribuye",
+  "currency": "CLP",
+  "merchant_contains": "bistro",
+  "date": "2007-06-09",
+  "amount": 19100,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 5,
+  "item_count_max": 6,
+  "items_subtotal": 19100,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Pisco Sour Normal",
+      "quantity": 1,
+      "line_total": 2600
+    },
+    {
+      "name": "Pisco Sour Normal",
+      "quantity": 1,
+      "line_total": 2600
+    },
+    {
+      "name": "Shrimp Samosa",
+      "quantity": 1,
+      "line_total": 3400
+    },
+    {
+      "name": "Shrimp Roll",
+      "quantity": 1,
+      "line_total": 4200
+    },
+    {
+      "name": "Coca Zero",
+      "quantity": 1,
+      "line_total": 1100
+    },
+    {
+      "name": "Bistro Style Roll",
+      "quantity": 1,
+      "line_total": 5200
+    }
+  ],
+  "notes": "Reconciliación EXACTA: 2.600+2.600+3.400+4.200+1.100+5.200 = 19.100 = TOTAL CUENTA. Debajo, tres propinas sugeridas ALTERNATIVAS: 10% 1.910, 12% 2.292, 15% 2.865 (verificadas: 19.100 x 0,10/0,12/0,15) — ninguna está cobrada ni sumada; amount = 19.100. Trampas: (1) NO sumar las 3 propinas (serían 7.067 de 'cargos'); (2) 'Pisco Sour Normal' repetido en 2 líneas -> el prompt pide fusionar en qty=2 / 5.200 (item_count 5 también válido); (3) fecha '09-06-07' (dd-mm-yy = 2007-06-09; leída como yy-mm-dd daría 2009-06-07 — la foto se subió en nov-2007); (4) 'Mesa 38', 'Caja EST06', hora: no son montos; (5) foto oscura, leve desenfoque y la boleta curvada dentro de la carpeta.",
+  "tags": [
+    "clp",
+    "chile",
+    "precuenta",
+    "propina_sugerida_multiple",
+    "duplicate_lines",
+    "ambiguous_two_digit_date",
+    "dark",
+    "blur",
+    "restaurant",
+    "bar"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/2044/1950910853_9ef4a2e8ac_b.jpg",
+  "image_sha256": "1b2bc1387ac94ad6b799a075273208d40eae32e7b0bebe0ffde79347ea19d6ed"
+}

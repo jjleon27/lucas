@@ -1,0 +1,70 @@
+{
+  "image": "angelmo_puertomontt_handwritten.jpg",
+  "source": "Cuenta manuscrita de una cocinería del Mercado de Angelmó (Puerto Montt), viralizada en Twitter en feb-2022 y publicada por Meganoticias.",
+  "source_url": "https://www.meganoticias.cl/nacional/367638-precio-restaurante-angelmo-conadecus-11-02-2022.html",
+  "license": "unknown (foto de usuaria de Twitter vía prensa; no se redistribuye)",
+  "currency": "CLP",
+  "merchant_contains": null,
+  "date": null,
+  "amount": 162800,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 7,
+  "items_subtotal": 148000,
+  "items_lenient": true,
+  "items": [
+    {
+      "name": "Paila C",
+      "quantity": 4,
+      "line_total": 72000
+    },
+    {
+      "name": "Salmón",
+      "quantity": 1,
+      "line_total": 14000
+    },
+    {
+      "name": "Merluza",
+      "quantity": 1,
+      "line_total": 12000
+    },
+    {
+      "name": "Chupe",
+      "quantity": 1,
+      "line_total": 18000
+    },
+    {
+      "name": "Pollo",
+      "quantity": 1,
+      "line_total": 12000
+    },
+    {
+      "name": "Bebidas",
+      "quantity": 6,
+      "line_total": 12000
+    },
+    {
+      "name": "Jugos",
+      "quantity": 2,
+      "line_total": 8000
+    }
+  ],
+  "notes": "Manuscrito en cursiva. Reconciliación EXACTA: 72.000+14.000+12.000+18.000+12.000+12.000+8.000 = 148.000 (subtotal escrito). Luego '10% Prop. Sug.' 14.800 y total 162.800 (= 148.000 x 1,10), que fue lo pagado según la prensa. amount = 162.800 (el total final escrito incluye la propina, como dondewilly_vinadelmar) -> items_lenient=true para el pipeline general; para dividir cuenta el consumo correcto es 148.000 y la propina 14.800 (si el modelo la reporta como charge kind=tip se precarga como propina, no se suma dos veces). Montos sin '$' y con/sin punto de miles mezclados ('72000', '148.000'). Las cantidades van ANTES del nombre y el monto escrito es el total de la línea (4 pailas = 72.000, no 4x72.000). Sin fecha ni nombre del local. La imagen de prensa es un collage: la cuenta ocupa el centro, a los lados hay un desenfoque de la misma foto.",
+  "tags": [
+    "clp",
+    "chile",
+    "handwritten",
+    "cursive",
+    "qty_prefix",
+    "line_total_not_unit",
+    "propina_sugerida_10",
+    "total_includes_tip",
+    "no_thousands_separator",
+    "no_date",
+    "no_merchant",
+    "news_collage",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://images2-mega.cdn.mdstrm.com/meganoticias/2022/02/11/cuenta-angelmo_367638_2_6206438851dc5.jpg",
+  "image_sha256": "d92b3d4471646e0d522f7ab93d8372fd613d2fd0faec59f1dc20439065b9d42f"
+}

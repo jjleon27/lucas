@@ -1,0 +1,84 @@
+{
+  "image": "schopdog_copiapo_dotmatrix.jpg",
+  "source": "Boleta de ventas y servicios matricial (papel continuo con perforaciones) de Schopdog (Rap Ocho S.A., Colipí 484, Copiapó), 15-04-2009. Pedido grande para un grupo (23 italianos + bebidas + postres).",
+  "source_url": "https://www.flickr.com/photos/37598634@N08/3453376936/",
+  "license": "All rights reserved (Flickr) — no se redistribuye",
+  "currency": "CLP",
+  "merchant_contains": "schopdog",
+  "merchant_contains_alt": "rap ocho",
+  "date": "2009-04-15",
+  "amount": 55570,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 10,
+  "items_subtotal": 55570,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Prm Pollo Jardine",
+      "quantity": 2,
+      "line_total": 3580
+    },
+    {
+      "name": "Agr. Papas Normal",
+      "quantity": 2,
+      "line_total": 1180
+    },
+    {
+      "name": "Coca Cola Normal",
+      "quantity": 1,
+      "line_total": 670
+    },
+    {
+      "name": "Italiano+beb.ch+a",
+      "quantity": 23,
+      "line_total": 31970
+    },
+    {
+      "name": "Coca Cola Grande",
+      "quantity": 9,
+      "line_total": 1800
+    },
+    {
+      "name": "Fanta Grande",
+      "quantity": 12,
+      "line_total": 2400
+    },
+    {
+      "name": "Sprite Grande",
+      "quantity": 2,
+      "line_total": 400
+    },
+    {
+      "name": "Cuatro Leches Of",
+      "quantity": 9,
+      "line_total": 5310
+    },
+    {
+      "name": "Mousse Choc. Ofert",
+      "quantity": 5,
+      "line_total": 2950
+    },
+    {
+      "name": "Tiramisu Oferta",
+      "quantity": 9,
+      "line_total": 5310
+    }
+  ],
+  "notes": "Reconciliación EXACTA: columnas Cant / P.Uni / Total y cada línea verifica (23 x 1.390 = 31.970; 9 x 200 = 1.800; 12 x 200 = 2.400; 9 x 590 = 5.310; 5 x 590 = 2.950); suma = 55.570 = 'Subtotal : $ 55,570'. Debajo '0.00 % : $ 0' (descuento 0%) y el TOTAL queda tapado por el logo rojo preimpreso SCHOPDOG -> amount = 55.570 (subtotal - 0). CLP con COMA de miles ('31,970' = 31.970, NO 31,97). Tinta matricial azul desvaída; 'B0008-02231358' y 'Comanda : 347825' son números de documento, no montos. Ítems agregados ('Agr.') son ítems con precio propio.",
+  "tags": [
+    "clp",
+    "chile",
+    "dot_matrix",
+    "comma_thousands",
+    "qty_unit_total_columns",
+    "large_quantities",
+    "total_occluded_by_logo",
+    "zero_discount_line",
+    "faded",
+    "doc_numbers",
+    "fast_food"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/3337/3453376936_bad5087dbf_k.jpg",
+  "image_sha256": "3fb40a9e7f54fe3c857e300e632b01e7d1ef0dc40e56f96d2ee8b5ce6ed8f784"
+}
