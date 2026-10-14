@@ -33,6 +33,9 @@ interface BillItem {
 }
 interface Bill {
   id: number; merchant: string; date: string; total_amount: number; tip_amount: number;
+  // Impuesto/cargo por servicio impresos APARTE de los ítems (se reparten
+  // proporcional, como la propina) y total final impreso (solo para avisar).
+  extra_amount: number; printed_total: number | null;
   currency: string; image_url: string; status: "draft" | "assigned" | "finalized";
   // Ancho/alto reales de la foto (orientada hacia arriba, post EXIF-transpose
   // en el backend) — el marco de referencia del que bbox_y0/y1/segments son %.
@@ -79,7 +82,7 @@ const deleteItem = (billId: number, iid: number) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "DELETE" });
 const postShares = (billId: number, itemId: number, shares: { participant_id: number; weight: number; units?: number }[]) =>
   billReq<Bill>(`/bills/${billId}/shares`, { method: "POST", body: JSON.stringify({ item_id: itemId, shares }) });
-const patchBill = (billId: number, patch: { tip_amount?: number; merchant?: string; date?: string }) =>
+const patchBill = (billId: number, patch: { tip_amount?: number; extra_amount?: number; merchant?: string; date?: string }) =>
   billReq<Bill>(`/bills/${billId}`, { method: "PATCH", body: JSON.stringify(patch) });
 const assignEqual = (billId: number) =>
   billReq<Bill>(`/bills/${billId}/assign-equal`, { method: "POST" });
@@ -118,7 +121,22 @@ const listBills = () => billReq<BillListRow[]>("/bills");
 // competir por atención/tiempo con lo que sí importa ahora.
 const SHOW_COLOR_BANDS = false;
 
-const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
+// Formato de montos en la moneda de la cuenta (detectada en la boleta):
+// CLP sin decimales como siempre, EUR/USD/etc. con sus centavos. Módulo-level
+// porque `clp` se usa en helpers fuera del componente; el componente fija la
+// moneda activa con `setMoneyCurrency` al cargar la cuenta.
+let moneyFmt = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP" });
+let moneyDigits = 0;
+const setMoneyCurrency = (cur: string | undefined) => {
+  const c = (cur || "CLP").toUpperCase();
+  if (moneyFmt.resolvedOptions().currency === c) return;
+  try { moneyFmt = new Intl.NumberFormat("es-CL", { style: "currency", currency: c }); }
+  catch { moneyFmt = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP" }); }
+  moneyDigits = moneyFmt.resolvedOptions().maximumFractionDigits ?? 0;
+};
+// Redondeo a la unidad mínima de la moneda activa (1 peso, 1 centavo).
+const roundMoney = (n: number) => { const f = 10 ** moneyDigits; return Math.round(n * f) / f; };
+const clp = (n: number) => moneyFmt.format(roundMoney(n));
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 // Un color pastel distinto por ítem, SIN repetirse por más ítems que tenga la
 // boleta (la paleta fija de 8 colores hacía que el ítem 1 y el 9 quedaran del
@@ -232,6 +250,8 @@ function SplitPageInner({
   const [maxStepReached, setMaxStepReached] = useState(1);
   useEffect(() => { setMaxStepReached((m) => Math.max(m, step)); }, [step]);
   const [bill, setBill] = useState<Bill | null>(null);
+  // Moneda activa para `clp()` — idempotente, se fija en cada render con la cuenta actual.
+  setMoneyCurrency(bill?.currency);
   const [people, setPeople] = useState<Person[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(false);
@@ -859,7 +879,7 @@ function SplitPageInner({
   async function saveTip() {
     if (!bill) return;
     const raw = parseFloat(tipDraft) || 0;
-    const tip_amount = tipMode === "pct" ? Math.round(subtotalForTip * raw / 100) : Math.round(raw);
+    const tip_amount = roundMoney(tipMode === "pct" ? subtotalForTip * raw / 100 : raw);
     try {
       setBill(await patchBill(bill.id, { tip_amount }));
       setTipMode("hidden");
@@ -1934,7 +1954,7 @@ function SplitPageInner({
       if (!share) continue;
       total += item.line_total * share.weight;
     }
-    if (bill.tip_amount > 0) {
+    if (bill.tip_amount + (bill.extra_amount || 0) !== 0) {
       const totalOwed = bill.participants.reduce((acc, p) => {
         let s = 0;
         for (const item of bill.items) {
@@ -1943,9 +1963,9 @@ function SplitPageInner({
         }
         return acc + s;
       }, 0);
-      if (totalOwed > 0) total += (total / totalOwed) * bill.tip_amount;
+      if (totalOwed > 0) total += (total / totalOwed) * (bill.tip_amount + (bill.extra_amount || 0));
     }
-    return Math.round(total);
+    return roundMoney(total);
   }, [bill]);
 
   // Renders the people row (avatars with running totals + "Add new").
@@ -2004,8 +2024,13 @@ function SplitPageInner({
   // Step 2 right panel: review items only (no assignment chips)
   function renderStep2RightPanel() {
     if (!bill) return null;
-    const diff = Math.abs(subtotal - bill.total_amount);
-    const match = diff < 2 || bill.total_amount === 0;
+    // Aviso de descuadre contra el TOTAL IMPRESO (no contra la suma propia):
+    // ítems + cargos aparte (+ propina si venía cobrada) deben dar lo impreso.
+    const minor = 2 / 10 ** moneyDigits;
+    const base = subtotal + (bill.extra_amount || 0);
+    const printed = bill.printed_total;
+    const diff = printed == null ? 0 : Math.min(Math.abs(printed - base), Math.abs(printed - base - bill.tip_amount));
+    const match = printed == null || printed === 0 || diff <= minor;
 
     return (
       <div className="space-y-3 pb-6">
@@ -2133,9 +2158,18 @@ function SplitPageInner({
             <span className="text-slate-500">{bill.items.length} ítem{bill.items.length !== 1 ? "s" : ""}</span>
             <span className="font-semibold text-slate-800">Subtotal {clp(subtotal)}</span>
           </div>
-          {!match && bill.total_amount > 0 && (
+          {(bill.extra_amount || 0) !== 0 && (
+            <div className="flex items-center justify-between border-t border-slate-100 px-4 py-2 text-sm">
+              <span className="text-slate-500">Impuestos y cargos (proporcional): {clp(bill.extra_amount)}</span>
+              <button className="text-xs text-slate-400 underline"
+                onClick={async () => { try { setBill(await patchBill(bill.id, { extra_amount: 0 })); } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error"); } }}>
+                Quitar
+              </button>
+            </div>
+          )}
+          {!match && printed != null && (
             <div className="px-4 pb-2 text-[11px] text-amber-600 bg-amber-50 border-t border-amber-100 py-1.5">
-              Boleta original: {clp(bill.total_amount)} · diferencia con ítems: {clp(Math.abs(bill.total_amount - subtotal))}
+              Total impreso en la boleta: {clp(printed)} · diferencia: {clp(diff)} — revisa los ítems marcados o agrega lo que falte
             </div>
           )}
           {/* Propina row — siempre disponible y colapsada por defecto: una lista

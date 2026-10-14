@@ -43,7 +43,9 @@ class BillPatch(BaseModel):
     merchant: Optional[str] = None
     date: Optional[_date] = None
     tip_amount: Optional[float] = Field(None, ge=0)
+    extra_amount: Optional[float] = None
     total_amount: Optional[float] = Field(None, ge=0)
+    currency: Optional[str] = Field(None, min_length=3, max_length=3)
 
 
 class ParticipantAdd(BaseModel):
@@ -154,6 +156,8 @@ def _bill_out(bill: Bill) -> dict:
         "date": str(bill.date),
         "total_amount": bill.total_amount,
         "tip_amount": bill.tip_amount,
+        "extra_amount": bill.extra_amount or 0.0,
+        "printed_total": bill.printed_total,
         "currency": bill.currency,
         "image_url": bill.image_url,
         "image_width": bill.image_width,
@@ -168,9 +172,9 @@ def _bill_out(bill: Bill) -> dict:
 
 
 def _recalc_total(bill: Bill) -> None:
-    """Recompute bill.total_amount from sum of item line_totals + tip."""
+    """Recompute bill.total_amount from sum of item line_totals + tip + cargos."""
     items_sum = sum(it.line_total for it in bill.items)
-    bill.total_amount = round(items_sum + bill.tip_amount, 2)
+    bill.total_amount = round(items_sum + bill.tip_amount + (bill.extra_amount or 0.0), 2)
 
 
 def _assign_equal(bill: Bill, db: Session) -> None:
@@ -281,6 +285,10 @@ def patch_bill(
         bill.date = payload.date
     if payload.tip_amount is not None:
         bill.tip_amount = payload.tip_amount
+    if payload.extra_amount is not None:
+        bill.extra_amount = payload.extra_amount
+    if payload.currency is not None:
+        bill.currency = payload.currency.upper()
         _recalc_total(bill)
     if payload.total_amount is not None:
         bill.total_amount = payload.total_amount
@@ -345,6 +353,18 @@ async def bill_ocr(
         bill.merchant = tx_data.merchant
     if tx_data.date and not parsed.date_is_guess:
         bill.date = tx_data.date
+    # Moneda detectada en la boleta (ISO 4217) — reemplaza el default "CLP"
+    # para que montos, propina y el gasto guardado queden en la moneda real.
+    if parsed.currency:
+        bill.currency = parsed.currency
+    bill.printed_total = parsed.printed_total
+    # Cargos impresos fuera de los ítems: impuesto/servicio se reparten
+    # proporcional (extra_amount); una propina ya cobrada en la boleta
+    # precarga la propina (el usuario la puede cambiar).
+    bill.extra_amount = round(sum(c["amount"] for c in parsed.charges if c["kind"] != "tip"), 2)
+    tip_charged = round(sum(c["amount"] for c in parsed.charges if c["kind"] == "tip"), 2)
+    if tip_charged > 0:
+        bill.tip_amount = tip_charged
 
     # Replace items
     db.query(BillItem).filter(BillItem.bill_id == bill.id).delete()
@@ -675,16 +695,17 @@ def finalize_bill(
                 share.participant.owes_amount + item.line_total * share.weight, 2
             )
 
-    # Add tip proportionally to owes_amount
-    if bill.tip_amount > 0:
+    # Propina + cargos fuera de ítems (impuesto/servicio), proporcional al consumo
+    surcharge = round(bill.tip_amount + (bill.extra_amount or 0.0), 2)
+    if surcharge != 0:
         total_owed = sum(p.owes_amount for p in bill.participants)
         if total_owed > 0:
-            remaining_tip = bill.tip_amount
+            remaining_tip = surcharge
             for i, p in enumerate(bill.participants):
                 if i == len(bill.participants) - 1:
                     tip_share = remaining_tip
                 else:
-                    tip_share = round(p.owes_amount / total_owed * bill.tip_amount, 2)
+                    tip_share = round(p.owes_amount / total_owed * surcharge, 2)
                     remaining_tip -= tip_share
                 p.owes_amount = round(p.owes_amount + tip_share, 2)
 

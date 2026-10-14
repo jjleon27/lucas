@@ -77,6 +77,10 @@ def _migrate_schema() -> None:
         # medido por el navegador, para que el cálculo object-fit:contain no
         # dependa de que el navegador interprete el EXIF igual que Pillow.
         "ALTER TABLE bills ADD COLUMN image_width INTEGER",
+        # bills.extra_amount/printed_total — impuestos/cargo por servicio no
+        # incluidos en los ítems y total impreso (lectura de boleta genérica).
+        "ALTER TABLE bills ADD COLUMN extra_amount REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE bills ADD COLUMN printed_total REAL",
         "ALTER TABLE bills ADD COLUMN image_height INTEGER",
         # bill_items.needs_review — el nombre/precio que dijo el modelo de
         # visión no aparece en el texto real de la foto (Tesseract) —

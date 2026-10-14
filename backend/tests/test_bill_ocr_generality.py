@@ -116,3 +116,45 @@ def test_parse_date_strict():
     assert ocr._parse_date_strict("14.09.2026") == date(2026, 9, 14)
     assert ocr._parse_date_strict("ayer a las 9") is None
     assert ocr._parse_date_strict(None) is None
+
+
+def test_charges_currency_and_proportional_finalize(client, auth_headers, monkeypatch):
+    """Boleta tipo EE.UU.: impuesto sumado aparte + propina cobrada. La moneda
+    detectada reemplaza el default, el impuesto queda como cargo aparte y al
+    finalizar se reparte proporcional al consumo (como la propina)."""
+    def fake(raw, **_kw):
+        rec = ParsedReceipt(amount=0, date=date.today(), merchant="Diner", category="Otros", items=[
+            ParsedItem(name="Burger", price=30, quantity=1, line_total=30.0),
+            ParsedItem(name="Salad", price=10, quantity=1, line_total=10.0),
+        ])
+        return ocr.ParseResult(transactions=[rec], currency="USD", printed_total=51.6, charges=[
+            {"label": "Sales Tax", "kind": "tax", "amount": 3.6},
+            {"label": "Gratuity", "kind": "tip", "amount": 8.0},
+        ])
+    monkeypatch.setattr(ocr, "vision_parse_bill", fake)
+    monkeypatch.setattr("app.storage.save_image", lambda data, name: "local://x")
+    b = _new_bill(client, auth_headers)
+    out = _upload(client, auth_headers, b["id"]).json()
+    assert out["currency"] == "USD"
+    assert out["extra_amount"] == 3.6 and out["tip_amount"] == 8.0
+    assert out["printed_total"] == 51.6 and out["total_amount"] == 51.6
+
+    # Yo (ya participante) come el Burger; otra persona la Salad. Pago yo.
+    other = client.post("/split/people", json={"name": "Ana"}, headers=auth_headers).json()
+    out = client.post(f"/bills/{b['id']}/participants", json={"person_id": other["id"]}, headers=auth_headers).json()
+    me = next(p for p in out["participants"] if p["is_me"])
+    ana = next(p for p in out["participants"] if not p["is_me"])
+    items = {i["name"]: i["id"] for i in out["items"]}
+    for name, pid in (("Burger", me["id"]), ("Salad", ana["id"])):
+        r = client.post(f"/bills/{b['id']}/shares",
+                        json={"item_id": items[name], "shares": [{"participant_id": pid, "weight": 1}]},
+                        headers=auth_headers)
+        assert r.status_code == 200, r.text
+    r = client.post(f"/bills/{b['id']}/set-payers", json=[{"participant_id": me["id"], "paid_amount": 51.6}],
+                    headers=auth_headers)
+    assert r.status_code == 200, r.text
+    r = client.post(f"/bills/{b['id']}/finalize", json={"save_to_expense": False}, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    owes = {p["is_me"]: p["owes_amount"] for p in r.json()["participants"]}
+    # 30/40 y 10/40 de (3.6 + 8.0)
+    assert owes[True] == 38.7 and owes[False] == 12.9

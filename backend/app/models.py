@@ -227,6 +227,13 @@ class Bill(Base):
     date = Column(Date, default=date.today, nullable=False)
     total_amount = Column(Float, nullable=False, default=0.0)
     tip_amount = Column(Float, nullable=False, default=0.0)
+    # Cargos impresos que se suman APARTE de los ítems (impuesto agregado al
+    # final, cargo por servicio) — se reparten proporcional al consumo, igual
+    # que la propina. 0 cuando los precios ya los incluyen (IVA incluido).
+    extra_amount = Column(Float, nullable=False, default=0.0)
+    # Total final impreso en la boleta (si se leyó) — solo para avisar al
+    # usuario si ítems + cargos no cuadran; nunca reemplaza la suma.
+    printed_total = Column(Float, nullable=True)
     currency = Column(String(8), default="CLP", nullable=False)
     image_url = Column(String(1024), default="", nullable=False)
     # Ancho/alto reales de la foto, orientada hacia arriba (post EXIF-transpose)

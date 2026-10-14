@@ -127,6 +127,10 @@ class ParseResult:
     # True si la fecha de la transacción es "hoy" de relleno (la boleta no
     # traía una fecha legible) — el caller no debe pisar una fecha real con ella.
     date_is_guess: bool = False
+    # Solo lectura de boleta para dividir cuenta (vision_parse_bill):
+    currency: Optional[str] = None          # ISO 4217 detectado, None si no se supo
+    printed_total: Optional[float] = None   # total final impreso
+    charges: list = field(default_factory=list)  # [{label, kind, amount}] fuera de los ítems
 
     def __bool__(self) -> bool:
         return bool(self.transactions)
@@ -1711,7 +1715,23 @@ _BILL_ITEM_SCHEMA = {
     "type": "object",
     "properties": {
         "merchant": {"type": "string", "description": "Nombre del local, o cadena vacía si no aparece"},
-        "date": {"type": ["string", "null"], "description": "Fecha de la boleta si aparece, o null"},
+        "date": {"type": ["string", "null"], "description": "Fecha de la boleta en formato ISO YYYY-MM-DD (resolviendo día/mes según el país de la boleta), o null si no aparece"},
+        "currency": {"type": ["string", "null"], "description": "Código ISO 4217 de la moneda de la boleta (CLP, EUR, USD, MXN...), deducido de símbolos, país, idioma o formato; null si no se puede deducir"},
+        "printed_total": {"type": ["number", "null"], "description": "TOTAL FINAL impreso (lo que efectivamente se cobra), o null si no aparece"},
+        "charges": {
+            "type": "array",
+            "description": "Cargos impresos que se SUMAN APARTE de los ítems para llegar al total: impuesto agregado al final (sales tax, VAT/IVA no incluido en los precios), cargo por servicio, propina ya cobrada. NO incluyas impuestos ya incluidos en los precios (p.ej. 'IVA incluido' o desglose informativo de IVA/neto), ni propina SUGERIDA que no está sumada al total, ni pagos/vuelto. Lista vacía si no hay.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string", "description": "Texto impreso del cargo"},
+                    "kind": {"type": "string", "enum": ["tax", "service", "tip", "other"]},
+                    "amount": {"type": "number", "description": "Monto del cargo"},
+                },
+                "required": ["label", "kind", "amount"],
+                "additionalProperties": False,
+            },
+        },
         "printed_subtotal": {
             "type": ["number", "null"],
             "description": "El SUBTOTAL o TOTAL impreso en la boleta, o null si no aparece uno claro. Se usa solo como referencia, no reemplaza a 'amount'.",
@@ -1723,7 +1743,7 @@ _BILL_ITEM_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Nombre del ítem tal como aparece impreso"},
-                    "quantity": {"type": ["number", "null"], "description": "Cantidad de unidades, o null si genuinamente no se puede determinar — NO ADIVINES, usa 1 solo si es razonablemente obvio que es 1."},
+                    "quantity": {"type": ["number", "null"], "description": "Cantidad de unidades (o cantidad medida tal cual, p.ej. 1.62 si es por kg/litro), o null si genuinamente no se puede determinar — NO ADIVINES, usa 1 solo si es razonablemente obvio que es 1."},
                     "line_total": {"type": ["number", "null"], "description": "Precio TOTAL de ESA línea completa (cantidad × precio unitario YA multiplicado), no el precio unitario. Si la boleta muestra 'cantidad x precio_unitario' por separado, multiplícalos vos. Si genuinamente no se puede leer el valor con confianza, usa null — NO INVENTES un número."},
                 },
                 "required": ["name", "quantity", "line_total"],
@@ -1731,12 +1751,12 @@ _BILL_ITEM_SCHEMA = {
             },
         },
     },
-    "required": ["merchant", "date", "printed_subtotal", "amount", "items"],
+    "required": ["merchant", "date", "currency", "printed_subtotal", "printed_total", "amount", "charges", "items"],
     "additionalProperties": False,
 }
 
 _BILL_PROMPT = (
-    "Lee esta boleta/comanda chilena y extrae cada ítem de consumo en el mismo "
+    "Lee esta boleta/ticket/cuenta (de cualquier país, idioma y moneda) y extrae cada ítem de consumo en el mismo "
     "orden en que aparecen impresos, con máxima precisión. No incluyas la línea "
     "de total/subtotal/propina como si fuera un ítem — pero SÍ copiá el "
     "subtotal impreso (si hay uno claro) en 'printed_subtotal'.\n\n"
@@ -1748,6 +1768,14 @@ _BILL_PROMPT = (
     "la MISMA línea de producto varias veces seguidas (mismo código de barras, "
     "mismo precio), sumá esas repeticiones en una sola entrada con quantity=N "
     "y line_total=la suma de todas — no las repitas como entradas separadas.\n\n"
+    "NÚMEROS: escribí los montos como números JSON en la moneda de la boleta, "
+    "interpretando los separadores de miles y decimales según el formato de "
+    "ESA boleta (1.234,56 -> 1234.56; 1,234.56 -> 1234.56; en monedas sin "
+    "decimales como CLP, 12.500 -> 12500).\n\n"
+    "DESCUENTOS/cupones/promociones: van como ítem con line_total NEGATIVO, "
+    "justo después del ítem al que se aplican. Los agregados con precio "
+    "propio (\"+ queso\") son ítems aparte; los modificadores sin precio no "
+    "se incluyen.\n\n"
     "Si genuinamente no podés leer un número con confianza real (foto "
     "borrosa, tapada, muy chica), usá null en ese campo — NUNCA inventes un "
     "valor solo para completar el JSON."
@@ -2055,8 +2083,18 @@ def vision_parse_bill(
             is_income=False,
             items=items,
         )
+        cur = (parsed.get("currency") or "").strip().upper()
+        charges = [
+            {"label": str(c.get("label") or "")[:100], "kind": c.get("kind") or "other", "amount": float(c["amount"])}
+            for c in (parsed.get("charges") or [])
+            if isinstance(c, dict) and isinstance(c.get("amount"), (int, float)) and c["amount"] != 0
+        ]
+        pt = parsed.get("printed_total")
         return ParseResult(transactions=[receipt], image_width=upright_w, image_height=upright_h,
-                           date_is_guess=parsed_date is None)
+                           date_is_guess=parsed_date is None,
+                           currency=cur if re.fullmatch(r"[A-Z]{3}", cur) else None,
+                           printed_total=float(pt) if isinstance(pt, (int, float)) else None,
+                           charges=charges)
     except Exception as e:  # noqa: BLE001
         print(f"[ocr] vision_parse_bill failed: {e}")
         import traceback; traceback.print_exc()
