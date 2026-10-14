@@ -158,3 +158,29 @@ def test_charges_currency_and_proportional_finalize(client, auth_headers, monkey
     owes = {p["is_me"]: p["owes_amount"] for p in r.json()["participants"]}
     # 30/40 y 10/40 de (3.6 + 8.0)
     assert owes[True] == 38.7 and owes[False] == 12.9
+
+
+def test_tip_and_extra_patch_recalc_total(client, auth_headers):
+    b = _new_bill(client, auth_headers)
+    client.post(f"/bills/{b['id']}/items", json={"name": "Lomo", "qty": 1, "unit_price": 10000}, headers=auth_headers)
+    out = client.patch(f"/bills/{b['id']}", json={"tip_amount": 1000}, headers=auth_headers).json()
+    assert out["total_amount"] == 11000
+    out = client.patch(f"/bills/{b['id']}", json={"extra_amount": 500}, headers=auth_headers).json()
+    assert out["total_amount"] == 11500
+
+
+def test_charges_already_included_are_not_double_charged(client, auth_headers, monkeypatch):
+    """Boleta con IVA incluido: el modelo reporta el IVA como 'cargo', pero los
+    ítems ya suman el total impreso -> no se suma de nuevo."""
+    def fake(raw, **_kw):
+        rec = ParsedReceipt(amount=0, date=date.today(), merchant="Bar", category="Otros", items=[
+            ParsedItem(name="Schop", price=4000, quantity=2, line_total=8000.0),
+            ParsedItem(name="Papas", price=3900, quantity=1, line_total=3900.0),
+        ])
+        return ocr.ParseResult(transactions=[rec], currency="CLP", printed_total=11900,
+                               charges=[{"label": "IVA 19%", "kind": "tax", "amount": 1900.0}])
+    monkeypatch.setattr(ocr, "vision_parse_bill", fake)
+    monkeypatch.setattr("app.storage.save_image", lambda data, name: "local://x")
+    b = _new_bill(client, auth_headers)
+    out = _upload(client, auth_headers, b["id"]).json()
+    assert out["extra_amount"] == 0 and out["total_amount"] == 11900

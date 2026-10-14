@@ -22,7 +22,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -298,9 +298,14 @@ def _parse_date_strict(s: Optional[str]) -> Optional[date]:
         "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y",
     ):
         try:
-            return datetime.strptime(s[:10] if fmt.startswith("%Y") else s, fmt).date()
+            d = datetime.strptime(s[:10] if fmt.startswith("%Y") else s, fmt).date()
         except ValueError:
             continue
+        # Una boleta para dividir es reciente: un año imposible es mala lectura.
+        today = date.today()
+        if today - timedelta(days=3 * 366) <= d <= today + timedelta(days=1):
+            return d
+        return None
     return None
 
 
@@ -1716,8 +1721,8 @@ _BILL_ITEM_SCHEMA = {
     "properties": {
         "merchant": {"type": "string", "description": "Nombre del local, o cadena vacía si no aparece"},
         "date": {"type": ["string", "null"], "description": "Fecha de la boleta en formato ISO YYYY-MM-DD (resolviendo día/mes según el país de la boleta), o null si no aparece"},
-        "currency": {"type": ["string", "null"], "description": "Código ISO 4217 de la moneda de la boleta (CLP, EUR, USD, MXN...), deducido de símbolos, país, idioma o formato; null si no se puede deducir"},
-        "printed_total": {"type": ["number", "null"], "description": "TOTAL FINAL impreso (lo que efectivamente se cobra), o null si no aparece"},
+        "currency": {"type": ["string", "null"], "description": "Código ISO 4217 de la moneda de la boleta (CLP, EUR, USD, MXN...), deducido de símbolos, país, idioma, dirección o formato; null si es ambiguo (p.ej. solo '$' sin ninguna otra pista del país)"},
+        "printed_total": {"type": ["number", "null"], "description": "TOTAL impreso de la cuenta SIN propina sugerida (si la boleta muestra además un 'total con propina' sugerido, usa el total sin ella), o null si no aparece"},
         "charges": {
             "type": "array",
             "description": "Cargos impresos que se SUMAN APARTE de los ítems para llegar al total: impuesto agregado al final (sales tax, VAT/IVA no incluido en los precios), cargo por servicio, propina ya cobrada. NO incluyas impuestos ya incluidos en los precios (p.ej. 'IVA incluido' o desglose informativo de IVA/neto), ni propina SUGERIDA que no está sumada al total, ni pagos/vuelto. Lista vacía si no hay.",
@@ -1743,7 +1748,7 @@ _BILL_ITEM_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "Nombre del ítem tal como aparece impreso"},
-                    "quantity": {"type": ["number", "null"], "description": "Cantidad de unidades (o cantidad medida tal cual, p.ej. 1.62 si es por kg/litro), o null si genuinamente no se puede determinar — NO ADIVINES, usa 1 solo si es razonablemente obvio que es 1."},
+                    "quantity": {"type": ["number", "null"], "description": "Cantidad de unidades; para productos pesados/medidos (kg, litros) usa 1 y en line_total el total de esa línea. null si genuinamente no se puede determinar — NO ADIVINES, usa 1 solo si es razonablemente obvio que es 1."},
                     "line_total": {"type": ["number", "null"], "description": "Precio TOTAL de ESA línea completa (cantidad × precio unitario YA multiplicado), no el precio unitario. Si la boleta muestra 'cantidad x precio_unitario' por separado, multiplícalos vos. Si genuinamente no se puede leer el valor con confianza, usa null — NO INVENTES un número."},
                 },
                 "required": ["name", "quantity", "line_total"],
@@ -1783,15 +1788,19 @@ _BILL_PROMPT = (
 
 
 def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None, db=None) -> Optional[dict]:
-    """2 llamadas IDÉNTICAS a la Responses API en paralelo, gana la que
-    responda primero — mismo patrón validado en services/split_lab.py
-    (cont. 34), acá aplicado a Structured Outputs en vez de streaming de
-    texto libre. Llama a OpenAI directo (no via ai.provider) porque la
-    Responses API con json_schema es una forma nueva que esa capa
-    multi-proveedor todavía no expone — mismo criterio ya usado en
-    routers/split_lab.py. Loguea el uso/costo de la copia ganadora
-    igual que ai.provider (ver `_log_usage`), para no perder la métrica
-    de costo real por ausencia de este cambio."""
+    """Lectura con Structured Outputs + "hedged request": se lanza una copia
+    y, si no respondió en `bill_hedge_after_s`, una segunda IDÉNTICA en
+    paralelo; gana la primera que devuelva JSON válido (patrón validado en
+    services/split_lab.py, cont. 34, para la cola de latencia). Con 0 se
+    lanzan las 2 de entrada (comportamiento original, 2× costo siempre); con
+    un valor grande es una sola llamada (útil para el eval). Llama a OpenAI
+    directo (no via ai.provider) porque la Responses API con json_schema es
+    una forma que esa capa multi-proveedor todavía no expone.
+
+    Costo: se registra el uso de la ganadora y, si la otra copia ya terminó,
+    también el suyo; si sigue corriendo se registra el de la ganadora como
+    estimación (misma imagen, mismo prompt) — sin hilos en segundo plano,
+    que en serverless pueden congelarse al responder."""
     import queue
     import threading
     from openai import OpenAI
@@ -1804,7 +1813,7 @@ def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None,
     client = OpenAI(api_key=settings.openai_api_key, timeout=60.0, max_retries=1)
     q: "queue.Queue" = queue.Queue()
 
-    def worker(idx: int):
+    def worker():
         try:
             resp = client.responses.create(
                 model=model,
@@ -1818,61 +1827,66 @@ def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None,
                 text={"format": {"type": "json_schema", "name": "receipt", "strict": True, "schema": _BILL_ITEM_SCHEMA}},
                 reasoning={"effort": "low"},
             )
-            q.put((idx, resp))
+            q.put(resp)
         except Exception as exc:  # noqa: BLE001
-            q.put((idx, exc))
-
-    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(2)]
-    for th in threads:
-        th.start()
-    deadline = time.time() + 130.0  # tope global de la carrera, bajo los 180s de Vercel
-    pending = 2
-    result: object = None
-    while pending:
-        try:
-            idx, result = q.get(timeout=max(1.0, deadline - time.time()))
-        except Exception:
-            print("[ocr] _race_structured_bill_read: sin respuesta antes del tope")
-            return None
-        pending -= 1
-        if not isinstance(result, Exception):
-            break
-        print(f"[ocr] _race_structured_bill_read: una copia falló ({result})")
-    if isinstance(result, Exception) or result is None:
-        return None  # las 2 copias fallaron
+            q.put(exc)
 
     def _usage_of(resp) -> "LLMResponse":
         u = resp.usage
         return LLMResponse(text="", prompt_tokens=u.input_tokens, completion_tokens=u.output_tokens,
                            model=model, provider="openai")
 
+    deadline = time.time() + 130.0  # tope global, bajo los 180s de Vercel
+    hedge_at = time.time() + max(0.0, settings.bill_hedge_after_s)
+    launched = 0
+    finished = 0
+    winner = None
+    while winner is None:
+        if launched == 0 or (launched == 1 and time.time() >= hedge_at):
+            threading.Thread(target=worker, daemon=True).start()
+            launched += 1
+            continue
+        if finished >= launched and launched == 2:
+            return None  # las 2 copias fallaron
+        wait_until = hedge_at if launched == 1 and finished == 0 else deadline
+        try:
+            res = q.get(timeout=max(0.05, min(wait_until, deadline) - time.time()))
+        except queue.Empty:
+            if time.time() >= deadline:
+                print("[ocr] _race_structured_bill_read: sin respuesta antes del tope")
+                return None
+            if launched == 1:
+                hedge_at = time.time()  # la primera ya tardó o falló: lanzar la otra
+            continue
+        finished += 1
+        if isinstance(res, Exception):
+            print(f"[ocr] _race_structured_bill_read: una copia falló ({res})")
+            if launched == 1:
+                hedge_at = time.time()
+            continue
+        try:
+            data = json.loads(res.output_text)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ocr] respuesta no parseable como JSON: {exc}")
+            if launched == 1:
+                hedge_at = time.time()
+            continue
+        winner = (res, data)
+
+    res, data = winner
     try:
-        _log_usage(db, user_id, _usage_of(result), "parse_bill")
+        _log_usage(db, user_id, _usage_of(res), "parse_bill")
+        if launched == 2:
+            try:
+                other = q.get_nowait()
+                est = _usage_of(other) if not isinstance(other, Exception) else None
+            except queue.Empty:
+                est = _usage_of(res)  # sigue corriendo: estimación con la ganadora
+            if est is not None:
+                _log_usage(db, user_id, est, "parse_bill")
     except Exception as _exc:  # noqa: BLE001
         print(f"[ocr] usage logging failed: {_exc}")
-    if pending and db is not None and user_id is not None:
-        # La copia perdedora igual se cobra: registrarla cuando termine (en
-        # segundo plano, con su propia sesión de DB) para no subreportar el
-        # costo real a la mitad. Best-effort.
-        def _log_loser():
-            try:
-                _, other = q.get(timeout=120.0)
-                if isinstance(other, Exception):
-                    return
-                from ..database import SessionLocal
-                s2 = SessionLocal()
-                try:
-                    _log_usage(s2, user_id, _usage_of(other), "parse_bill")
-                finally:
-                    s2.close()
-            except Exception as _exc:  # noqa: BLE001
-                print(f"[ocr] usage logging (copia perdedora) failed: {_exc}")
-        threading.Thread(target=_log_loser, daemon=True).start()
-    try:
-        return json.loads(result.output_text)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[ocr] respuesta no parseable como JSON: {exc}")
-        return None
+    return data
 
 
 _position_client: "Optional[object]" = None  # httpx.Client, tipado como object para no importar httpx al nivel de módulo
@@ -2099,6 +2113,24 @@ def vision_parse_bill(
         print(f"[ocr] vision_parse_bill failed: {e}")
         import traceback; traceback.print_exc()
         return None
+
+
+def effective_charges(res: "ParseResult") -> list:
+    """Cargos leídos fuera de los ítems que de verdad hay que sumar.
+
+    Chequeo aritmético general: si los ítems YA suman el total impreso, los
+    "cargos" leídos estaban incluidos en los precios (IVA incluido, desglose
+    informativo, propina sugerida no cobrada) — sumarlos cobraría doble. No
+    elige entre lecturas ni dispara reintentos: solo evita el doble cobro."""
+    charges = list(res.charges or [])
+    pt = res.printed_total
+    if not charges or not pt or not res.transactions:
+        return charges
+    items_sum = sum(float(it.line_total or 0) for it in (res.transactions[0].items or []))
+    zero_dec = (res.currency or "CLP") in {"CLP", "JPY", "KRW", "PYG", "VND", "ISK", "UGX", "XAF", "XOF", "COP"}
+    if abs(items_sum - pt) <= max(abs(pt) * 0.005, 1 if zero_dec else 0.01):
+        return []
+    return charges
 
 
 # ---------- Public entry point ----------

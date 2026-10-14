@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_vision_model: str = "gpt-4o"  # /upload (recibos + cartolas, prompt JSON completo) — 2-8s/img. gpt-4o elegido 2026-09-11 tras comparar con gpt-4.1/gpt-5/gpt-5-mini (ver docs/PLAN_split_v3.md).
     openai_vision_model_bill: str = "gpt-5.6-luna"  # /bills/{id}/ocr (split de cuentas, prompt de texto liviano). gpt-4.1-mini (default hasta hoy) fallaba en una boleta real con columna de precios desalineada (boleta "Bar La Providencia") — se probó TODA la escala de modelos de barato a caro (gpt-5-nano, gpt-4.1-nano, gpt-4o-mini, gpt-4.1-mini, gpt-4o, gpt-4.1, gpt-5-mini) y todos fallaron igual; solo la familia gpt-5.6 (luna/sol/terra) la lee bien. luna es la más rápida del grupo (~5-15s) y la única probada contra las 9 boletas del eval completo.
+    # Segundos antes de lanzar la 2ª copia idéntica de la lectura de boleta
+    # ("hedged request", ver ocr._race_structured_bill_read). 0 = ambas de
+    # entrada (2× costo siempre, comportamiento hasta 2026-10-14); valor
+    # grande = una sola llamada. Ajustar con la latencia p75 medida.
+    bill_hedge_after_s: float = 0.0
     openai_vision_model_fallback: str = "gpt-5-mini"  # escalation target (ambos flujos) when the fast model's read doesn't reconcile (missed/misread items on hard receipts — bar tabs with many repeated line items) — slow but careful, only pays the cost on the receipts that actually need it
 
     anthropic_api_key: str = ""

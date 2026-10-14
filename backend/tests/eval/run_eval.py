@@ -241,7 +241,20 @@ def run_pipeline(img_path: Path, pipeline: str = "tx"):
         return None, res, dt
 
     tx = res.transactions[0]
+    bill_extra = {}
+    if pipeline == "bill":
+        # Lo que la app cobraría de verdad: ítems + cargos fuera de ítems
+        # (mismo filtro anti doble cobro que bills.py), y la moneda que
+        # quedaría en la cuenta (default CLP si no se detectó).
+        charges = ocr.effective_charges(res)
+        bill_extra = {
+            "bill_currency": res.currency or "CLP",
+            "printed_total": res.printed_total,
+            "charges": charges,
+            "payable": sum(float(it.line_total or 0) for it in (tx.items or [])) + sum(c["amount"] for c in charges),
+        }
     parsed = {
+        **bill_extra,
         "currency": getattr(tx, "currency", "") or "",
         "merchant": getattr(tx, "merchant", "") or "",
         "amount": float(getattr(tx, "amount", 0) or 0),
@@ -366,6 +379,21 @@ def score_one_bill(parsed: dict, exp: dict) -> dict:
     else:
         put("items_lines_bill", False, True, "lenient / sin line_total en ground-truth")
 
+    # Moneda que queda en la cuenta y monto total que la app cobraría
+    # (ítems + impuestos/cargos aparte) — lo que realmente se reparte.
+    if "bill_currency" in parsed:
+        put("currency", True, parsed["bill_currency"] == cur_exp, f"exp {cur_exp} / got {parsed['bill_currency']}")
+        if not exp.get("items_lenient") and exp.get("amount") is not None:
+            amt_exp = float(exp["amount"])
+            tol = max(abs(amt_exp) * 0.005, _line_tol(0, cur_exp))
+            got = parsed["payable"]
+            payable_ok = abs(got - amt_exp) <= tol
+            put("payable", True, payable_ok, f"exp {amt_exp:g} +-{tol:g} / got {got:g}", weight=2.0)
+            pt = parsed.get("printed_total")
+            banner = bool(pt) and abs(pt - got) > tol
+            put("banner_fp", True, not (payable_ok and banner),
+                f"aviso de descuadre con monto correcto (impreso {pt})" if payable_ok and banner else "-", weight=0.5)
+
     put("needs_review_fn", True, len(fn_details) == 0,
         f"{len(fn_details)} ítem(s) mal Y no avisados: {', '.join(fn_details) or '-'}", weight=2.0)
     put("needs_review_fp", True, len(fp_details) == 0,
@@ -451,7 +479,7 @@ def cmd_run(args):
 
     RESULTS.mkdir(exist_ok=True)
     ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = RESULTS / f"{ts}_{args.pipeline}_{prov_name}_{vmodel.replace('/', '-')}.json"
+    out = RESULTS / f"{ts}_{args.pipeline}_{args.set}_{args.variant}_{prov_name}_{vmodel.replace('/', '-')}.json"
     out.write_text(json.dumps({
         "timestamp": ts, "pipeline": args.pipeline, "provider": prov_name, "vision_model": vmodel,
         "overall": overall, "per_check": {k: round(sum(v) / len(v) * 100, 1)
@@ -490,10 +518,25 @@ def main():
     ap.add_argument("--set", choices=["main", "holdout"], default="main",
                     help="main = receipts/+expected/ (28, mayormente Chile); holdout = receipts_holdout/+expected_holdout/ "
                          "(boletas de internet nunca usadas para ajustar nada — medir generalidad)")
+    ap.add_argument("--variant", choices=["candidate", "baseline"], default="candidate",
+                    help="candidate = prompt/schema actuales; baseline = los de 0e5d21e (baseline_bill_prompt.py) — A/B")
+    ap.add_argument("--hedge-after", type=float, default=1e9,
+                    help="segundos antes de la 2ª copia de la lectura (default: nunca = 1 sola llamada, mitad de costo)")
     ap.add_argument("--only", nargs="+", metavar="NAME", help="correr solo estas imagenes (match por substring)")
     ap.add_argument("--dump", action="store_true", help="imprimir el JSON parseado de cada imagen")
     ap.add_argument("--compare", nargs=2, metavar=("A.json", "B.json"), help="comparar dos result files")
     args = ap.parse_args()
+    if args.pipeline == "bill":
+        import app.config as _cfg
+        from app import ocr as _ocr
+        _cfg.settings.bill_hedge_after_s = args.hedge_after
+        if args.variant == "baseline":
+            import importlib.util
+            _spec = importlib.util.spec_from_file_location("baseline_bill_prompt", HERE / "baseline_bill_prompt.py")
+            _bl = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_bl)
+            _ocr._BILL_PROMPT = _bl._BILL_PROMPT
+            _ocr._BILL_ITEM_SCHEMA = _bl._BILL_ITEM_SCHEMA
     if args.set == "holdout":
         global RECEIPTS, EXPECTED
         RECEIPTS = HERE / "receipts_holdout"

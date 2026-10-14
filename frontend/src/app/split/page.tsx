@@ -82,7 +82,7 @@ const deleteItem = (billId: number, iid: number) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "DELETE" });
 const postShares = (billId: number, itemId: number, shares: { participant_id: number; weight: number; units?: number }[]) =>
   billReq<Bill>(`/bills/${billId}/shares`, { method: "POST", body: JSON.stringify({ item_id: itemId, shares }) });
-const patchBill = (billId: number, patch: { tip_amount?: number; extra_amount?: number; merchant?: string; date?: string }) =>
+const patchBill = (billId: number, patch: { tip_amount?: number; extra_amount?: number; currency?: string; merchant?: string; date?: string }) =>
   billReq<Bill>(`/bills/${billId}`, { method: "PATCH", body: JSON.stringify(patch) });
 const assignEqual = (billId: number) =>
   billReq<Bill>(`/bills/${billId}/assign-equal`, { method: "POST" });
@@ -137,6 +137,10 @@ const setMoneyCurrency = (cur: string | undefined) => {
 // Redondeo a la unidad mínima de la moneda activa (1 peso, 1 centavo).
 const roundMoney = (n: number) => { const f = 10 ** moneyDigits; return Math.round(n * f) / f; };
 const clp = (n: number) => moneyFmt.format(roundMoney(n));
+// Una unidad mínima de la moneda activa (1 peso / 0,01 €): tolerancia de cuadre.
+const moneyEps = () => 1 / 10 ** moneyDigits;
+// Monedas ofrecidas para corregir la detectada en la boleta (+ la actual si no está).
+const COMMON_CURRENCIES = ["CLP", "ARS", "PEN", "COP", "MXN", "BRL", "UYU", "USD", "EUR", "GBP", "CAD", "AUD", "JPY"];
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 // Un color pastel distinto por ítem, SIN repetirse por más ítems que tenga la
 // boleta (la paleta fija de 8 colores hacía que el ítem 1 y el 9 quedaran del
@@ -1151,8 +1155,11 @@ function SplitPageInner({
     // último absorbe el resto (mismo patrón que ya se usa para la propina)
     // en vez de redondear cada uno por separado, que perdía $1-2 CLP del
     // total original cada vez que no dividía exacto.
-    const base = Math.floor(item.line_total / n);
-    const remainder = Math.round(item.line_total - base * n);
+    // En unidades mínimas de la moneda (pesos, centavos) para no perder ni
+    // inventar decimales: 10,50 € / 2 = 5,25 + 5,25 (antes 5 + 6 = 11 €).
+    const f = 10 ** moneyDigits;
+    const base = Math.floor(Math.round(item.line_total * f) / n) / f;
+    const remainder = roundMoney(item.line_total - base * n);
     setBusy(true);
     try {
       // Borra el ítem original y crea N ítems separados — uno por unidad.
@@ -1160,7 +1167,7 @@ function SplitPageInner({
       await deleteItem(bill.id, item.id);
       const results = await Promise.all(
         Array.from({ length: n }, (_, i) =>
-          addItem(bill.id, { name: item.name, qty: 1, unit_price: i === n - 1 ? base + remainder : base })
+          addItem(bill.id, { name: item.name, qty: 1, unit_price: i === n - 1 ? roundMoney(base + remainder) : base })
         )
       );
       const b = results[results.length - 1];
@@ -1382,7 +1389,7 @@ function SplitPageInner({
       if (Math.abs(sum - 100) > 0.5) { showError(`Los % suman ${sum.toFixed(0)}%, deben sumar 100%`); return; }
       shares = entries.map((e) => ({ participant_id: e.pid, weight: e.v / 100 }));
     } else {
-      if (Math.abs(sum - item.line_total) > 1) { showError(`Los montos suman ${clp(sum)}, deben sumar ${clp(item.line_total)}`); return; }
+      if (Math.abs(sum - item.line_total) > moneyEps()) { showError(`Los montos suman ${clp(sum)}, deben sumar ${clp(item.line_total)}`); return; }
       shares = entries.map((e) => ({ participant_id: e.pid, weight: e.v / item.line_total }));
     }
     const wsum = shares.reduce((s, x) => s + x.weight, 0);
@@ -1754,12 +1761,12 @@ function SplitPageInner({
           participant_id: p.id,
           // el último absorbe el redondeo para que sume exacto
           paid_amount: i === arr.length - 1
-            ? Math.round((total - arr.slice(0, -1).reduce((s, q) => s + Math.round(total * raw[q.id]) / 100, 0)) * 100) / 100
-            : Math.round(total * raw[p.id]) / 100,
+            ? roundMoney(total - arr.slice(0, -1).reduce((s, q) => s + roundMoney(total * raw[q.id] / 100), 0))
+            : roundMoney(total * raw[p.id] / 100),
         }));
       } else {
         const sum = Object.values(raw).reduce((s, v) => s + v, 0);
-        if (Math.abs(sum - total) > 1) { showError(`La suma (${clp(Math.round(sum))}) no coincide con el total`); return; }
+        if (Math.abs(sum - total) > moneyEps()) { showError(`La suma (${clp(sum)}) no coincide con el total`); return; }
         payers = bill.participants.filter((p) => raw[p.id] > 0).map((p) => ({ participant_id: p.id, paid_amount: raw[p.id] }));
       }
     }
@@ -1850,6 +1857,7 @@ function SplitPageInner({
     }
     lines.push("");
     lines.push(`Subtotal: ${clp(subtotal)}`);
+    if ((bill.extra_amount || 0) !== 0) lines.push(`Impuestos y cargos: ${clp(bill.extra_amount)}`);
     if (bill.tip_amount > 0) lines.push(`Propina: ${clp(bill.tip_amount)}`);
     lines.push(`*Total: ${clp(bill.total_amount)}*`);
     lines.push("");
@@ -1864,8 +1872,8 @@ function SplitPageInner({
     lines.push("*Balance:*");
     for (const p of bill.participants) {
       const diff = p.owes_amount - p.paid_amount;
-      if (diff > 1) lines.push(`${p.name} debe ${clp(diff)}`);
-      else if (diff < -1) lines.push(`A ${p.name} le deben ${clp(-diff)}`);
+      if (diff >= moneyEps()) lines.push(`${p.name} debe ${clp(diff)}`);
+      else if (diff <= -moneyEps()) lines.push(`A ${p.name} le deben ${clp(-diff)}`);
       else lines.push(`${p.name}: al día`);
     }
     return lines.join("\n");
@@ -1905,7 +1913,7 @@ function SplitPageInner({
 
   const splitSum = Object.values(multiAmounts).reduce((s, v) => s + (parseFloat(v) || 0), 0);
   const splitOk = bill
-    ? (payerSplitUnit === "%" ? Math.abs(splitSum - 100) <= 0.5 : Math.abs(splitSum - bill.total_amount) <= 1)
+    ? (payerSplitUnit === "%" ? Math.abs(splitSum - 100) <= 0.5 : Math.abs(splitSum - bill.total_amount) <= moneyEps())
     : false;
 
   // "Pagamos varios" en % — al escribir el % de una persona, esa queda
@@ -2056,7 +2064,7 @@ function SplitPageInner({
                       <input type="number" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={editDraft.qty || ""} min={1} onChange={(e) => setEditDraft((d) => ({ ...d, qty: parseInt(e.target.value) || 0 }))} placeholder="1" />
                     </div>
                   </div>
-                  <p className="text-xs text-slate-400 text-right">{clp(editDraft.total || 0)} ÷ {Math.max(1, editDraft.qty)} = {clp(Math.round((editDraft.total || 0) / Math.max(1, editDraft.qty)))} c/u</p>
+                  <p className="text-xs text-slate-400 text-right">{clp(editDraft.total || 0)} ÷ {Math.max(1, editDraft.qty)} = {clp((editDraft.total || 0) / Math.max(1, editDraft.qty))} c/u</p>
                   <div className="flex gap-2">
                     <button className="flex-1 bg-indigo-600 text-white rounded-lg py-2 text-sm font-medium" onClick={saveEditItem}>Guardar</button>
                     <button className="px-4 py-2 text-slate-500 text-sm" onClick={() => setEditItemId(null)}>Cancelar</button>
@@ -2118,7 +2126,7 @@ function SplitPageInner({
                       </div>
                       {parseInt(splitChoice.n) >= 2 && (
                         <p className="text-[11px] text-slate-500">
-                          {parseInt(splitChoice.n)} × {clp(Math.round(item.line_total / parseInt(splitChoice.n)))} c/u
+                          {parseInt(splitChoice.n)} × {clp(item.line_total / parseInt(splitChoice.n))} c/u
                         </p>
                       )}
                       <div className="flex gap-2">
@@ -2155,7 +2163,15 @@ function SplitPageInner({
         {/* Total + propina */}
         <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 text-sm">
-            <span className="text-slate-500">{bill.items.length} ítem{bill.items.length !== 1 ? "s" : ""}</span>
+            <span className="text-slate-500">
+              {bill.items.length} ítem{bill.items.length !== 1 ? "s" : ""}
+              {/* Moneda detectada en la boleta — corregible si la lectura se equivocó. */}
+              <select className="ml-2 text-xs text-slate-500 bg-transparent border border-slate-200 rounded px-1 py-0.5"
+                value={bill.currency}
+                onChange={async (e) => { try { setBill(await patchBill(bill.id, { currency: e.target.value })); } catch (err: unknown) { showError(err instanceof Error ? err.message : "Error"); } }}>
+                {Array.from(new Set([bill.currency, ...COMMON_CURRENCIES])).map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </span>
             <span className="font-semibold text-slate-800">Subtotal {clp(subtotal)}</span>
           </div>
           {(bill.extra_amount || 0) !== 0 && (
@@ -2208,7 +2224,7 @@ function SplitPageInner({
                     onKeyDown={(e) => { if (e.key === "Enter") saveTip(); }}
                   />
                   {tipMode === "pct" && tipDraft && (
-                    <span className="text-xs text-slate-400 shrink-0">{clp(Math.round(subtotalForTip * (parseFloat(tipDraft) || 0) / 100))}</span>
+                    <span className="text-xs text-slate-400 shrink-0">{clp(subtotalForTip * (parseFloat(tipDraft) || 0) / 100)}</span>
                   )}
                   <button onClick={saveTip} className="bg-indigo-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg shrink-0">OK</button>
                   <button onClick={() => { setTipMode("hidden"); setTipDraft(""); }} className="text-slate-400 text-xs px-1">✕</button>

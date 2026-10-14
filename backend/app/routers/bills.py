@@ -289,6 +289,7 @@ def patch_bill(
         bill.extra_amount = payload.extra_amount
     if payload.currency is not None:
         bill.currency = payload.currency.upper()
+    if payload.tip_amount is not None or payload.extra_amount is not None:
         _recalc_total(bill)
     if payload.total_amount is not None:
         bill.total_amount = payload.total_amount
@@ -324,7 +325,7 @@ async def bill_ocr(
     Y más confiable para este caso (siempre una sola boleta con ítems). Ver
     comentario en ocr.py junto a `_RECEIPT_PROMPT_BILL`.
     """
-    from ..ocr import vision_parse_bill
+    from ..ocr import vision_parse_bill, effective_charges
     from .. import storage
 
     bill = _get_bill(bill_id, current.id, db)
@@ -361,8 +362,9 @@ async def bill_ocr(
     # Cargos impresos fuera de los ítems: impuesto/servicio se reparten
     # proporcional (extra_amount); una propina ya cobrada en la boleta
     # precarga la propina (el usuario la puede cambiar).
-    bill.extra_amount = round(sum(c["amount"] for c in parsed.charges if c["kind"] != "tip"), 2)
-    tip_charged = round(sum(c["amount"] for c in parsed.charges if c["kind"] == "tip"), 2)
+    charges = effective_charges(parsed)
+    bill.extra_amount = round(sum(c["amount"] for c in charges if c["kind"] != "tip"), 2)
+    tip_charged = round(sum(c["amount"] for c in charges if c["kind"] == "tip"), 2)
     if tip_charged > 0:
         bill.tip_amount = tip_charged
 
