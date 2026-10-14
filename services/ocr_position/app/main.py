@@ -19,6 +19,15 @@ import base64
 import io
 import time
 from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
+
+import os
+
+# Tesseract usa OpenMP: con varias variantes en paralelo, cada proceso
+# levantaba un pool de hilos del tamaño de la máquina y todos competían
+# (spin-wait) por los mismos núcleos — llamadas de ~1.5s tardaban 20-500s
+# (auditoría 2026-10-14; la causa real del "23s vs 1.65s" citado abajo).
+# El paralelismo ya lo da el ThreadPoolExecutor: 1 hilo OpenMP por proceso.
+os.environ.setdefault("OMP_THREAD_LIMIT", "1")
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -101,7 +110,7 @@ def _candidate_scales(long_side: int) -> list[float]:
     return sorted(s for s in scales if s >= 1.0)
 
 
-def _tesseract_lines(img: Image.Image) -> list[dict]:
+def _tesseract_lines(img: Image.Image, timeout: float = 0) -> list[dict]:
     """OCR con Tesseract sobre esta imagen TAL CUAL (sin reescalar) → lista
     de líneas en orden de lectura (arriba a abajo), cada una con su texto y
     su caja REAL (top/bottom/left/right, % del alto/ancho de la imagen que
@@ -113,7 +122,10 @@ def _tesseract_lines(img: Image.Image) -> list[dict]:
     # que el modo automático (default) ya resuelve a esto en la práctica —
     # se deja explícito para no depender de eso si algún día cambia la
     # imagen base o el paquete. No cambia el resultado.
-    data = pytesseract.image_to_data(img, lang="spa", output_type=Output.DICT, config="--oem 1")
+    # timeout>0: pytesseract MATA el proceso al vencer (RuntimeError) — una
+    # variante que ya no puede llegar a tiempo no sigue quemando CPU que
+    # necesita la próxima boleta.
+    data = pytesseract.image_to_data(img, lang="spa", output_type=Output.DICT, config="--oem 1", timeout=timeout)
     lines: dict[tuple[int, int, int], dict] = {}
     for i in range(len(data["text"])):
         txt = data["text"][i].strip()
@@ -283,7 +295,7 @@ def _clahe_variant(img: Image.Image) -> Optional[Image.Image]:
 
 _SKEW_MIN_DEGREES = 3.0  # bajo esto no vale la pena enderezar — ruido normal de detección en fotos ya derechas
 
-_ESCALATION_BUDGET_S = 4.0  # tope real de reloj para la fase de escalada (multi-escala + CLAHE + enderezado) de _match_best_effort — ver su docstring: medido 23.07s vs 1.65s para la MISMA llamada, pura contención de CPU; devolver lo mejor que llegó a tiempo es mejor que esperar indefinido o que el caller tire todo por timeout externo. El camino rápido (1 sola escala, el caso común) nunca pasa por acá, no lo afecta.
+_REQUEST_BUDGET_S = 5.5  # tope de reloj de TODO el pedido (1ª pasada + escalada), desde que llega — el backend corta a los 7s (ocr._populate_positions) y hay que dejar margen de red; antes el tope de 4s solo cubría la escalada y el total pasaba de 7s, con lo que el backend no recibía nada. Lo que no llegue a tiempo se descarta; el camino rápido (1 sola pasada, el caso común) termina mucho antes.
 
 
 def _hough_skew_angle(img: Image.Image, max_angle: float = 25.0) -> float:
@@ -443,13 +455,21 @@ def _unrotate_lines(lines: list[dict], M, orig_size: tuple[int, int], rot_size: 
 
 def _run_scale(
     base_img: Image.Image, items: list[str], scale: float,
-    transform: Optional[tuple] = None,
+    transform: Optional[tuple] = None, deadline: Optional[float] = None,
 ) -> tuple[list[Optional[dict]], int, list[dict]]:
     w, h = base_img.size
     im = base_img if scale == 1.0 else base_img.resize(
         (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
     )
-    lines = _tesseract_lines(im)
+    timeout = 0.0
+    if deadline is not None:
+        timeout = deadline - time.time()
+        if timeout <= 0.2:
+            return [None] * len(items), 0, []
+    try:
+        lines = _tesseract_lines(im, timeout=timeout)
+    except RuntimeError:  # pytesseract: proceso cortado por timeout
+        return [None] * len(items), 0, []
     if transform is not None:
         M, orig_size = transform
         lines = _unrotate_lines(lines, M, orig_size, im.size)
@@ -474,7 +494,7 @@ def _best_of(
     return matches, count, lines
 
 
-def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optional[dict]], list[dict]]:
+def _match_best_effort(items: list[str], img: Image.Image, deadline: Optional[float] = None) -> tuple[list[Optional[dict]], list[dict]]:
     """Corre el OCR + emparejamiento a varias escalas (ver
     `_candidate_scales`) con la variante de contraste ESTÁNDAR (ya probada)
     y, solo si con eso no alcanza a emparejar todos los ítems, escala a
@@ -503,7 +523,7 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
     reales, que en un contenedor puede haber muchos menos que
     `max_workers`). "Paralelo" no es gratis cuando no hay núcleo libre para
     cada hilo — en el peor caso, en vez de la más LENTA, se acerca a la
-    SUMA con overhead de más. Por eso `_ESCALATION_BUDGET_S` abajo: un
+    SUMA con overhead de más. Por eso `_REQUEST_BUDGET_S`: un
     presupuesto de tiempo real para esta fase — se toma lo mejor que haya
     TERMINADO dentro del presupuesto, no lo que falte. Devolver el mejor
     resultado parcial a tiempo es estrictamente mejor que devolver el
@@ -527,8 +547,10 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
     w, h = std_img.size
     scales = _candidate_scales(max(w, h))
 
-    matches, count, lines = _run_scale(std_img, items, scales[0])
-    if count == len(items) or len(scales) == 1:
+    if deadline is None:
+        deadline = time.time() + _REQUEST_BUDGET_S
+    matches, count, lines = _run_scale(std_img, items, scales[0], deadline=deadline)
+    if count == len(items) or len(scales) == 1 or time.time() >= deadline - 0.3:
         return matches, lines
 
     enhanced = _clahe_variant(img)
@@ -545,20 +567,27 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
     # Una sola lista ordenada — el orden importa para el desempate de
     # `_best_of` (>estricto, primero gana), así que se conserva el mismo
     # orden de siempre: escalas estándar, luego CLAHE, luego enderezado.
-    ex = ThreadPoolExecutor(max_workers=8)
+    # Tantos procesos Tesseract como núcleos reales (con OMP_THREAD_LIMIT=1
+    # cada uno usa uno) — más solo agrega contención.
+    ex = ThreadPoolExecutor(max_workers=max(1, os.cpu_count() or 2))
     try:
-        futures = [ex.submit(_run_scale, std_img, items, s) for s in scales[1:]]
+        jobs = [(std_img, s, None) for s in scales[1:]]
         if enhanced is not None:
-            futures += [ex.submit(_run_scale, enhanced, items, s) for s in scales]
+            jobs += [(enhanced, s, None) for s in scales]
         if deskewed_std is not None:
-            futures.append(ex.submit(_run_scale, deskewed_std, items, 1.0, deskew_transform))
+            jobs.append((deskewed_std, 1.0, deskew_transform))
         if deskewed_enhanced is not None:
-            futures.append(ex.submit(_run_scale, deskewed_enhanced, items, 1.0, deskew_transform))
+            jobs.append((deskewed_enhanced, 1.0, deskew_transform))
+        # Se ENVÍAN primero las enderezadas (si la foto vino torcida es la
+        # variante que gana, y es la que más tarde quedaba sin terminar), pero
+        # se EVALÚAN en el orden de siempre para no cambiar el desempate.
+        send_order = sorted(range(len(jobs)), key=lambda i: jobs[i][2] is None)
+        fut_by_idx = {i: ex.submit(_run_scale, jobs[i][0], items, jobs[i][1], jobs[i][2], deadline) for i in send_order}
+        futures = [fut_by_idx[i] for i in range(len(jobs))]
 
-        deadline = time.time() + _ESCALATION_BUDGET_S
         done, pending = _futures_wait(futures, timeout=max(0.0, deadline - time.time()))
         if pending:
-            print(f"[ocr_position] presupuesto de {_ESCALATION_BUDGET_S}s agotado — "
+            print(f"[ocr_position] presupuesto de {_REQUEST_BUDGET_S}s agotado — "
                   f"{len(pending)}/{len(futures)} variante(s) sin terminar, usando lo mejor que haya llegado a tiempo")
         for f in futures:
             if f not in done:
@@ -571,7 +600,9 @@ def _match_best_effort(items: list[str], img: Image.Image) -> tuple[list[Optiona
         # default, bloquearía igual hasta que terminen todos — justo lo que
         # el presupuesto de arriba existe para evitar). Siguen corriendo
         # solos hasta terminar por su cuenta; no bloquean esta respuesta.
-        ex.shutdown(wait=False)
+        # cancel_futures: las variantes que ni empezaron no arrancan después
+        # de responder; las que corren se cortan solas por su timeout.
+        ex.shutdown(wait=False, cancel_futures=True)
     return matches, lines
 
 
@@ -581,8 +612,9 @@ def position(req: PositionRequest) -> PositionResponse:
     lines: list[dict] = []
     try:
         img_bytes = base64.b64decode(req.image_b64)
+        deadline = time.time() + _REQUEST_BUDGET_S  # desde que llega el pedido, no desde la escalada
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        matches, lines = _match_best_effort(req.items, img)
+        matches, lines = _match_best_effort(req.items, img, deadline)
     except Exception:
         matches = [None] * len(req.items)
     items_out: list[ItemPosition] = []
