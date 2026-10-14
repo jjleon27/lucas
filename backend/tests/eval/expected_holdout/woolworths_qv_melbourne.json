@@ -1,0 +1,88 @@
+{
+  "image": "woolworths_qv_melbourne.jpg",
+  "source": "Tax invoice de Woolworths (Queen Victoria, Melbourne, Australia). Foto en mano dentro de un tranvía, publicidad del reverso transparentada, ticket cortado bajo el SUBTOTAL.",
+  "source_url": "https://www.flickr.com/photos/10559879@N00/10942514256/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, Alpha)",
+  "currency": "AUD",
+  "merchant_contains": "woolworths",
+  "date": null,
+  "amount": 31.79,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 10,
+  "item_count_max": 11,
+  "items_subtotal": 31.79,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Macro F/Range Chicken Roast EA",
+      "quantity": 1,
+      "line_total": 10.98
+    },
+    {
+      "name": "Sweet Corn 500G P/P",
+      "quantity": 1,
+      "line_total": 3.98
+    },
+    {
+      "name": "Tomato Roma Mini 250G P/P",
+      "quantity": 1,
+      "line_total": 2.48
+    },
+    {
+      "name": "Cucumber Continental",
+      "quantity": 1,
+      "line_total": 1.5
+    },
+    {
+      "name": "Lettuce Mesclun Mix",
+      "quantity": 1,
+      "line_total": 3.19
+    },
+    {
+      "name": "Maille Mustard Mild Wholegrain 210G",
+      "quantity": 1,
+      "line_total": 3.66
+    },
+    {
+      "name": "Chobani Greek Yog Bluebry Non Fat 170G",
+      "quantity": 1,
+      "line_total": 2.04
+    },
+    {
+      "name": "Chobani Greek Yog Mango Low Fat 170G",
+      "quantity": 1,
+      "line_total": 2.04
+    },
+    {
+      "name": "Chobani Greek Yog Plain Non Fat 170G",
+      "quantity": 1,
+      "line_total": 2.04
+    },
+    {
+      "name": "Chobani Greek Yog Raspbery Non Fat170G",
+      "quantity": 1,
+      "line_total": 2.04
+    },
+    {
+      "name": "Chobani Offer",
+      "quantity": 1,
+      "line_total": -2.16
+    }
+  ],
+  "notes": "DESCUENTO NEGATIVO 'Chobani Offer -2.16' (debe restar, no sumarse ni perderse). Línea PESADA: 'LETTUCE MESCLUN MIX' + '0.188 kg NET @ $16.98/kg 3.19' (el 16.98 es precio/kg, no el total). Tinta del reverso (anuncios KFC/Taco Bill) transparentada detrás del texto. El ticket está cortado: solo se ve '10 SUBTOTAL $31.79'; no se ve TOTAL ni fecha → amount = 31.79. item_count 10 productos (+1 si el descuento se lista como línea).",
+  "tags": [
+    "aud",
+    "decimals",
+    "weighted",
+    "discount",
+    "negative_line",
+    "show_through",
+    "cut_off",
+    "handheld",
+    "curved",
+    "supermarket"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/3701/10942514256_1bd831877e_k.jpg",
+  "image_sha256": "79b17374c828d56769ad6065cb40b63e1210cc30680daca7300ca32074a56066"
+}

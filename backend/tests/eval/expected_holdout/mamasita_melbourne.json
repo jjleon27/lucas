@@ -1,0 +1,75 @@
+{
+  "image": "mamasita_melbourne.jpg",
+  "source": "Bill for Table B8 de Mamasita (restaurante mexicano, Melbourne). Foto con flash dentro de bandeja metálica, tinte rosado.",
+  "source_url": "https://www.flickr.com/photos/10559879@N00/5441383772/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, avlxyz)",
+  "currency": "AUD",
+  "merchant_contains": "mamasita",
+  "date": "2011-02-11",
+  "amount": 77.3,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 9,
+  "items_subtotal": 77.3,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Jarrito Tamarind",
+      "quantity": 1,
+      "line_total": 5.0
+    },
+    {
+      "name": "Jarrito Toronja",
+      "quantity": 1,
+      "line_total": 5.0
+    },
+    {
+      "name": "Elotes Callejeros",
+      "quantity": 2,
+      "line_total": 8.8
+    },
+    {
+      "name": "Carnitas - Tostados",
+      "quantity": 1,
+      "line_total": 14.0
+    },
+    {
+      "name": "1 Pescado - Tacos",
+      "quantity": 1,
+      "line_total": 6.0
+    },
+    {
+      "name": "1 Frijoles - Tacos",
+      "quantity": 1,
+      "line_total": 5.0
+    },
+    {
+      "name": "Mole - Familia",
+      "quantity": 1,
+      "line_total": 24.0
+    },
+    {
+      "name": "Arroz - Sides",
+      "quantity": 1,
+      "line_total": 3.5
+    },
+    {
+      "name": "Helado de Maiz",
+      "quantity": 1,
+      "line_total": 6.0
+    }
+  ],
+  "notes": "Columnas ITEM / QTY / $ donde $ es el TOTAL de línea: 'Elotes Callejeros 2 8.80' = 2 × 4,40 (no 2 × 8,80). Nombres en español pero moneda AUD (no MXN). '*1 Pescado - Tacos' y '*1 Frijoles - Tacos': el '1' es parte del nombre (1 taco), el asterisco marca ítem con GST. 'TOTAL INCLUDES GST $77.30' — GST incluido sin monto → neto/iva null. Fecha 11/02/11 D/M/Y = 11-feb-2011. Foto con flash y dominante de color.",
+  "tags": [
+    "aud",
+    "decimals",
+    "qty_column",
+    "qty_gt_1",
+    "numbers_in_names",
+    "spanish_names_foreign_currency",
+    "flash_glare",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/5293/5441383772_3c9dc0afad_k.jpg",
+  "image_sha256": "7a88e423e5da67a5312a2d65ae3f4f9ce49cb9493196632d178d10cf52b760a0"
+}

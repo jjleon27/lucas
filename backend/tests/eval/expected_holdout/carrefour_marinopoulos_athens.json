@@ -1,0 +1,44 @@
+{
+  "image": "carrefour_marinopoulos_athens.jpg",
+  "source": "Apódeixi (ticket) de supermercado Carrefour Marinopoulos (Atenas, Grecia). Tinta violeta, texto en alfabeto griego.",
+  "source_url": "https://www.flickr.com/photos/38021965@N00/1859987293/",
+  "license": "CC BY-NC-ND 2.0 (Flickr)",
+  "currency": "EUR",
+  "merchant_contains": "ΜΑΡΙΝΟΠΟΥΛΟΣ",
+  "date": "2007-08-28",
+  "amount": 1.03,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 2,
+  "items_subtotal": 1.03,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "ΠΛΑ ΜΠΟΥ 1.5ΛΤ Φ ΝΕΡΟ ΒΙΚΟΣ",
+      "quantity": 1,
+      "line_total": 0.29
+    },
+    {
+      "name": "ΑΝΑΨΥΚΤ COCA COLA ZERO 500ML Φ",
+      "quantity": 1,
+      "line_total": 0.74
+    }
+  ],
+  "merchant_contains_alt": [
+    "marinopoulos",
+    "carrefour",
+    "καρφουρ"
+  ],
+  "notes": "ALFABETO GRIEGO. Moneda EUR no impresa (se infiere Grecia 2007). Cada ítem precedido por una línea con el código de barras EAN (5201946010015, 5449000131836) que NO son precios. Coma decimal. ΣΥΝΟΛΟ (total) 1,03; ΜΕΤΡΗΤΑ (efectivo) 1,05 y ΡΕΣΤΑ (vuelto) 0,02 no son el total. merchant impreso 'ΚΑΡΦΟΥΡ ΜΑΡΙΝΟΠΟΥΛΟΣ Α.Ε.'; transliteración 'Carrefour Marinopoulos' también correcta (ver merchant_contains_alt; el scorer actual solo usa merchant_contains). Fecha ΗΜΕΡ:28/08/2007.",
+  "tags": [
+    "eur",
+    "comma_decimal",
+    "non_latin_script",
+    "greek",
+    "barcode_lines",
+    "cash_change_lines",
+    "supermarket"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/2157/1859987293_0d16c1490c_k.jpg",
+  "image_sha256": "82095ab347463bf3c0b88a6c6625d36b92c1da21962901727d98423ea6721e5f"
+}

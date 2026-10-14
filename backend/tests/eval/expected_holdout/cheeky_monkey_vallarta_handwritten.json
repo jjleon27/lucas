@@ -1,0 +1,52 @@
+{
+  "image": "cheeky_monkey_vallarta_handwritten.jpg",
+  "source": "Comanda ESCRITA A MANO en bar Cheeky Monkey (Puerto Vallarta, México, 2010), sobre formulario impreso 'FECHA / MESA / MESERO' en un portacuentas sostenido con las manos.",
+  "source_url": "https://www.flickr.com/photos/42798669@N00/4452921051/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, Vicious Bits)",
+  "currency": "MXN",
+  "merchant_contains": null,
+  "date": null,
+  "amount": 193,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 4,
+  "items_subtotal": 193,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Banana Float",
+      "quantity": 1,
+      "line_total": 24
+    },
+    {
+      "name": "Mago",
+      "quantity": 8,
+      "line_total": 96
+    },
+    {
+      "name": "Cream Side",
+      "quantity": 1,
+      "line_total": 24
+    },
+    {
+      "name": "Salsa",
+      "quantity": 1,
+      "line_total": 49
+    }
+  ],
+  "notes": "MANUSCRITO. Línea 'Mago' (probablemente 'Mango'; escrito 'Mago') con cantidad en PALOTES ('IIII III' tachados = 8) y cálculo '12 x 8 = 96' al margen (unit 12, qty 8, line_total 96). El '1' tras cada nombre es la cantidad, no parte del precio. Total '$193' manuscrito: 24+96+24+49=193. Moneda: '$' en México → MXN (precios consistentes con pesos; Flickr tags: puerto vallarta, mexico). Mesa 'Mono'; FECHA en blanco. El nombre del bar solo aparece en el tarjetón 'Cheeky Monkey' debajo del papel (no en la comanda) → merchant_contains null. Foto con flash, reflejos y manos.",
+  "tags": [
+    "mxn",
+    "handwritten",
+    "tally_marks",
+    "qty_gt_1",
+    "inline_math",
+    "no_date",
+    "no_merchant",
+    "handheld",
+    "flash_glare",
+    "bar"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/4044/4452921051_35fa945737_k.jpg",
+  "image_sha256": "118e274c05a43607dbc08209a9ea9f85b60a711a3bf604feed4fd46243b606ab"
+}

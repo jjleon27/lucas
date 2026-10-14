@@ -1,0 +1,21 @@
+{
+  "image": "harpoon_harrys_keywest.jpg",
+  "source": "Check de restaurante Harpoon Harry's (Key West, Florida, USA). Foto en ángulo sobre la mesa, pinza de ropa tapando parte del nombre.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Harpoon_Harry%E2%80%99s,_Key_West,_Florida_-_%E2%80%9CIn_God_We_Trust%E2%80%9D_receipt.jpg",
+  "license": "CC BY 2.0 (Wikimedia Commons)",
+  "currency": "USD",
+  "merchant_contains": "harpoon",
+  "date": "2021-06-12",
+  "amount": 13.92,
+  "total_neto": 12.95,
+  "iva_amount": 0.97,
+  "item_count": 2,
+  "items_subtotal": 12.95,
+  "items_lenient": false,
+  "items": [
+    {"name": "Tap Water", "quantity": 1, "line_total": 0.0},
+    {"name": "Chef's Salad", "quantity": 1, "line_total": 12.95}
+  ],
+  "notes": "TRAMPA DE ALINEACIÓN: la columna de precios está corrida UNA línea hacia abajo respecto a los nombres. Leído fila a fila parece 'TAP WATER ... (nada)', 'CHEF'S SALAD 0.00', 'Subtotal 12.95', 'Tax 12.95', 'Total 0.97'. Lo correcto: Tap Water 0.00, Chef's Salad 12.95, Subtotal 12.95, Tax 0.97, Total 13.92 (12.95+0.97=13.92 verifica). Ítem a $0 (agua). Nombre del local parcialmente tapado ('Harpoon H…y's'). total_neto/iva_amount = Subtotal/Tax (sales tax de EE.UU. se suma encima, no está incluido).",
+  "tags": ["usd", "decimals", "tax", "misaligned_columns", "angled", "occluded", "item_zero", "restaurant"]
+}

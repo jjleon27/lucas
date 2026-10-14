@@ -1,0 +1,20 @@
+{
+  "image": "basin_petra.jpg",
+  "source": "Cuenta del restaurante Basin, Crowne Plaza Resort Petra (Jordania). Impresión matricial MUY desvaída.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Basin_Restaurant_Petra_check_2021.jpg",
+  "license": "CC BY-SA 4.0 (Wikimedia Commons)",
+  "currency": "JOD",
+  "merchant_contains": "petra",
+  "date": "2021-11-10",
+  "amount": 34.088,
+  "total_neto": 30.06,
+  "iva_amount": 2.525,
+  "item_count": 1,
+  "items_subtotal": 30.06,
+  "items_lenient": false,
+  "items": [
+    {"name": "Walk in Lunch", "quantity": 2, "line_total": 30.06}
+  ],
+  "notes": "Papel/tinta muy desvaída (puntos de matriz casi borrados). 3 decimales JOD: '15.030' = 15,03. Cantidad en línea previa '2 @ 15.030' y luego 'Walk in Lunch 30.060' (qty=2, unit 15.03, line_total 30.06). Food 30.060 + Sales Tax 8% 2.525 + Service Charge 1.503 = 34.088 (Payment / Cash). Moneda no impresa (se infiere Jordania).",
+  "tags": ["jod", "three_decimals", "dot_thousands_ambiguity", "faded", "tax", "service_charge", "qty_line_above", "dot_matrix", "restaurant"]
+}

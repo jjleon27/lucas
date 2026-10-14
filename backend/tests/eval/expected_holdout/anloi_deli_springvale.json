@@ -1,0 +1,45 @@
+{
+  "image": "anloi_deli_springvale.jpg",
+  "source": "Tax invoice de An Loi Deli & Marinade Food (Springvale, Melbourne, Australia). Ticket sostenido en mano, sombra del pulgar sobre los totales.",
+  "source_url": "https://www.flickr.com/photos/10559879@N00/50918495522/",
+  "license": "CC BY-NC 2.0 (Flickr, Alpha)",
+  "currency": "AUD",
+  "merchant_contains": "an loi",
+  "date": "2021-02-07",
+  "amount": 19.65,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 3,
+  "items_subtotal": 19.66,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Rice Noodles",
+      "quantity": 1,
+      "line_total": 5.09
+    },
+    {
+      "name": "Shredded Pork/BI",
+      "quantity": 1,
+      "line_total": 4.61
+    },
+    {
+      "name": "Seafood Balls",
+      "quantity": 1,
+      "line_total": 9.96
+    }
+  ],
+  "notes": "Ticket de balanza: TODOS los ítems pesados, en columnas WEIGHT kg / $/kg / PRICE $ con el nombre en la línea de arriba y los números en la línea de abajo, además desfasados verticalmente (peso más abajo que $/kg y precio). 1.340kg×3.80=5.09; 0.144×31.99=4.61; 0.586×16.99=9.96. No usar el $/kg (31.99) como precio. SUB TOTAL 19.66, ROUNDING -0.01, TOTAL 19.65 (amount); items suman 19.66. '3 PCS' = cantidad de líneas. Fecha DD.MM.YY (07.02.21 SUN = domingo 7-feb-2021).",
+  "tags": [
+    "aud",
+    "decimals",
+    "weighted",
+    "separate_price_column",
+    "rounding_line",
+    "handheld",
+    "shadow",
+    "supermarket"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/65535/50918495522_a1308e48f6_k.jpg",
+  "image_sha256": "c5afe9c4605de637039719b63627462e5831ac59ccb0117e168a517b643e72a8"
+}

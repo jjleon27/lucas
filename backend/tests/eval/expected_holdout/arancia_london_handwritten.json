@@ -1,0 +1,54 @@
+{
+  "image": "arancia_london_handwritten.jpg",
+  "source": "Cuenta ESCRITA A MANO en libreta rayada, restaurante Arancia (Bermondsey, Londres SE16). Escaneo.",
+  "source_url": "https://www.flickr.com/photos/67669458@N00/3382098089/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, Kake)",
+  "currency": "GBP",
+  "merchant_contains": "arancia",
+  "date": null,
+  "amount": 60.05,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 5,
+  "items_subtotal": 60.05,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Sardines",
+      "quantity": 1,
+      "line_total": 6.5
+    },
+    {
+      "name": "Soup",
+      "quantity": 1,
+      "line_total": 3.85
+    },
+    {
+      "name": "Aubergine",
+      "quantity": 1,
+      "line_total": 12.0
+    },
+    {
+      "name": "Rabbit",
+      "quantity": 1,
+      "line_total": 13.75
+    },
+    {
+      "name": "Chianti",
+      "quantity": 1,
+      "line_total": 23.95
+    }
+  ],
+  "notes": "MANUSCRITO cursivo, precios con '£' manuscrito pegado al número ('£6.50', '£12.00'). Total '£60.05' = 6,50+3,85+12,00+13,75+23,95. Al pie 'Thanks — Service Not Included' → la propina NO está incluida (no inventar línea de servicio). 'Table 1' y el número de página '88' no son montos. Fecha manuscrita ambigua '19/03/08' (el último dígito puede ser 08 o 09; Flickr la titula 'March 2009') → date null. Logo 'arancia' es un sello.",
+  "tags": [
+    "gbp",
+    "handwritten",
+    "cursive",
+    "service_not_included",
+    "ambiguous_date",
+    "scan",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/3466/3382098089_9e56866afe_k.jpg",
+  "image_sha256": "fa8ee7f32c9b0084badb0e32640f9d1a2f29630ceb0fb40a8a6883dc29f1482f"
+}

@@ -1,0 +1,41 @@
+{
+  "image": "barnabier_barcelona.jpg",
+  "source": "Ticket de La Cerveseria del Port 'Barnabier' (Port Olímpic, Barcelona). Foto en ángulo, papel curvado, logo grande.",
+  "source_url": "https://www.flickr.com/photos/90578102@N00/50160081607/",
+  "license": "CC BY-NC-ND 2.0 (Flickr, This.Usually.Works)",
+  "currency": "EUR",
+  "merchant_contains": "barnabier",
+  "date": "2017-06-04",
+  "amount": 41.6,
+  "total_neto": 37.82,
+  "iva_amount": 3.78,
+  "item_count": 2,
+  "items_subtotal": 41.6,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Paella Pollo y G",
+      "quantity": 2,
+      "line_total": 35.7
+    },
+    {
+      "name": "Coca Doble Ligth",
+      "quantity": 2,
+      "line_total": 5.9
+    }
+  ],
+  "notes": "'2 COMENSAL DARWIN' = 2 comensales (camarero Darwin), NO es un ítem. qty 2 en ambos ítems (2×17,85=35,70; 2×2,95=5,90). EUR con PUNTO decimal (no coma). 10% IVA INCLUIDO: B.IMP 37,82 + TASA 3,78 = 41,60 (la fila 'I.V.A. 10% ... TOTAL 41.60' repite el total). Fecha en catalán 'DIUMENGE 04-06-2017' (DD-MM-YYYY) parcialmente cortada abajo.",
+  "tags": [
+    "eur",
+    "decimals",
+    "qty_gt_1",
+    "covers_line",
+    "vat_included",
+    "angled",
+    "curved",
+    "catalan",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/65535/50160081607_afbffd3ddb_k.jpg",
+  "image_sha256": "523a25461ab8ccff481e2451c895e58bb52f55f1f2c087c68715b61b54dc2a1c"
+}

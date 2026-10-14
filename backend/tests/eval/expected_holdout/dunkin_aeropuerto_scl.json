@@ -1,0 +1,36 @@
+{
+  "image": "dunkin_aeropuerto_scl.jpg",
+  "source": "Boleta de ventas y servicios de Dunkin' Donuts en el Aeropuerto Arturo Merino Benítez (Santiago, Chile). Papel continuo matricial, foto con poca profundidad de campo (cabecera y pie desenfocados), mancha de café.",
+  "source_url": "https://www.flickr.com/photos/91201697@N00/3148802935/",
+  "license": "CC BY-NC-ND 2.0 (Flickr, matt.hintsa)",
+  "currency": "CLP",
+  "merchant_contains": "dunkin",
+  "date": "2008-12-07",
+  "amount": 2290,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 1,
+  "items_subtotal": 2290,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Combo J/Q + Huevón + C",
+      "quantity": 1,
+      "line_total": 2290
+    }
+  ],
+  "notes": "CLP con COMA como separador de miles ('2,290' = $2.290, NO 2,29). Fecha '7/12/2008' en formato chileno D/M/Y = 7-dic-2008 (no 12-jul). 'N° 5427943' y el '5427943 9:04AMM' son número de boleta y hora, no montos. La fila de TOTAL está desenfocada/tapada por la mancha: amount = 2.290 (único ítem). Logo de Dunkin' impreso en gris de fondo detrás del texto. 'HUEVÓN' con la Ó/N sobreimpresas a mano (broma del cajero).",
+  "tags": [
+    "clp",
+    "comma_thousands",
+    "chile",
+    "dot_matrix",
+    "blur",
+    "stain",
+    "dmy_date",
+    "boleta_latam",
+    "cafe"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/3231/3148802935_e445930bd8_b.jpg",
+  "image_sha256": "0f425989e9e32b4e99ebc612533d8f89d8190324d7c9147a5779f9e6536da69f"
+}

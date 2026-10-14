@@ -1,0 +1,21 @@
+{
+  "image": "pizzeria_mania_smaku_wroclaw.jpg",
+  "source": "Paragon fiskalny de Pizzeria Mania Smaku (Wrocław, Polonia). Escaneo limpio, baja resolución (597x845).",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Pizzeria_Miana_smaku_check_2021.jpg",
+  "license": "CC BY-SA 4.0 (Wikimedia Commons)",
+  "currency": "PLN",
+  "merchant_contains": "mania smaku",
+  "date": "2021-11-07",
+  "amount": 30.0,
+  "total_neto": 28.57,
+  "iva_amount": 1.43,
+  "item_count": 2,
+  "items_subtotal": 30.0,
+  "items_lenient": false,
+  "items": [
+    {"name": "Margherita (Duzy ok.32cm)", "quantity": 1, "line_total": 26.0},
+    {"name": "Sos Pomidorowy", "quantity": 1, "line_total": 4.0}
+  ],
+  "notes": "Coma decimal ('26,00'). Ítem en dos líneas: nombre arriba, '1 * 26,00 = 26,00 C' abajo. 'Sp.op.C 30,00' es la venta por grupo de IVA (NO es un ítem), 'PTU C= 5,00% 1,43' y 'Razem PTU 1,43' son el IVA incluido (no se suma). SUMA PLN 30,00. total_neto=28,57 es CALCULADO (30,00-1,43; no está impreso). Fecha 'dn.21r11.07' = 2021-11-07 (formato polaco). Título del archivo en Commons dice 'Miana' por error; el ticket dice 'MANIA SMAKU'.",
+  "tags": ["pln", "comma_decimal", "multiline_item", "vat_included", "vat_group_line", "scan", "low_res", "restaurant"]
+}

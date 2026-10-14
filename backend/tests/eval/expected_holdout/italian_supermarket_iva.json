@@ -1,0 +1,26 @@
+{
+  "image": "italian_supermarket_iva.jpg",
+  "source": "Documento commerciale de supermercado italiano (recorte del cuerpo del ticket, sin cabecera de tienda). Muestra columna IVA por línea.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Italian_supermarket_receipt_showing_value-added_tax_(IVA)_categories.jpg",
+  "license": "CC BY-SA 4.0 (Wikimedia Commons)",
+  "currency": "EUR",
+  "merchant_contains": null,
+  "date": null,
+  "amount": 11.85,
+  "total_neto": 10.73,
+  "iva_amount": 1.12,
+  "item_count": 6,
+  "item_count_max": 6,
+  "items_subtotal": 11.85,
+  "items_lenient": false,
+  "items": [
+    {"name": "Acqua S.Angelo Natur", "quantity": 6, "line_total": 1.32},
+    {"name": "Milk Pro Porridge AV", "quantity": 1, "line_total": 1.65},
+    {"name": "Milk Pro Porridge AV", "quantity": 1, "line_total": 1.65},
+    {"name": "Lindt Tavoletta Latt", "quantity": 1, "line_total": 2.85},
+    {"name": "Crik Crok Stile Fatt", "quantity": 1, "line_total": 2.85},
+    {"name": "Mele Granny Smith [C", "quantity": 1, "line_total": 1.53}
+  ],
+  "notes": "Columna IVA con PORCENTAJES ('22,00%', '10,00%', '4,00%') entre el nombre y el precio — NO son montos. Líneas MODIFICADORAS ARRIBA del ítem: '6 X 0,22' pertenece a ACQUA (qty 6, line_total 1,32) y '0,5484kg x E 2,79/kg' pertenece a MELE GRANNY SMITH (PESADO, line_total 1,53). TOTALE COMPLESSIVO 11,85 'di cui IVA 1,12' (IVA incluida; total_neto 10,73 es CALCULADO). Pagamento elettronico / Importo pagato repiten el total. Sin nombre de tienda ni fecha visibles (recorte). Dos líneas idénticas Milk Pro Porridge (fusionar a qty 2 → 5 ítems también razonable).",
+  "tags": ["eur", "comma_decimal", "weighted", "modifier_line_above", "vat_percent_column", "vat_included", "no_merchant", "no_date", "italian", "supermarket"]
+}

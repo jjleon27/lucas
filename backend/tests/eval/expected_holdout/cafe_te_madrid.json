@@ -1,0 +1,23 @@
+{
+  "image": "cafe_te_madrid.jpg",
+  "source": "Ticket de Café & Té (calle Mayor 4, Madrid). Foto en ángulo, resolución baja (768x1024), sello 'PAGADO'.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:-sablazosmadrid_%27Caf%C3%A9_%26_Te%27--_%22en_fin_de_semana_cobramos_el_desayuno_por_separado%22_-haztefan_pero_no_vayas_(6225790880).jpg",
+  "license": "CC BY-SA 2.0 (Wikimedia Commons / Flickr)",
+  "currency": "EUR",
+  "merchant_contains": "cafe",
+  "date": "2011-10-09",
+  "amount": 8.4,
+  "total_neto": 7.78,
+  "iva_amount": 0.62,
+  "item_count": 3,
+  "item_count_max": 3,
+  "items_subtotal": 8.4,
+  "items_lenient": false,
+  "items": [
+    {"name": "Cafe con Leche", "quantity": 1, "line_total": 1.9},
+    {"name": "Cafe con Leche", "quantity": 1, "line_total": 1.9},
+    {"name": "Barrita Tomate", "quantity": 2, "line_total": 4.6}
+  ],
+  "notes": "TRAMPA DE ALINEACIÓN: los precios (PRECIO/IMPORTE) están impresos media línea MÁS ARRIBA que las descripciones, y la foto está rotada ~10°. Correcto: 1 Cafe con leche 1,90; 1 Cafe con leche 1,90; 2 Barrita tomate 2,30 c/u = 4,60. Dos líneas idénticas de café (si el modelo las fusiona en qty=2 también es válido: 2 ítems). IVA incluido: BASE 7,78 + IVA 8% 0,62 = 8,40. Coma decimal. NO convertir a CLP.",
+  "tags": ["eur", "comma_decimal", "misaligned_columns", "angled", "duplicate_lines", "vat_included", "low_res", "cafe"]
+}

@@ -1,0 +1,24 @@
+{
+  "image": "hotel_vishwanand_mumbai.jpg",
+  "source": "Tax invoice de restaurante Hotel Vishwanand (Navi Mumbai, India). Foto en mano, papel curvado, fondo con platos.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Bill_Vishwanand_2026-01-28.jpg",
+  "license": "CC0 (Wikimedia Commons)",
+  "currency": "INR",
+  "merchant_contains": "vishwanand",
+  "date": "2026-01-28",
+  "amount": 525,
+  "total_neto": 500.0,
+  "iva_amount": 25.0,
+  "item_count": 5,
+  "items_subtotal": 500.0,
+  "items_lenient": false,
+  "items": [
+    {"name": "Veg Biryani", "quantity": 1, "line_total": 152.38},
+    {"name": "Triple Sez Fried Rice", "quantity": 1, "line_total": 200.0},
+    {"name": "Misal Pav", "quantity": 1, "line_total": 76.19},
+    {"name": "Cold Drinks 200ML", "quantity": 1, "line_total": 23.81},
+    {"name": "Cold Drinks 500ML", "quantity": 1, "line_total": 47.62}
+  ],
+  "notes": "Moneda INR (rupias) — no confundir con CLP ni USD. Columnas Qty / Rate / Amount separadas; precios mezclan enteros ('200') con 2 decimales. Impuesto partido en dos líneas: SGST 2.5% 12.50 + CGST 2.5% 12.50 = 25.00 (iva_amount = suma de ambos). Sub Total 500.00 → Food Total 525.00 → Total 525. Línea suelta '5/5/2' (qty totals/ítems) NO es fecha. Fecha DD/MM/YY (28/01/26).",
+  "tags": ["inr", "decimals", "tax", "multiple_tax_lines", "qty_rate_amount_columns", "handheld", "curved", "restaurant"]
+}

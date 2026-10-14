@@ -1,0 +1,50 @@
+{
+  "image": "shanghai_dynasty_melbourne.jpg",
+  "source": "Bill de yum cha, Shanghai Dynasty (Bourke St, Melbourne). Ticket térmico apoyado SOBRE la tarjeta de conteo de dim sum (con números impresos y marcas manuscritas).",
+  "source_url": "https://www.flickr.com/photos/10559879@N00/5406846777/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, avlxyz)",
+  "currency": "AUD",
+  "merchant_contains": "dynasty",
+  "date": "2011-02-01",
+  "amount": 80.0,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 4,
+  "items_subtotal": 80.0,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "SML Dimsim (小點)",
+      "quantity": 7,
+      "line_total": 31.5
+    },
+    {
+      "name": "MED Dimsim (中點)",
+      "quantity": 6,
+      "line_total": 33.0
+    },
+    {
+      "name": "EX LRG Dimsim (特點)",
+      "quantity": 1,
+      "line_total": 7.5
+    },
+    {
+      "name": "Chinese tea",
+      "quantity": 4,
+      "line_total": 8.0
+    }
+  ],
+  "notes": "TRAMPA DE ALINEACIÓN: cada cálculo 'N X $unit = $total' está impreso en la línea SIGUIENTE a su nombre (al lado del nombre del ítem siguiente): SML DIMSIM → 7×4,50=31,50; MED DIMSIM → 6×5,50=33,00; EX LRG DIMSIM → 1×7,50=7,50; Chinese tea → 4×2,00=8,00 (la escala de precios 4,50<5,50<7,50 confirma; la descripción de Flickr del autor coincide). Nombres bilingües chino/inglés. DISTRACTORES: debajo asoma la tarjeta de conteo con números impresos (8, 16, 24, 32, 1-12) y '1433', y manuscrito 'X4', 'A22' — no son ítems. 'People: 4' útil para dividir. Fecha 01/02/2011 (D/M/Y Australia = 1-feb-2011).",
+  "tags": [
+    "aud",
+    "decimals",
+    "misaligned_columns",
+    "qty_x_unit_equals",
+    "qty_gt_1",
+    "chinese",
+    "distractor_background",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/5098/5406846777_fa2d7f1591_k.jpg",
+  "image_sha256": "9bef4a7bf215a6363e7e1d05bdad5a82f5602f3e1642d6d4fde4e76d77093ad0"
+}

@@ -1,0 +1,23 @@
+{
+  "image": "kanazawa_okaikeihyo_handwritten.jpg",
+  "source": "'お会計票' (comanda de talonario Kokuyo) ESCRITA A MANO en restaurante de ramen tradicional del centro de Kanazawa (Japón). Papel arrugado, luz lateral.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Invoice_of_a_traditional_restaurant_in_downtown_Kanazawa.jpg",
+  "license": "CC BY-SA 4.0 (Wikimedia Commons)",
+  "currency": "JPY",
+  "merchant_contains": null,
+  "date": null,
+  "amount": 2970,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 4,
+  "items_subtotal": 2970,
+  "items_lenient": false,
+  "items": [
+    {"name": "カツ丼 (katsudon)", "quantity": 1, "line_total": 820},
+    {"name": "天ラーメン (ten ramen)", "quantity": 1, "line_total": 710},
+    {"name": "ラーメン (ramen)", "quantity": 1, "line_total": 610},
+    {"name": "みそ (miso ramen)", "quantity": 1, "line_total": 830}
+  ],
+  "notes": "JPY SIN decimales (como CLP pero NO es CLP; ¥ no impreso, se infiere por el idioma). Manuscrito en japonés (katakana/hiragana/kanji). En la columna 数量 (cantidad) hay un TRAZO '—' que conecta nombre y precio: NO es un signo menos ni un '1' (qty=1 implícita). 合計 (total) 2970 = 820+710+610+830. 'テーブル 3' (mesa 3) no es monto. Casillas de fecha (月/日) e impuesto (内消費税額等 %) vacías. Sin nombre de local.",
+  "tags": ["jpy", "no_decimals", "handwritten", "non_latin_script", "japanese", "dash_connector", "preprinted_form", "crumpled", "no_date", "no_merchant", "restaurant"]
+}

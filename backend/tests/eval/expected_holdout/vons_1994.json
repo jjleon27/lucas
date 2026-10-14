@@ -1,0 +1,72 @@
+{
+  "image": "vons_1994.jpg",
+  "source": "Ticket de supermercado Vons (California, USA, 1994). Papel envejecido con impresión del reverso transparentada, rasgado.",
+  "source_url": "https://www.flickr.com/photos/38021965@N00/2059485189/",
+  "license": "CC BY-NC-ND 2.0 (Flickr)",
+  "currency": "USD",
+  "merchant_contains": "vons",
+  "date": "1994-07-20",
+  "amount": 23.06,
+  "total_neto": 22.37,
+  "iva_amount": 0.69,
+  "item_count": 8,
+  "items_subtotal": 22.37,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Grape SDLSGR",
+      "quantity": 1,
+      "line_total": 7.19
+    },
+    {
+      "name": "Starter Set",
+      "quantity": 1,
+      "line_total": 1.99
+    },
+    {
+      "name": "Barq's Rt Br",
+      "quantity": 1,
+      "line_total": 1.49
+    },
+    {
+      "name": "CA Red Value",
+      "quantity": 1,
+      "line_total": 0.15
+    },
+    {
+      "name": "Dry Van Ygrt",
+      "quantity": 1,
+      "line_total": 2.98
+    },
+    {
+      "name": "Cup Ndl Chkn",
+      "quantity": 1,
+      "line_total": 1.79
+    },
+    {
+      "name": "Twix Bar",
+      "quantity": 1,
+      "line_total": 0.5
+    },
+    {
+      "name": "Duracell AAA",
+      "quantity": 1,
+      "line_total": 6.28
+    }
+  ],
+  "notes": "Líneas MODIFICADORAS ARRIBA del ítem: '4.52 LB @ 1/1.59' pertenece a GRAPE SDLSGR 7.19 (PESADO: 4,52×1,59=7,19) y '1 @ 2/1.00' pertenece a TWIX BAR .50 — no son ítems. Precios sin cero inicial ('.15', '.50') y con sufijos '*', 'TX'. TOTAL 23.06 aparece ANTES de SUBTOTAL 22.37 y TAX PAID .69. CASH TEND 100.00 y 76.94 CHANGE no son el total. 'CA RED VALUE .15' = depósito CRV, cuenta como línea. Fecha MM/DD/YY (07/20/94).",
+  "tags": [
+    "usd",
+    "decimals",
+    "weighted",
+    "modifier_line_above",
+    "tax",
+    "total_before_subtotal",
+    "cash_change_lines",
+    "show_through",
+    "old",
+    "supermarket"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/2184/2059485189_0dbb3ec635_k.jpg",
+  "image_sha256": "0bcb366bbd40ad78b0bc8fa98bd72d37c146142850fe7348a054a8e5b2d33ae3"
+}

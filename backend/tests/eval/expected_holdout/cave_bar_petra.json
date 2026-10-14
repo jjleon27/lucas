@@ -1,0 +1,24 @@
+{
+  "image": "cave_bar_petra.jpg",
+  "source": "Cuenta del Cave Bar, Petra Guest House Hotel (Petra, Jordania). Impresión matricial azul-violeta escaneada.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Cave_Bar_Petra_receipt_2021.jpg",
+  "license": "CC BY-SA 4.0 (Wikimedia Commons)",
+  "currency": "JOD",
+  "merchant_contains": "petra",
+  "date": "2021-11-10",
+  "amount": 65.205,
+  "total_neto": 57.5,
+  "iva_amount": 4.83,
+  "item_count": 5,
+  "items_subtotal": 57.5,
+  "items_lenient": false,
+  "items": [
+    {"name": "Petra 5% 50cl", "quantity": 1, "line_total": 7.5},
+    {"name": "Tea/Herbal", "quantity": 1, "line_total": 2.0},
+    {"name": "JR Classic Sauvg", "quantity": 1, "line_total": 33.0},
+    {"name": "Jordanian Mezzeh", "quantity": 1, "line_total": 8.0},
+    {"name": "Jagermeister", "quantity": 1, "line_total": 7.0}
+  ],
+  "notes": "MONEDA CON 3 DECIMALES (dinar jordano): '7.500' = 7,5 JOD, NO 7500. Un parser que trate el punto como separador de miles (estilo CLP) multiplica todo x1000. Subtotal 57.500 + Sales Tax 8% 4.830 + Service Charge 2.875 = 65.205 ('Your Bill Is'). Service charge 5% (2.875) es cargo de servicio, no impuesto. Línea 'Tips: ____' vacía (no hay propina). Moneda no impresa: se infiere por país (Jordania) — aceptable si el modelo no la detecta.",
+  "tags": ["jod", "three_decimals", "dot_thousands_ambiguity", "tax", "service_charge", "tip_line_blank", "dot_matrix", "scan", "restaurant"]
+}

@@ -1,0 +1,71 @@
+{
+  "image": "goteron_ayna_handwritten.jpg",
+  "source": "Nota preimpresa de Restaurante 'El Goterón' (Ayna, Albacete, España) con lista de platos impresa y precios ESCRITOS A MANO. Foto en ángulo fuerte, resolución baja (685x1023).",
+  "source_url": "https://www.flickr.com/photos/48877356@N00/3639919870/",
+  "license": "CC BY-NC 2.0 (Flickr, Héctor Rodríguez — foto 'Bien y barato', 2009)",
+  "currency": "EUR",
+  "merchant_contains": "goteron",
+  "date": null,
+  "amount": 83.8,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 8,
+  "item_count_max": 9,
+  "items_subtotal": 83.8,
+  "items_lenient": true,
+  "items": [
+    {
+      "name": "Menu de la casa (?)",
+      "quantity": 1,
+      "line_total": 21.8
+    },
+    {
+      "name": "? (fila Gazpacho/Chuletas)",
+      "quantity": 1,
+      "line_total": 12.0
+    },
+    {
+      "name": "?",
+      "quantity": 1,
+      "line_total": 8.0
+    },
+    {
+      "name": "?",
+      "quantity": 1,
+      "line_total": 11.0
+    },
+    {
+      "name": "? (Chusmarro / Chorizos…)",
+      "quantity": 1,
+      "line_total": 12.0
+    },
+    {
+      "name": "? (Patatas/Huevos/Bebida)",
+      "quantity": 1,
+      "line_total": 2.0
+    },
+    {
+      "name": "? (Pan/Fruta)",
+      "quantity": 1,
+      "line_total": 12.0
+    },
+    {
+      "name": "Tarta de Queso o Chocolate / Pan Catal. (?)",
+      "quantity": 1,
+      "line_total": 5.0
+    }
+  ],
+  "notes": "items_lenient: los 8 importes manuscritos son LEGIBLES Y SEGUROS (21,80 + 12,00 + 8,00 + 11,00 + 12,00 + 2,00 + 12,00 + 5,00 = 83,80 = 'Total Euros' manuscrito), pero por la perspectiva y la letra flotando entre renglones NO se puede asignar con certeza cada importe a qué plato impreso corresponde → nombres marcados '?' (no puntuar por nombre). Trampas: la lista impresa tiene ~20 platos SIN precio que NO son ítems; añadidos manuscritos 'CHUSMARRO' y 'PAN CATAL.' sin precio propio claro. Sin cantidades (columna Cdad vacía). Moneda impresa 'Euros' con decimales en punto manuscrito. Sin fecha.",
+  "tags": [
+    "eur",
+    "handwritten",
+    "preprinted_form",
+    "printed_items_without_price",
+    "angled",
+    "low_res",
+    "no_date",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/3300/3639919870_c0f9c38d3b_b.jpg",
+  "image_sha256": "203ead270441e8cb9e14b2d16bb5e655cf0cecd79566973daca711faae75f4b5"
+}

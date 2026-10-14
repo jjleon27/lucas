@@ -1,0 +1,29 @@
+{
+  "image": "hofer_wien.jpg",
+  "source": "Kassenbon de supermercado HOFER (Aldi Austria), Wien-Favoriten. Papel MUY arrugado, foto con poca luz y sombra en la parte superior.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Grocery_Store_Receipt_in_Vienna.jpg",
+  "license": "Public domain (Wikimedia Commons)",
+  "currency": "EUR",
+  "merchant_contains": "hofer",
+  "date": "2024-03-25",
+  "amount": 22.41,
+  "total_neto": 20.37,
+  "iva_amount": 2.04,
+  "item_count": 8,
+  "item_count_max": 9,
+  "items_subtotal": 22.41,
+  "items_lenient": false,
+  "items": [
+    {"name": "Ziegenkäse-Spez.", "quantity": 1, "line_total": 2.19},
+    {"name": "Schnitzelsortiment", "quantity": 1, "line_total": 5.99},
+    {"name": "TK Iglo Ofenbackf.", "quantity": 1, "line_total": 5.99},
+    {"name": "Ger. Forellenfil.", "quantity": 1, "line_total": 1.99},
+    {"name": "Roulade 400g", "quantity": 1, "line_total": 2.19},
+    {"name": "BIO Ovaltomaten", "quantity": 1, "line_total": 1.99},
+    {"name": "Naturjoghurt 3,6%", "quantity": 1, "line_total": 0.39},
+    {"name": "Esl Vollmilch 1l", "quantity": 1, "line_total": 1.29},
+    {"name": "Naturjoghurt 3,6%", "quantity": 1, "line_total": 0.39}
+  ],
+  "notes": "Cada línea empieza con un CÓDIGO DE ARTÍCULO de 6 dígitos (174368, 329018…) que NO es cantidad ni precio. Nombres con números engañosos ('3,6%', '400g', '1l'). Sufijo 'A' = grupo de IVA. 'Naturjoghurt 3,6%' aparece 2 veces NO consecutivas (8 si se fusiona, 9 líneas = '9 Artikel'). MwSt incluida: Netto 20,37 + MwSt 2,04 = 22,41 (HOFER PREIS / Visa / Total-EFT). Línea de pago con fecha embebida '25.03.2024/18:00:44'. Bloque publicitario arriba en alemán, arrugado.",
+  "tags": ["eur", "comma_decimal", "article_codes", "numbers_in_names", "vat_included", "crumpled", "low_light", "duplicate_lines", "german", "supermarket"]
+}

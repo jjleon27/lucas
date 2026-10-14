@@ -1,0 +1,22 @@
+{
+  "image": "oro_di_napoli_santarosa.jpg",
+  "source": "Check de restaurante L'Oro Di Napoli (Santa Rosa, California, USA). Papel térmico arrugado, foto cenital.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:L%27Oro_di_Napoli_-_January_2025_-_Sarah_Stierch_22.jpg",
+  "license": "CC0 (Wikimedia Commons, Sarah Stierch)",
+  "currency": "USD",
+  "merchant_contains": "oro di napoli",
+  "date": "2025-01-04",
+  "amount": 52.45,
+  "total_neto": 48.0,
+  "iva_amount": 4.45,
+  "item_count": 3,
+  "items_subtotal": 48.0,
+  "items_lenient": false,
+  "items": [
+    {"name": "Polpette della Nonna", "quantity": 1, "line_total": 14.0},
+    {"name": "Margherita", "quantity": 1, "line_total": 22.0},
+    {"name": "Tiramisu", "quantity": 1, "line_total": 12.0}
+  ],
+  "notes": "Caso base USD con sales tax sumado encima: Subtotal 48.00 + Tax 4.45 = Total 52.45. Fecha en formato US M/D/YY (1/4/25 = 4 de enero de 2025, NO 1 de abril). Sin propina impresa. total_neto/iva_amount = Subtotal/Tax.",
+  "tags": ["usd", "decimals", "tax", "us_date_format", "crumpled", "restaurant"]
+}

@@ -1,0 +1,24 @@
+{
+  "image": "willis_seafood_healdsburg.jpg",
+  "source": "Check pagado (Reprint) de Willi's Seafood & Raw Bar (Healdsburg, California, USA). Manchas de agua sobre el papel.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Willi%27s_Seafood_%26_Raw_Bar_-_March_2025_-_Sarah_Stierch_07.jpg",
+  "license": "CC0 (Wikimedia Commons, Sarah Stierch)",
+  "currency": "USD",
+  "merchant_contains": "willi",
+  "date": "2025-03-30",
+  "amount": 107.15,
+  "total_neto": 95.0,
+  "iva_amount": 9.3,
+  "item_count": 5,
+  "items_subtotal": 95.0,
+  "items_lenient": false,
+  "items": [
+    {"name": "Fries", "quantity": 1, "line_total": 10.0},
+    {"name": "Sauteed Spinach", "quantity": 1, "line_total": 10.0},
+    {"name": "Crab Cake", "quantity": 1, "line_total": 24.0},
+    {"name": "Lobster Roll", "quantity": 1, "line_total": 38.0},
+    {"name": "Cheese & Chorizo Fondue", "quantity": 1, "line_total": 13.0}
+  ],
+  "notes": "Subtotal 95.00 + '3% BOH SRV CHG' 2.85 (cargo de servicio 'back of house', NO es ítem ni propina) + Tax 9.30 = TOTAL 107.15. Línea de pago 'Visa -107.15' NEGATIVA (no es descuento) y 'CHANGE DUE 0.00'. Manchas de agua sobre 'Tax'. total_neto=Subtotal (sin el cargo de servicio), iva_amount=Tax.",
+  "tags": ["usd", "decimals", "tax", "service_charge", "negative_payment_line", "stained", "restaurant"]
+}

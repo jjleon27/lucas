@@ -1,0 +1,19 @@
+{
+  "image": "la_dieta_de_nos_vinadelmar.jpg",
+  "source": "Boleta de ventas y servicios de talonario, restaurant y salón de té 'La Dieta De Nos' (Viña del Mar, Chile). Total manuscrito, detalle anulado con una raya.",
+  "source_url": "https://www.flickr.com/photos/82439748@N00/399246546/",
+  "license": "CC BY-SA 2.0 (Flickr, blmurch)",
+  "currency": "CLP",
+  "merchant_contains": "dieta de nos",
+  "date": "2007-02-21",
+  "amount": 7300,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 0,
+  "item_count_max": 1,
+  "items_subtotal": null,
+  "items_lenient": false,
+  "items": [],
+  "notes": "CASO BORDE: boleta chilena de talonario SIN DETALLE — la tabla de ítems está anulada con una raya diagonal y solo se escribe 'TOTAL $7300' a mano (el 7 con barra). El pipeline NO debe inventar ítems; aceptable 0 ítems o 1 línea genérica por el total (item_count_max=1). Fecha manuscrita en palabras: '21 de febrero de 2007'. Folio verde '08433' y RUTs ('13.993.188-2', '77.803.940-0') NO son montos. Merchant impreso en cursiva decorativa.",
+  "tags": ["clp", "handwritten", "chile", "boleta_latam", "preprinted_form", "no_items", "struck_through", "date_in_words", "low_light", "restaurant"]
+}

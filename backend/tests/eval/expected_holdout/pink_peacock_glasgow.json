@@ -1,0 +1,21 @@
+{
+  "image": "pink_peacock_glasgow.jpg",
+  "source": "Nota escrita a mano en café 'pink peacock' (Glasgow, Escocia). Formulario impreso rosa con texto en yídish (alfabeto hebreo) + inglés.",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Pink_Peacock_receipt.jpg",
+  "license": "CC BY-SA 4.0 (Wikimedia Commons)",
+  "currency": "GBP",
+  "merchant_contains": "pink peacock",
+  "date": null,
+  "amount": 5,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 2,
+  "items_subtotal": 5,
+  "items_lenient": false,
+  "items": [
+    {"name": "Poppyseed bagel w/ cream cheese", "quantity": 1, "line_total": 3.0},
+    {"name": "Coffee", "quantity": 1, "line_total": 2.0}
+  ],
+  "notes": "MANUSCRITO. El nombre del primer ítem continúa en la línea siguiente ('cream / cheese') justo al lado de 'coffee' y de '£2' — no debe generar un tercer ítem 'cheese' ni asignar £2 al bagel. Precios con símbolo £ manuscrito sin decimales. 'suggested total £5' (café paga-lo-que-puedas): amount = 5. Texto no latino (yídish) en el encabezado. Sin fecha.",
+  "tags": ["gbp", "handwritten", "multiline_name", "non_latin_script", "no_date", "cafe"]
+}

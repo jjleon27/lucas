@@ -1,0 +1,106 @@
+{
+  "image": "lamanna_essendon.jpg",
+  "source": "Tax invoice de supermercado LaManna Direct (Essendon Fields, Melbourne, Australia). Ticket largo con muchas líneas pesadas, foto en mano con reflejos.",
+  "source_url": "https://www.flickr.com/photos/10559879@N00/5562728494/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, avlxyz)",
+  "currency": "AUD",
+  "merchant_contains": "lamanna",
+  "date": "2011-03-26",
+  "amount": 44.2,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 13,
+  "item_count_max": 15,
+  "items_subtotal": 44.2,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Sanit So Good Lite Fresh 1L",
+      "quantity": 1,
+      "line_total": 1.99
+    },
+    {
+      "name": "Sanit So Good Lite Fresh 1L",
+      "quantity": 1,
+      "line_total": 1.99
+    },
+    {
+      "name": "Pauls Milk Zymil 1L",
+      "quantity": 1,
+      "line_total": 2.65
+    },
+    {
+      "name": "Sanit So Good Lite Fresh 1L",
+      "quantity": 1,
+      "line_total": 1.99
+    },
+    {
+      "name": "Escuris Sardines in Olive Oil",
+      "quantity": 1,
+      "line_total": 1.89
+    },
+    {
+      "name": "Escuris Sardines in Olive Oil",
+      "quantity": 1,
+      "line_total": 1.89
+    },
+    {
+      "name": "Otway Premium Pork Mince",
+      "quantity": 1,
+      "line_total": 6.87
+    },
+    {
+      "name": "Camp V8 Jce Vegetable Glass 1L",
+      "quantity": 1,
+      "line_total": 3.5
+    },
+    {
+      "name": "Pears William",
+      "quantity": 1,
+      "line_total": 2.15
+    },
+    {
+      "name": "Apples Royal Gala KG",
+      "quantity": 1,
+      "line_total": 6.68
+    },
+    {
+      "name": "Potatoes Purple Congo",
+      "quantity": 1,
+      "line_total": 2.42
+    },
+    {
+      "name": "Potatoes Desiree Loose",
+      "quantity": 1,
+      "line_total": 1.14
+    },
+    {
+      "name": "Grapes Green Seedless",
+      "quantity": 1,
+      "line_total": 2.27
+    },
+    {
+      "name": "Carrots Purple Dutch",
+      "quantity": 1,
+      "line_total": 2.49
+    },
+    {
+      "name": "Peaches Clingstone",
+      "quantity": 1,
+      "line_total": 4.28
+    }
+  ],
+  "notes": "6 líneas PESADAS en dos renglones: nombre arriba y '1.080 kg @ $1.99/kg  $2.15' abajo (el $/kg NO es el precio; qty=1 con line_total). 'CARROTS PURPLE DUTCH 2.49' NO es pesada aunque está entre pesadas. Duplicados no consecutivos (Sanit x3, Sardines x2): 15 líneas = 'Item count: 15'; 13 si se fusionan los idénticos. Columna '1L' de tamaño entre nombre y precio. TOTAL 44.20 = Master 44.20; 'Points in this transaction: 44' no es monto.",
+  "tags": [
+    "aud",
+    "decimals",
+    "weighted",
+    "long_receipt",
+    "duplicate_lines",
+    "size_column",
+    "handheld",
+    "glare",
+    "supermarket"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/5138/5562728494_db8ff69757_o.jpg"
+}

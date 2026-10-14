@@ -1,0 +1,85 @@
+{
+  "image": "sushi_des_artistes_marbella.jpg",
+  "source": "Ticket de restaurante Sushi des Artistes (Marbella, España). Foto con poca luz y ruido, papel curvado.",
+  "source_url": "https://www.flickr.com/photos/26528022@N07/7577843636/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, Pablo Monteagudo)",
+  "currency": "EUR",
+  "merchant_contains": "sushi des artistes",
+  "date": "2012-06-28",
+  "amount": 156.49,
+  "total_neto": 144.9,
+  "iva_amount": 11.59,
+  "item_count": 11,
+  "items_subtotal": 144.9,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Lanjaron",
+      "quantity": 1,
+      "line_total": 3.5
+    },
+    {
+      "name": "Niku Gyoza",
+      "quantity": 1,
+      "line_total": 13.5
+    },
+    {
+      "name": "Hudson River Crispy Noodles",
+      "quantity": 1,
+      "line_total": 19.5
+    },
+    {
+      "name": "California Roll",
+      "quantity": 1,
+      "line_total": 15.5
+    },
+    {
+      "name": "Manhattan Roll",
+      "quantity": 1,
+      "line_total": 19.5
+    },
+    {
+      "name": "Butter Fish Nigiri",
+      "quantity": 2,
+      "line_total": 8.6
+    },
+    {
+      "name": "Salmon Lime",
+      "quantity": 2,
+      "line_total": 6.4
+    },
+    {
+      "name": "Suzuki Truffle",
+      "quantity": 2,
+      "line_total": 8.4
+    },
+    {
+      "name": "Toro",
+      "quantity": 2,
+      "line_total": 13.0
+    },
+    {
+      "name": "Maccha Ice",
+      "quantity": 1,
+      "line_total": 7.5
+    },
+    {
+      "name": "Sentido Ribera del Duero",
+      "quantity": 1,
+      "line_total": 29.5
+    }
+  ],
+  "notes": "TRAMPA IVA: los ítems suman 144,90 = NETO, y el TOTAL 156,49 = NETO + IVA 11,59 (8% sumado ENCIMA, inusual en España donde suele ir incluido). amount = 156,49; items_subtotal = 144,90 → el pipeline debe agregar el IVA como cargo aparte, no escalar los precios. Líneas '2 x NOMBRE  8,60': el importe es el TOTAL de la línea (unit 4,30), no el unitario. Foto oscura y con ruido. Fecha '28.06.12'.",
+  "tags": [
+    "eur",
+    "comma_decimal",
+    "tax_added_on_top",
+    "qty_gt_1",
+    "qty_prefix_x",
+    "low_light",
+    "noise",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/8145/7577843636_ca017edf82_k.jpg",
+  "image_sha256": "f00428efe5b4fd41c50d8d0ff1b85d1233591946e9cb778e6e2a942447461eda"
+}

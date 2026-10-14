@@ -1,0 +1,71 @@
+{
+  "image": "vineria_san_telmo_sevilla.jpg",
+  "source": "Ticket de tapas Vineria San Telmo (Sevilla, España). Papel curvado dentro de portacuentas, gran reflejo de luz cruzando la columna de precios.",
+  "source_url": "https://www.flickr.com/photos/27938551@N00/13525448153/",
+  "license": "CC BY-NC 2.0 (Flickr, hollywoodsmile310)",
+  "currency": "EUR",
+  "merchant_contains": "vineria san telmo",
+  "date": "2013-10-24",
+  "amount": 28.4,
+  "total_neto": 25.82,
+  "iva_amount": 2.58,
+  "item_count": 8,
+  "items_subtotal": 28.4,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Agua Mineral",
+      "quantity": 2,
+      "line_total": 3.2
+    },
+    {
+      "name": "Cerveza",
+      "quantity": 2,
+      "line_total": 3.0
+    },
+    {
+      "name": "Tapa Jamon Iberico",
+      "quantity": 1,
+      "line_total": 4.3
+    },
+    {
+      "name": "Cous Cous de Brocoli",
+      "quantity": 1,
+      "line_total": 2.9
+    },
+    {
+      "name": "Quiche de Salmon",
+      "quantity": 1,
+      "line_total": 3.2
+    },
+    {
+      "name": "Tapa Carpaccio Gambone",
+      "quantity": 1,
+      "line_total": 3.9
+    },
+    {
+      "name": "Tapa Espaguettis con V",
+      "quantity": 1,
+      "line_total": 3.7
+    },
+    {
+      "name": "Tapa Bife de Ternera",
+      "quantity": 1,
+      "line_total": 4.2
+    }
+  ],
+  "notes": "Columnas Cant / Descripción / Precio / Total con coma decimal; qty 2 en agua (2×1,60=3,20) y cerveza (2×1,50=3,00) — no tomar el precio unitario como total. IVA 10% INCLUIDO: Base 25,82 + I.V.A. 2,58 = Total 28,40 (no sumar el IVA otra vez). Reflejo blanco fuerte sobre la mitad derecha. Fecha en texto: 'jueves, 24 octubre 2013'. Nombre truncado 'ESPAGUETTIS CON V'.",
+  "tags": [
+    "eur",
+    "comma_decimal",
+    "qty_gt_1",
+    "qty_unit_total_columns",
+    "vat_included",
+    "glare",
+    "curved",
+    "date_in_words",
+    "restaurant"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/7145/13525448153_080dfa0cb2_k.jpg",
+  "image_sha256": "db59783ddb4ba802501eb0eae75a618ab6fdc53fabfc36a15eb4cbe6fb9035c1"
+}

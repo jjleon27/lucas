@@ -1,0 +1,38 @@
+{
+  "image": "amazing_veggies_boxhill.jpg",
+  "source": "Tax invoice de verdulería Amazing Veggies (Box Hill Central, Melbourne, Australia). Papel térmico MUY arrugado, impresión desvaída.",
+  "source_url": "https://www.flickr.com/photos/10559879@N00/10289210003/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, Alpha)",
+  "currency": "AUD",
+  "merchant_contains": "amazing",
+  "date": "2013-10-15",
+  "amount": 7.8,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 2,
+  "items_subtotal": 7.8,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Australian Garlic",
+      "quantity": 1,
+      "line_total": 3.6
+    },
+    {
+      "name": "Ginger / Imported",
+      "quantity": 1,
+      "line_total": 4.2
+    }
+  ],
+  "notes": "Arrugado + desvaído (varios caracteres partidos). Ítems PESADOS en dos líneas: nombre arriba, '0.24KG x $14.99 = $3.60' abajo (0,24×14,99=3,5976→3,60; 0,28×14,99=4,1972→4,20). quantity=1 con line_total (no usar 0.24 como qty ni 14.99 como precio). SUB TOTAL 7.80 = TOTAL 7.80 = CASH 7.80. 'GST INCLUDED IN TOTAL $0.00' → sin impuesto (neto/iva null). Fecha DD/MM/YYYY.",
+  "tags": [
+    "aud",
+    "decimals",
+    "weighted",
+    "crumpled",
+    "faded",
+    "supermarket"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/5543/10289210003_d74739b325_k.jpg",
+  "image_sha256": "71418f67ebf5b3be8d7adf2f5d0549de195a5edd81b05bc171531addc20c62c5"
+}

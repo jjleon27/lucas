@@ -1,0 +1,56 @@
+{
+  "image": "bracafe_barcelona.jpg",
+  "source": "Factura de cafetería Bracafé (c/ Casp 2, Barcelona). Foto muy en ángulo; texto en catalán.",
+  "source_url": "https://www.flickr.com/photos/44124404848@N01/8754949348/",
+  "license": "CC BY-NC-SA 2.0 (Flickr, hugovk)",
+  "currency": "EUR",
+  "merchant_contains": "bracaf",
+  "date": "2013-05-19",
+  "amount": 16.35,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 5,
+  "items_subtotal": 16.35,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "Suc de Taronja",
+      "quantity": 2,
+      "line_total": 6.1
+    },
+    {
+      "name": "Cafe amb Llet",
+      "quantity": 2,
+      "line_total": 3.4
+    },
+    {
+      "name": "Entrepa",
+      "quantity": 1,
+      "line_total": 3.1
+    },
+    {
+      "name": "Croissa Xocolata",
+      "quantity": 1,
+      "line_total": 1.85
+    },
+    {
+      "name": "Xuxo",
+      "quantity": 1,
+      "line_total": 1.9
+    }
+  ],
+  "notes": "TRAMPA DE ALINEACIÓN + PERSPECTIVA: la columna de importes está impresa ~2 líneas MÁS ARRIBA que los nombres y la foto está inclinada ~15°. Correcto: 2x Suc de taronja 3,05 → 6,10; 2x Cafe amb llet 1,70 → 3,40; Entrepà 3,10; Croissant xocolata 1,85; Xuxo 1,90 (=16,35). Columna central = precio unitario solo en líneas 2x. 'TOTAL' impreso DEBAJO del importe 16.35. '10% IVA INCLÒS' (sin desglose → neto/iva null). Nombres en catalán. 'Num.FACTURA 3965', 'DEP.1' no son montos. merchant_contains 'bracaf' (BRACAFÈ con tilde grave).",
+  "tags": [
+    "eur",
+    "decimals",
+    "misaligned_columns",
+    "angled",
+    "qty_gt_1",
+    "qty_unit_total_columns",
+    "catalan",
+    "vat_included",
+    "cafe"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/2843/8754949348_af4e0151da_k.jpg",
+  "image_sha256": "e65d4b9a7f6f99a5f7f7c031fa78c0f1e0489490b3808f79d85551487fa7b192"
+}

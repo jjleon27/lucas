@@ -1,0 +1,95 @@
+{
+  "image": "huit_a_huit_paris.jpg",
+  "source": "Ticket de caisse de supermercado de barrio 8 à Huit (rue de Babylone, París). Foto cercana, papel arrugado.",
+  "source_url": "https://www.flickr.com/photos/36768125@N00/5850785173/",
+  "license": "CC BY-NC 2.0 (Flickr)",
+  "currency": "EUR",
+  "merchant_contains": "8 a",
+  "date": null,
+  "amount": 31.65,
+  "total_neto": null,
+  "iva_amount": null,
+  "item_count": 13,
+  "items_subtotal": 31.65,
+  "items_lenient": false,
+  "items": [
+    {
+      "name": "250G CAF.ML VEL",
+      "quantity": 1,
+      "line_total": 3.24
+    },
+    {
+      "name": "CEL 500G COUDE",
+      "quantity": 1,
+      "line_total": 1.3
+    },
+    {
+      "name": "SCE PROVENCAL.P",
+      "quantity": 1,
+      "line_total": 2.39
+    },
+    {
+      "name": "CRISTALINE 1.5L",
+      "quantity": 2,
+      "line_total": 0.5
+    },
+    {
+      "name": "75VDP CT ENSER.",
+      "quantity": 1,
+      "line_total": 2.45
+    },
+    {
+      "name": "75 BDX BLC SEC",
+      "quantity": 1,
+      "line_total": 3.98
+    },
+    {
+      "name": "75 BDX SUP RG O",
+      "quantity": 1,
+      "line_total": 6.25
+    },
+    {
+      "name": "1 SAC POIGN.8A8",
+      "quantity": 1,
+      "line_total": 0.15
+    },
+    {
+      "name": "PAIN LS",
+      "quantity": 1,
+      "line_total": 1.2
+    },
+    {
+      "name": "CHIFFO.CHORIZO",
+      "quantity": 1,
+      "line_total": 2.81
+    },
+    {
+      "name": "LAIT FRAIS CAND",
+      "quantity": 1,
+      "line_total": 1.59
+    },
+    {
+      "name": "OSSAU IRATY RDF",
+      "quantity": 1,
+      "line_total": 3.82
+    },
+    {
+      "name": "PALET CHEVRE CH",
+      "quantity": 1,
+      "line_total": 1.97
+    }
+  ],
+  "notes": "Columnas NB / DESCRIPTION / PU€ / MNT€. TRAMPA PESADO: 'OSSAU IRATY RDF' PU 15.65 (precio por kg) pero MNT 3.82 — line_total es 3.82, no 15.65. 'CRISTALINE 1.5L' qty 2 × 0.25 = 0.50. '1 1 SAC POIGN.8A8': el primer 1 es NB y el segundo es parte del nombre. 'TOTAL( 14)' = 14 unidades, no 14 líneas (13 líneas). Ticket recortado: no se ve fecha ni pie; merchant '8 A 8 PARIS BABYLONE' / logo '8 à Huit' (merchant_contains '8 a').",
+  "tags": [
+    "eur",
+    "decimals",
+    "weighted",
+    "qty_unit_total_columns",
+    "qty_gt_1",
+    "crumpled",
+    "no_date",
+    "supermarket"
+  ],
+  "image_fetch_url": "https://live.staticflickr.com/5110/5850785173_4e6fa1061c_k.jpg",
+  "image_sha256": "fd69e5a8914de78a3854935969d64b2e517b2bf8fdd802b7dcea97ba7bdb30f3"
+}
