@@ -74,6 +74,14 @@ def _norm(s: str) -> str:
     return " ".join(s.lower().split())
 
 
+def _line_tol(expected: float, currency: str) -> float:
+    """Tolerancia por línea para dividir cuenta: la gente paga montos exactos.
+    1% o 1 unidad mínima de la moneda (lo que sea mayor) — antes era
+    max(5%, 50) fijo, que en EUR/USD dejaba pasar cualquier error < 50."""
+    minor = 1.0 if (currency or "CLP").upper() in ("CLP", "JPY", "KRW", "PYG", "COP") else 0.01
+    return max(abs(expected) * 0.01, minor)
+
+
 def _amount_tol(expected: float, currency: str) -> float:
     if (currency or "CLP").upper() == "CLP":
         return max(round(expected * 0.02), 200)
@@ -328,7 +336,7 @@ def score_one_bill(parsed: dict, exp: dict) -> dict:
                 idx, pi = pool.pop(bi)
                 matched_idx.add(idx)
                 lt_got = pi["line_total"] if pi.get("line_total") is not None else pi["price"] * pi["quantity"]
-                ok_line = abs(lt_got - lt_exp) <= max(lt_exp * 0.05, 50)
+                ok_line = abs(lt_got - lt_exp) <= _line_tol(lt_exp, cur_exp)
                 if ok_line:
                     hits += 1
                 else:
@@ -348,6 +356,13 @@ def score_one_bill(parsed: dict, exp: dict) -> dict:
             "applicable": True, "ok": frac >= 0.999, "partial": round(frac, 3), "weight": 3.0,
             "detail": f"{hits}/{len(exp_lines)} lineas ok" + (" | " + "; ".join(line_details[:4]) if line_details else ""),
         }
+        # Precisión: ítems devueltos con monto que no corresponden a ninguna
+        # línea esperada (subtotal/propina leídos como ítem, duplicados,
+        # alucinados) mueven plata real aunque la cobertura sea 100%.
+        extra = [pi.get("name", "") for idx, pi in enumerate(items)
+                 if idx not in matched_idx and (pi.get("line_total") or 0) != 0]
+        if not exp.get("items_lenient"):
+            put("items_extra", True, not extra, f"{len(extra)} ítem(s) sobrantes: {', '.join(extra[:4]) or '-'}", weight=1.0)
     else:
         put("items_lines_bill", False, True, "lenient / sin line_total en ground-truth")
 
@@ -472,10 +487,17 @@ def main():
                           "bill = ocr.vision_parse_bill (el pipeline real de Dividir cuenta)")
     ap.add_argument("--provider", help="openai | anthropic | gemini (override AI_PROVIDER)")
     ap.add_argument("--vision-model", help="override modelo de vision (p.ej. gpt-4o, gpt-5-mini, gemini-2.5-flash)")
+    ap.add_argument("--set", choices=["main", "holdout"], default="main",
+                    help="main = receipts/+expected/ (28, mayormente Chile); holdout = receipts_holdout/+expected_holdout/ "
+                         "(boletas de internet nunca usadas para ajustar nada — medir generalidad)")
     ap.add_argument("--only", nargs="+", metavar="NAME", help="correr solo estas imagenes (match por substring)")
     ap.add_argument("--dump", action="store_true", help="imprimir el JSON parseado de cada imagen")
     ap.add_argument("--compare", nargs=2, metavar=("A.json", "B.json"), help="comparar dos result files")
     args = ap.parse_args()
+    if args.set == "holdout":
+        global RECEIPTS, EXPECTED
+        RECEIPTS = HERE / "receipts_holdout"
+        EXPECTED = HERE / "expected_holdout"
     if args.compare:
         cmd_compare(args)
     else:
