@@ -73,7 +73,7 @@ const removeParticipant = (billId: number, pid: number) =>
   billReq<Bill>(`/bills/${billId}/participants/${pid}`, { method: "DELETE" });
 const addItem = (billId: number, item: { name: string; qty: number; unit_price: number }) =>
   billReq<Bill>(`/bills/${billId}/items`, { method: "POST", body: JSON.stringify(item) });
-const patchItem = (billId: number, iid: number, patch: { name?: string; qty?: number; unit_price?: number; position_y?: number }) =>
+const patchItem = (billId: number, iid: number, patch: { name?: string; qty?: number; unit_price?: number; line_total?: number; position_y?: number }) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "PATCH", body: JSON.stringify(patch) });
 const deleteItem = (billId: number, iid: number) =>
   billReq<Bill>(`/bills/${billId}/items/${iid}`, { method: "DELETE" });
@@ -119,19 +119,6 @@ const listBills = () => billReq<BillListRow[]>("/bills");
 const SHOW_COLOR_BANDS = false;
 
 const clp = (n: number) => "$" + Math.round(n).toLocaleString("es-CL");
-// En Chile no se propinea en el supermercado — mostrar el paso de "Propina"
-// ahí es ruido/confuso, no una opción real. Heurística simple por nombre de
-// local (las cadenas más comunes) en vez de intentar adivinar del tipo de
-// ítems — el nombre del local ya viene leído por el OCR, es la señal más
-// directa y menos propensa a falsos positivos que analizar la lista de ítems.
-const SUPERMARKET_CHAINS = [
-  "lider", "jumbo", "santa isabel", "unimarc", "tottus", "ekono",
-  "ok market", "acuenta", "mayorista 10", "super 10", "alvi", "montserrat",
-];
-const isSupermarket = (merchant: string) => {
-  const m = merchant.toLowerCase();
-  return SUPERMARKET_CHAINS.some((chain) => m.includes(chain));
-};
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase();
 // Un color pastel distinto por ítem, SIN repetirse por más ítems que tenga la
 // boleta (la paleta fija de 8 colores hacía que el ítem 1 y el 9 quedaran del
@@ -816,6 +803,11 @@ function SplitPageInner({
       b = await ocrBill(b.id, file);
       setBill(b);
       setStep(2);
+      // Lectura fallida ≠ boleta sin ítems: avisar en vez de mostrar una
+      // lista vacía sin explicación (los ítems se pueden agregar a mano).
+      if ((b as Bill & { ocr_status?: string }).ocr_status === "failed") {
+        showError("No pudimos leer la boleta. Reintenta con otra foto o agrega los ítems a mano.");
+      }
     } catch (e: unknown) { showError(e instanceof Error ? e.message : "Error al leer boleta"); }
     finally { setLoading(false); stopPhases(); }
   }
@@ -847,8 +839,8 @@ function SplitPageInner({
     if (!bill || editItemId === null) return;
     try {
       const qty = Math.max(1, editDraft.qty || 1);
-      const unit_price = editDraft.total / qty;
-      const b = await patchItem(bill.id, editItemId, { name: editDraft.name, qty, unit_price });
+      // El total de línea manda (es lo impreso); el backend deriva el unitario.
+      const b = await patchItem(bill.id, editItemId, { name: editDraft.name, qty, line_total: editDraft.total });
       setBill(b);
       setEditItemId(null);
       // Re-seed assignments and re-apply smart distribution after item edit
@@ -1019,7 +1011,8 @@ function SplitPageInner({
   }
 
   function itemCostFor(item: BillItem, pid: number): number {
-    if (!item.qty || item.qty <= 0 || item.unit_price <= 0) return 0;
+    // Las líneas negativas (descuentos) también cuentan — igual que en finalize.
+    if (!item.qty || item.qty <= 0 || !item.line_total) return 0;
     const slots = slotsOf(item.id, item.qty);
     if (item.qty === 1) {
       const s = slots[0];
@@ -1034,7 +1027,9 @@ function SplitPageInner({
     const assigned = slots.filter((v) => v !== null && v !== -1) as number[];
     if (assigned.length === 0) return 0;
     const myUnits = assigned.reduce((n, v) => n + (v === pid ? 1 : 0), 0);
-    return myUnits * item.unit_price;
+    // Proporción del total impreso, no unidades × unitario redondeado: así el
+    // total en pantalla coincide con lo que guarda finalize.
+    return (myUnits / item.qty) * item.line_total;
   }
 
   const runningTotals = useMemo<Map<number, number>>(() => {
@@ -2119,7 +2114,7 @@ function SplitPageInner({
             <input className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" value={newItem.name} autoFocus onChange={(e) => setNewItem((n) => n && { ...n, name: e.target.value })} placeholder="Nombre del ítem" />
             <div className="flex gap-2">
               <input type="number" className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" value={newItem.qty} min={1} onChange={(e) => setNewItem((n) => n && { ...n, qty: parseInt(e.target.value) || 1 })} placeholder="Cant." />
-              <input type="number" className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" value={newItem.unit_price || ""} min={0} onChange={(e) => setNewItem((n) => n && { ...n, unit_price: parseFloat(e.target.value) || 0 })} placeholder="Precio unit." />
+              <input type="number" className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" value={newItem.unit_price || ""} onChange={(e) => setNewItem((n) => n && { ...n, unit_price: parseFloat(e.target.value) || 0 })} placeholder="Precio unit." />
             </div>
             <div className="flex gap-2">
               <button className="flex-1 bg-indigo-600 text-white rounded-lg py-2 text-sm font-medium" onClick={handleAddItem}>Agregar</button>
@@ -2143,9 +2138,10 @@ function SplitPageInner({
               Boleta original: {clp(bill.total_amount)} · diferencia con ítems: {clp(Math.abs(bill.total_amount - subtotal))}
             </div>
           )}
-          {/* Propina row — oculto en supermercados (no se propinea ahí, ver
-              isSupermarket) para no confundir con una opción que no aplica. */}
-          {!isSupermarket(bill.merchant) && (
+          {/* Propina row — siempre disponible y colapsada por defecto: una lista
+              fija de cadenas por nombre fallaba fuera de Chile y con locales
+              como "Salvia" o "Jumbo Burger". */}
+          {(
           <div className="border-t border-slate-100 px-4 py-2.5">
             {tipMode === "hidden" ? (
               <div className="flex items-center justify-between">

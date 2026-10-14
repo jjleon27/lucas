@@ -224,6 +224,9 @@ class ParsedItem(BaseModel):
     # divisible exacto por qty (round(line_total/qty) redondea el unitario,
     # y volver a multiplicar por qty no siempre reconstruye el original).
     line_total: Optional[float] = None
+    # Cantidad medida no entera tal como venía impresa (1.62 kg) — en ese caso
+    # `quantity` queda en 1: no son unidades repartibles.
+    measured_qty: Optional[float] = None
     # Alto REAL (0-100 = % del alto de la imagen) de la línea de este ítem en
     # la boleta. Se usa para marcar el ítem con su color sobre la foto al
     # revisar el split. Best-effort — el usuario puede corregir arrastrando.

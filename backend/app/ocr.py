@@ -124,6 +124,9 @@ class ParseResult:
     # vision_parse(). None si no se pudo determinar (Tesseract-only fallback).
     image_width: Optional[int] = None
     image_height: Optional[int] = None
+    # True si la fecha de la transacción es "hoy" de relleno (la boleta no
+    # traía una fecha legible) — el caller no debe pisar una fecha real con ella.
+    date_is_guess: bool = False
 
     def __bool__(self) -> bool:
         return bool(self.transactions)
@@ -278,6 +281,23 @@ def _parse_date(s: str) -> date:
         except ValueError:
             continue
     return date.today()
+
+
+def _parse_date_strict(s: Optional[str]) -> Optional[date]:
+    """Como `_parse_date` pero ISO primero y None (no "hoy") si no se entiende."""
+    if not s:
+        return None
+    s = s.strip()
+    for fmt in (
+        "%Y-%m-%d", "%Y/%m/%d",
+        "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
+        "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y",
+    ):
+        try:
+            return datetime.strptime(s[:10] if fmt.startswith("%Y") else s, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _parse_spanish_date(m: re.Match) -> date:
@@ -1309,21 +1329,29 @@ def _prep_receipt_image(image_bytes: bytes) -> tuple[str, Optional[int], Optiona
     upright_w: Optional[int] = None
     upright_h: Optional[int] = None
     try:
-        from PIL import ImageEnhance, ImageOps
+        from PIL import ImageOps
         img_pil = Image.open(io.BytesIO(image_bytes))
         img_pil = ImageOps.exif_transpose(img_pil)  # fix iPhone rotation
         img_pil = img_pil.convert("RGB")
         upright_w, upright_h = img_pil.size
         img_pil = _resize_for_vision(img_pil, max_side=2000)
-        img_pil = _adaptive_contrast(img_pil)
-        img_pil = ImageEnhance.Sharpness(img_pil).enhance(2.0)
+        # Sin contraste/nitidez fijos (2026-10-14): la llamada a un
+        # `_adaptive_contrast` inexistente lanzaba NameError desde 2026-09-14
+        # y el except de abajo mandaba los bytes CRUDOS (sin EXIF/resize, y
+        # etiquetados jpeg aunque fueran PNG/WebP/HEIC). En la práctica
+        # producción lleva un mes leyendo sin realce y todas las métricas del
+        # eval desde entonces se midieron así — un realce fijo ayuda a unas
+        # fotos y empeora otras (cont. 17/18), así que solo se reintroduce si
+        # un A/B con el eval lo justifica.
         buf = io.BytesIO()
         img_pil.save(buf, format="JPEG", quality=95)
         send_bytes = buf.getvalue()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ocr] _prep_receipt_image: preprocesamiento falló ({exc!r}) — se envían los bytes originales")
         send_bytes = image_bytes
     b64 = base64.b64encode(send_bytes).decode("ascii")
-    return f"data:image/jpeg;base64,{b64}", upright_w, upright_h, send_bytes
+    mime = "image/jpeg" if send_bytes is not image_bytes else _detect_mime(image_bytes)
+    return f"data:{mime};base64,{b64}", upright_w, upright_h, send_bytes
 
 
 def vision_parse(
@@ -1743,7 +1771,9 @@ def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None,
 
     if not settings.openai_api_key:
         return None
-    client = OpenAI(api_key=settings.openai_api_key, timeout=60.0)
+    # max_retries=1 (el default del SDK es 2): con 60s por intento, 3 intentos
+    # por copia + backoff podían pasar el límite de 180s de la función.
+    client = OpenAI(api_key=settings.openai_api_key, timeout=60.0, max_retries=1)
     q: "queue.Queue" = queue.Queue()
 
     def worker(idx: int):
@@ -1767,21 +1797,49 @@ def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None,
     threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(2)]
     for th in threads:
         th.start()
-    idx, result = q.get()
-    while isinstance(result, Exception):
-        print(f"[ocr] _race_structured_bill_read: una copia falló ({result})")
+    deadline = time.time() + 130.0  # tope global de la carrera, bajo los 180s de Vercel
+    pending = 2
+    result: object = None
+    while pending:
         try:
-            idx, result = q.get(timeout=60.0)
+            idx, result = q.get(timeout=max(1.0, deadline - time.time()))
         except Exception:
-            return None  # las 2 copias fallaron
+            print("[ocr] _race_structured_bill_read: sin respuesta antes del tope")
+            return None
+        pending -= 1
+        if not isinstance(result, Exception):
+            break
+        print(f"[ocr] _race_structured_bill_read: una copia falló ({result})")
+    if isinstance(result, Exception) or result is None:
+        return None  # las 2 copias fallaron
+
+    def _usage_of(resp) -> "LLMResponse":
+        u = resp.usage
+        return LLMResponse(text="", prompt_tokens=u.input_tokens, completion_tokens=u.output_tokens,
+                           model=model, provider="openai")
+
     try:
-        usage = result.usage
-        _log_usage(db, user_id, LLMResponse(
-            text="", prompt_tokens=usage.input_tokens, completion_tokens=usage.output_tokens,
-            model=model, provider="openai",
-        ), "parse_bill")
+        _log_usage(db, user_id, _usage_of(result), "parse_bill")
     except Exception as _exc:  # noqa: BLE001
         print(f"[ocr] usage logging failed: {_exc}")
+    if pending and db is not None and user_id is not None:
+        # La copia perdedora igual se cobra: registrarla cuando termine (en
+        # segundo plano, con su propia sesión de DB) para no subreportar el
+        # costo real a la mitad. Best-effort.
+        def _log_loser():
+            try:
+                _, other = q.get(timeout=120.0)
+                if isinstance(other, Exception):
+                    return
+                from ..database import SessionLocal
+                s2 = SessionLocal()
+                try:
+                    _log_usage(s2, user_id, _usage_of(other), "parse_bill")
+                finally:
+                    s2.close()
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[ocr] usage logging (copia perdedora) failed: {_exc}")
+        threading.Thread(target=_log_loser, daemon=True).start()
     try:
         return json.loads(result.output_text)
     except Exception as exc:  # noqa: BLE001
@@ -1953,36 +2011,52 @@ def vision_parse_bill(
             # número (ver _BILL_PROMPT: "NO INVENTES, usa null") -> esa es
             # la señal de needs_review, no un valor inventado por nosotros.
             uncertain = qty_raw is None or lt_raw is None
-            qty = max(1, min(int(round(qty_raw)) if qty_raw else 1, 999))
             lt = float(lt_raw) if lt_raw is not None else 0.0
+            # Cantidad medida (kg, litros: "1,620 kg") vs. unidades contables:
+            # solo las unidades enteras sirven para repartir "2 de 6 schops".
+            # Una cantidad fraccionaria se guarda como 1 unidad y se conserva
+            # visible en el nombre, sin inventar unidades que no existen.
+            measured = None
+            if qty_raw and abs(qty_raw - round(qty_raw)) > 1e-6:
+                measured = qty_raw
+                qty = 1
+            else:
+                qty = max(1, min(int(round(qty_raw)) if qty_raw else 1, 999))
             items.append(ParsedItem(
                 name=name[:200],
-                price=round(lt / qty) if qty else lt,
+                # Sin redondear: el total de línea impreso es la verdad y en
+                # monedas con decimales (EUR, USD) round() lo corrompía.
+                price=lt / qty,
                 quantity=qty,
                 line_total=lt,
                 needs_review=uncertain,
+                measured_qty=measured,
             ))
         if not items:
             print("[ocr] vision_parse_bill: 0 ítems tras filtrar")
             return None
 
         _populate_positions(items, image_bytes)
+        # Después de posicionar (el servicio empareja por nombre impreso).
+        for it in items:
+            if it.measured_qty is not None:
+                it.name = f"{it.name} ({it.measured_qty:g})"[:200]
 
-        try:
-            parsed_date = _parse_date(parsed["date"]) if parsed.get("date") else date.today()
-        except Exception:
-            parsed_date = date.today()
+        # None si no hay fecha legible: el caller no debe pisar la fecha
+        # de la cuenta con "hoy" inventado.
+        parsed_date = _parse_date_strict(parsed.get("date"))
 
         receipt = ParsedReceipt(
             amount=float(parsed.get("amount") or sum(i.price * i.quantity for i in items)),
-            date=parsed_date,
+            date=parsed_date or date.today(),
             merchant=(parsed.get("merchant") or "")[:200],
             category="Otros",  # no se usa en el flujo de bill-split
             currency="CLP",    # ídem — bill.currency se fija al crear la boleta, no desde OCR
             is_income=False,
             items=items,
         )
-        return ParseResult(transactions=[receipt], image_width=upright_w, image_height=upright_h)
+        return ParseResult(transactions=[receipt], image_width=upright_w, image_height=upright_h,
+                           date_is_guess=parsed_date is None)
     except Exception as e:  # noqa: BLE001
         print(f"[ocr] vision_parse_bill failed: {e}")
         import traceback; traceback.print_exc()

@@ -53,13 +53,16 @@ class ParticipantAdd(BaseModel):
 class ItemAdd(BaseModel):
     name: str
     qty: int = Field(default=1, ge=1, le=999)
-    unit_price: float = Field(ge=0)
+    # Con signo: un descuento/cupón es una línea negativa.
+    unit_price: float
 
 
 class ItemPatch(BaseModel):
     name: Optional[str] = None
     qty: Optional[int] = Field(None, ge=1, le=999)
-    unit_price: Optional[float] = Field(None, ge=0)
+    unit_price: Optional[float] = None
+    # Total de línea explícito (lo impreso) — si viene, manda sobre unit_price.
+    line_total: Optional[float] = None
     position_y: Optional[float] = Field(None, ge=0, le=100)
 
 
@@ -325,7 +328,9 @@ async def bill_ocr(
     parsed = vision_parse_bill(raw, user_id=current.id, db=db)
     if parsed is None or not parsed.transactions:
         db.commit()
-        return _bill_out(bill)
+        # Distinguible de "boleta sin ítems": el frontend avisa que la
+        # lectura falló en vez de saltar a una lista vacía sin explicación.
+        return {**_bill_out(bill), "ocr_status": "failed"}
 
     # Dimensiones reales de la foto orientada hacia arriba (post EXIF-transpose)
     # — el marco de referencia del que son % los bbox_* de cada ítem. El
@@ -338,7 +343,7 @@ async def bill_ocr(
     tx_data = parsed.transactions[0]
     if tx_data.merchant and not bill.merchant:
         bill.merchant = tx_data.merchant
-    if tx_data.date:
+    if tx_data.date and not parsed.date_is_guess:
         bill.date = tx_data.date
 
     # Replace items
@@ -346,13 +351,16 @@ async def bill_ocr(
 
     for it in (tx_data.items or []):
         qty = max(int(it.quantity or 1), 1)
-        unit_price = round(float(it.price or 0), 2)
         # Si la fuente ya nos dio el total real de la línea (vision_parse_bill),
-        # usarlo tal cual — recalcular qty*unit_price pierde 1 CLP cuando la
-        # línea original no se dividía exacto por la cantidad (unit_price ya
-        # viene redondeado).
-        line_total = round(float(it.line_total), 2) if it.line_total is not None else round(qty * unit_price, 2)
-        if line_total == 0:
+        # es la verdad: el unitario se deriva de él SIN redondear (redondearlo
+        # y volver a multiplicar pierde 1 CLP o los centavos en EUR/USD).
+        line_total = round(float(it.line_total), 2) if it.line_total is not None else round(qty * float(it.price or 0), 2)
+        unit_price = line_total / qty
+        # Una línea en 0 sin dudas es un modificador sin precio ("sin
+        # cebolla") — se omite. Pero si el modelo NO pudo leer el precio
+        # (needs_review), se conserva para que el usuario lo complete: borrarla
+        # dejaría la cuenta corta sin aviso.
+        if line_total == 0 and not it.needs_review:
             continue
         db.add(BillItem(
             bill_id=bill.id,
@@ -479,6 +487,10 @@ def patch_item(
         item.qty = payload.qty
     if payload.unit_price is not None:
         item.unit_price = payload.unit_price
+    if payload.line_total is not None:
+        item.unit_price = payload.line_total / item.qty
+    if payload.unit_price is not None or payload.line_total is not None:
+        item.needs_review = False
     if payload.position_y is not None:
         item.position_y = payload.position_y
         # Corrección manual (arrastre) — el bbox/segmentos reales que traía
@@ -489,7 +501,12 @@ def patch_item(
         item.bbox_y0 = None
         item.bbox_y1 = None
         item.segments = None
-    item.line_total = round(item.qty * item.unit_price, 2)
+    # Solo se recalcula si cambió un número: renombrar o arrastrar la banda
+    # no debe alterar el total impreso (antes 3 × 3333 convertía 10.000 en 9.999).
+    if payload.line_total is not None:
+        item.line_total = round(payload.line_total, 2)
+    elif payload.qty is not None or payload.unit_price is not None:
+        item.line_total = round(item.qty * item.unit_price, 2)
     _recalc_total(bill)
     db.commit()
     db.refresh(bill)
