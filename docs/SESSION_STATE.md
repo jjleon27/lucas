@@ -12,3 +12,11 @@ Tarea en curso: QA de boletas chilenas para "Dividir cuenta" (set nuevo + tests 
 Próximo paso inmediato: decidir sobre el fix general de effective_charges (aplicar cargos solo si items+cargos ≈ printed_total; nunca sumar >1 propina; sin printed_total no sumar tax/service) — simulado: 53→75/96 OK. Fix de _parse_date_strict para "dd-mm-yyyy hh:mm:ss" y meses en texto.
 Bugs pendientes: sobrecobro 19% cuando hay IVA informativo y printed_total=null; triple propina con propinas alternativas; contradicción schema printed_total (sin propina) vs "propina ya cobrada" en charges.
 Archivos clave para continuar: reporte completo en /tmp/claude-0/-home-user-lucas/40a58002-3c8d-5c47-89da-d26aeaaf3d1b/scratchpad/chile_tests.md; backend/app/ocr.py (effective_charges, _parse_date_strict, _BILL_ITEM_SCHEMA).
+
+
+## LOOP GRUPO A ↔ GRUPO B (2026-10-15) — CERRADO
+Servicio de posición CONGELADO tras 3 rondas (commits c557c9a, 07ff20a, d1ce25b, 4920567, 4d8b5e5): PP-OCR (RapidOCR 3.10 + onnxruntime, sin Tesseract) + alineación global DP + piso de confianza + reconocimiento progresivo con resultados parciales bajo presupuesto 5.5s.
+- Fila correcta (verificado por precio): main 52.9→77.3%, holdout 57.5→78.8%, rotadas 75.7→89.2%; peor caso 5.5→3.0s (4 hilos).
+- Pruebas ciegas grupo B (boletas nuevas cada ronda: sintéticas seed 3/4/5 + 6 reales chilenas reservadas): seed 5 estricto 90.8% (1.9% fila errónea), reales 25/25 en su fila.
+- effective_charges: doble cobro 96→0 de 274 escenarios simulados (7 cobros de menos aceptados por diseño).
+Pendiente: (1) A/B pagado de la lectura (run_ab.sh, ~US$0.24-0.70) en sesión con OPENAI_API_KEY; (2) desplegar ocr_position (imagen Docker +~100MB) y confirmar os.cpu_count() en Vercel; (3) bill_hedge_after_s a la p75 medida con el log [ocr][bill_read] (−38% costo LLM); (4) decisión de producto: ¿precargar propina SUGERIDA? (hoy sí, editable). Generador sintético y reportes en el scratchpad de la sesión (no versionados).
