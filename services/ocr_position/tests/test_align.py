@@ -60,3 +60,22 @@ def test_clamp_only_same_column():
     assert a.segments[0].y1 <= b.segments[0].y0  # misma columna: sin traslape
     assert a.segments[1].y1 <= b.segments[1].y0
     assert a.bbox_y1 == max(s.y1 for s in a.segments)
+
+
+def test_short_name_does_not_match_header_by_scattered_letters():
+    r = rows("SERVICIOS TURISTICOS", "1 SITIO 4.000-")
+    assert _align(["Sitio"], r, prices=[4000]) == [1]
+    assert _align(["Sitio"], rows("SERVICIOS TURISTICOS", "garabato")) == [None]
+
+
+def test_weak_name_without_price_evidence_stays_null():
+    # Se conoce el total (12.500) y ninguna fila lo trae: un parecido mediano no basta.
+    r = rows("CAJA 3 MESA 4", "LOMO A LO POBRE 9.900")
+    assert _align(["Lomo vetado"], r, prices=[12500]) == [None]
+    assert _align(["Lomo a lo pobre"], r, prices=[12500]) == [1]
+
+
+def test_signed_amounts_anchor_discounts():
+    r = rows("LECHE 1.990", "DESCUENTO 1.017-", "PAN 990", "DESCUENTO -500")
+    assert _align(["Leche", "Descuento leche", "Pan", "Descuento pan"], r,
+                  prices=[1990, -1017, 990, -500]) == [0, 1, 2, 3]

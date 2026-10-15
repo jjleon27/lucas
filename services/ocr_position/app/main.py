@@ -45,15 +45,20 @@ _THREADS = max(1, min(int(os.environ.get("OCR_THREADS") or 4), os.cpu_count() or
 os.environ.setdefault("OMP_NUM_THREADS", str(_THREADS))
 
 # Tope de reloj de TODO el pedido, desde que llega. El backend corta a los 7 s
-# (ocr._populate_positions) y hay que dejar margen de red. La inferencia de
-# onnxruntime no se puede interrumpir, así que el tope real lo da el tamaño de
-# la imagen (`_MAX_SIDE`): esto solo evita seguir esperando un turno que ya no
-# llega a tiempo cuando hay pedidos concurrentes.
+# (ocr._populate_positions) y hay que dejar margen de red. El reconocimiento
+# se hace por tandas en orden de lectura y se corta al llegar al tope: con
+# poca CPU se devuelven las filas que alcanzaron a leerse (las demás quedan
+# solo como geometría), nunca todo o nada.
 _REQUEST_BUDGET_S = 5.5
-# Lado máximo con el que se corre el OCR (el backend ya manda ≤2000 px). Más
-# grande no lee mejor y la latencia crece con el área.
+# Lado máximo con el que se corre el OCR (el backend ya manda ≤2000 px).
 _MAX_SIDE = int(os.environ.get("OCR_MAX_SIDE") or 2000)
-_DET_MAX_SIDE = int(os.environ.get("OCR_DET_MAX_SIDE") or 1280)
+# El detector corre sobre a lo más ~1,2 MP (el reconocedor igual lee los
+# recortes a resolución completa). Por ÁREA y no por lado mayor: una boleta
+# larga y angosta conserva su resolución horizontal (letra chica), y el costo
+# del detector, que crece con el área, queda acotado igual.
+_DET_PIXELS = int(os.environ.get("OCR_DET_PIXELS") or 1280 * 960)
+_REC_CHUNK = 12          # recortes por tanda de reconocimiento
+_TEXT_SCORE_MIN = 0.5    # confianza mínima del reconocedor para usar el texto (la caja igual cuenta como geometría)
 
 app = FastAPI()
 
@@ -123,12 +128,7 @@ def _get_engine():
                     "Global.max_side_len": _MAX_SIDE,
                     "EngineConfig.onnxruntime.intra_op_num_threads": _THREADS,
                     "EngineConfig.onnxruntime.inter_op_num_threads": 1,
-                    # El detector corre con el lado mayor ≤ _DET_MAX_SIDE (el
-                    # reconocedor igual lee los recortes a resolución completa).
-                    # Medido: igual de preciso que a 2000 px y ~40 % más rápido
-                    # en fotos de celular grandes.
                     "Det.limit_type": "max",
-                    "Det.limit_side_len": _DET_MAX_SIDE,
                 })
     return _engine
 
@@ -144,19 +144,40 @@ def _load_models() -> None:
         print(f"[ocr_position] no se pudo precargar el OCR: {exc}")
 
 
-def _ocr_boxes(img: Image.Image) -> list[dict]:
-    """Corre PP-OCR sobre la foto → cajas de texto (una por línea detectada)
-    con su texto y su cuadrilátero en píxeles."""
+def _ocr_boxes(img: Image.Image, deadline: float) -> list[dict]:
+    """PP-OCR por etapas → cajas de texto (una por línea detectada) con su
+    texto, su confianza y su cuadrilátero en píxeles. Detección una vez;
+    reconocimiento por tandas en orden de lectura mientras quede tiempo
+    (estimado con lo que tardó la tanda anterior). Lo que no alcanza a
+    leerse queda con texto vacío: sigue aportando geometría a su fila."""
+    import copy
     import numpy as np
-    arr = np.array(img.convert("RGB"))[:, :, ::-1]  # RGB → BGR (lo que espera RapidOCR)
-    res = _get_engine()(arr)
-    if res is None or res.boxes is None or res.txts is None:
+    from rapidocr.ch_ppocr_rec import TextRecInput
+    from rapidocr.utils.process_img import get_rotate_crop_image
+
+    eng = _get_engine()
+    arr = np.ascontiguousarray(np.array(img.convert("RGB"))[:, :, ::-1])  # RGB → BGR
+    h, w = arr.shape[:2]
+    det_model, rec_model = eng._load_det_model(), eng._load_rec_model()
+    scale = min(1.0, math.sqrt(_DET_PIXELS / float(w * h)))
+    det_model.limit_side_len = max(64, round(max(w, h) * scale))
+    det = det_model(arr)
+    if det.boxes is None:
         return []
-    out = []
-    for quad, txt in zip(res.boxes, res.txts):
-        txt = (txt or "").strip()
-        if txt:
-            out.append({"text": txt, "quad": [(float(x), float(y)) for x, y in quad]})
+    quads = [[(float(x), float(y)) for x, y in q] for q in det.boxes]
+    out = [{"text": "", "score": 0.0, "quad": q} for q in quads]
+    last = 0.0
+    for k in range(0, len(quads), _REC_CHUNK):
+        if time.time() + last > deadline:
+            print(f"[ocr_position] presupuesto: {k}/{len(quads)} líneas reconocidas")
+            break
+        t0 = time.time()
+        crops = [get_rotate_crop_image(arr, copy.deepcopy(b)) for b in det.boxes[k:k + _REC_CHUNK]]
+        rec = rec_model(TextRecInput(img=crops))
+        for j, (txt, sc) in enumerate(zip(rec.txts or [], rec.scores or [])):
+            if txt and sc >= _TEXT_SCORE_MIN:
+                out[k + j]["text"], out[k + j]["score"] = txt.strip(), float(sc)
+        last = time.time() - t0
     return out
 
 
@@ -212,7 +233,7 @@ def _similarity(name: str, text: str) -> float:
     r = SequenceMatcher(None, a, b, autojunk=False).ratio()
     s, l = (a, b) if len(a) <= len(b) else (b, a)
     if len(s) >= 3:
-        matched = sum(m.size for m in SequenceMatcher(None, s, l, autojunk=False).get_matching_blocks())
+        matched = sum(m.size for m in SequenceMatcher(None, s, l, autojunk=False).get_matching_blocks() if m.size >= _MIN_BLOCK)
         r = max(r, 0.9 * matched / len(s) * min(1.0, (len(s) / len(l)) ** 0.25))
     return r
 
@@ -294,20 +315,25 @@ def _rows(boxes: list[dict], w: int, h: int) -> list[dict]:
         # La fila más cercana entre las últimas; misma fila si los centros
         # difieren menos de medio alto de la caja MÁS BAJA — una caja mal
         # detectada que abarca dos renglones no puede fusionarlos.
+        # El alto de referencia de la fila es la mediana de sus cajas: una caja
+        # chica (un "$" suelto) no achica la fila y deja afuera al monto.
         near = min(rows[-4:], key=lambda r: abs(r["c"] - p["c"]), default=None)
         if near is not None and abs(near["c"] - p["c"]) < 0.5 * min(near["h"], p["h"]):
             near["parts"].append(p)
             near["c"] = sum(x["c"] for x in near["parts"]) / len(near["parts"])
-            near["h"] = min(near["h"], p["h"])
+            hs = sorted(x["h"] for x in near["parts"])
+            near["h"] = hs[len(hs) // 2]
         else:
             rows.append({"c": p["c"], "h": p["h"], "parts": [p]})
     rows.sort(key=lambda r: r["c"])
     out = []
     for r in rows:
+        if not any(p["text"] for p in r["parts"]):
+            continue  # fila sin texto leído (ilegible o sin tiempo): no se puede emparejar
         parts = sorted(r["parts"], key=lambda p: p["u"])
         spans = [p["span"] for p in parts]
         out.append({
-            "text": " ".join(p["text"] for p in parts),
+            "text": " ".join(p["text"] for p in parts if p["text"]),
             "y0": min(s[2] for s in spans), "y1": max(s[3] for s in spans),
             "spans": spans,
         })
@@ -340,6 +366,12 @@ _PRICE_FLOOR = 0.30  # el bono nunca convierte en match una fila que no se parec
 # trae EXACTAMENTE el total del ítem (≥3 dígitos, para no anclar en un "1"):
 # cuenta como un match débil — el orden global evita confundirlo con totales.
 _PRICE_ONLY = 0.05
+# Si se conoce el total del ítem y la fila (ni la siguiente) no lo trae, el
+# nombre solo tiene que parecerse MUCHO: con texto borroso, un parecido
+# mediano sin precio que lo confirme suele ser la fila equivocada (o el
+# encabezado). Mejor null que una banda en otro ítem.
+_NAME_ONLY_MIN = 0.60
+_MIN_BLOCK = 3  # la cobertura parcial solo cuenta trozos comunes de ≥3 letras ('sitio' no "cabe" en 'turisticos')
 
 
 def _align(items: list[str], rows: list[dict], prices: Optional[list] = None) -> list[Optional[int]]:
@@ -365,6 +397,8 @@ def _align(items: list[str], rows: list[dict], prices: Optional[list] = None) ->
                 s += _PRICE_BONUS
             elif pk and s < _MIN_SIM and any(len(k) >= 3 for k in pk & nums[j]):
                 s = _MIN_SIM + _PRICE_ONLY  # nombre ilegible, pero la fila trae el total exacto
+            elif pk and s < _NAME_ONLY_MIN:
+                s = 0.0
             gain[i][j] = s - _MIN_SIM
     best = [[0.0] * (m + 1) for _ in range(n + 1)]
     back = [[0] * (m + 1) for _ in range(n + 1)]
@@ -391,15 +425,16 @@ def _align(items: list[str], rows: list[dict], prices: Optional[list] = None) ->
     return out
 
 
-def _locate(items: list[str], img: Image.Image, prices: Optional[list] = None) -> tuple[list[Optional[dict]], list[dict]]:
+def _locate(items: list[str], img: Image.Image, prices: Optional[list] = None,
+            deadline: Optional[float] = None) -> tuple[list[Optional[dict]], list[dict]]:
     """OCR + filas + alineación → por ítem, la fila asignada con sus tramos
     (o None), y todas las filas (para `ocr_lines`)."""
     w, h = img.size
-    boxes = _ocr_boxes(img)
+    boxes = _ocr_boxes(img, deadline if deadline is not None else time.time() + _REQUEST_BUDGET_S)
     keep = _script_filter(items)
     for b in boxes:
         b["text"] = keep(b["text"]).strip()
-    rows = _rows([b for b in boxes if b["text"]], w, h)
+    rows = _rows(boxes, w, h)
     matches = []
     for k in _align(items, rows, prices):
         if k is None:
@@ -424,9 +459,11 @@ def position(req: PositionRequest) -> PositionResponse:
         # (foto enorme, CPU lenta u otro pedido en curso) se responde sin
         # posiciones — el frontend cae al reparto parejo — en vez de dejar
         # que el backend agote sus 7 s. Si ni empezó, se cancela.
-        fut = _worker.submit(_locate, req.items, img, req.prices)
+        # El reconocimiento se corta solo antes del tope (deja ~0,4 s para la
+        # alineación); la espera de abajo es solo un seguro.
+        fut = _worker.submit(_locate, req.items, img, req.prices, started + _REQUEST_BUDGET_S - 0.4)
         try:
-            matches, rows = fut.result(timeout=max(0.0, _REQUEST_BUDGET_S - (time.time() - started)))
+            matches, rows = fut.result(timeout=max(0.0, _REQUEST_BUDGET_S + 1.0 - (time.time() - started)))
         except FuturesTimeout:
             fut.cancel()
             print(f"[ocr_position] presupuesto de {_REQUEST_BUDGET_S}s agotado — sin posiciones para este pedido")
