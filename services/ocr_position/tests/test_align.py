@@ -79,3 +79,23 @@ def test_signed_amounts_anchor_discounts():
     r = rows("LECHE 1.990", "DESCUENTO 1.017-", "PAN 990", "DESCUENTO -500")
     assert _align(["Leche", "Descuento leche", "Pan", "Descuento pan"], r,
                   prices=[1990, -1017, 990, -500]) == [0, 1, 2, 3]
+
+
+def _box(text, x, y, w, h):
+    return {"text": text, "quad": [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]}
+
+
+def test_tall_box_does_not_inflate_row_band():
+    # Una columna de "$" leída como una sola caja que cruza 5 renglones.
+    boxes = [_box("LOMO", 0, 100, 120, 20), _box("12.900", 300, 100, 80, 20), _box("$ $ $ $ $", 250, 60, 15, 100),
+             _box("PAPAS", 0, 130, 120, 20), _box("3.500", 300, 130, 80, 20)]
+    r = _rows(boxes, 400, 400)
+    lomo = next(x for x in r if x["text"].startswith("LOMO"))
+    assert lomo["y1"] - lomo["y0"] <= 2 * 20 / 400 * 100  # alto ≈ un renglón, no cinco
+    assert all(sp[3] - sp[2] <= 2 * 20 / 400 * 100 for sp in lomo["spans"])
+
+
+def test_price_on_previous_row_counts_as_evidence():
+    # Foto inclinada: el monto del ítem quedó agrupado con la fila de arriba.
+    r = rows("MESA 4 9.900", "LOMO VETADO", "PAPAS 3.500")
+    assert _align(["Lomo vtdo a lo pobre", "Papas"], r, prices=[9900, 3500])[0] == 1

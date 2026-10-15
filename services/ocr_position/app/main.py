@@ -331,7 +331,13 @@ def _rows(boxes: list[dict], w: int, h: int) -> list[dict]:
         if not any(p["text"] for p in r["parts"]):
             continue  # fila sin texto leído (ilegible o sin tiempo): no se puede emparejar
         parts = sorted(r["parts"], key=lambda p: p["u"])
-        spans = [p["span"] for p in parts]
+        # Geometría: solo cajas de alto coherente con el texto de la fila. Una
+        # caja varias veces más alta (una columna de "$" leída como un solo
+        # bloque que cruza varios renglones) aporta su texto pero no su caja:
+        # si no, la banda del ítem crecería hasta tapar a los vecinos.
+        hs = sorted(p["h"] for p in parts)
+        med = hs[(len(hs) - 1) // 2]  # mediana baja: con 2 cajas manda la más baja
+        spans = [p["span"] for p in parts if p["h"] <= _MAX_PART_H * med] or [p["span"] for p in parts]
         out.append({
             "text": " ".join(p["text"] for p in parts if p["text"]),
             "y0": min(s[2] for s in spans), "y1": max(s[3] for s in spans),
@@ -339,6 +345,8 @@ def _rows(boxes: list[dict], w: int, h: int) -> list[dict]:
         })
     return out
 
+
+_MAX_PART_H = 1.6  # una caja más alta que esto × la mediana de su fila no aporta geometría
 
 _SEGMENT_GAP = 8.0  # % del ancho — un hueco mayor entre cajas de la misma fila separa tramos (columna en blanco entre nombre y precio)
 
@@ -393,11 +401,14 @@ def _align(items: list[str], rows: list[dict], prices: Optional[list] = None) ->
         pk = _price_keys(prices[i]) if prices and i < len(prices) else set()
         for j in range(m):
             s = _similarity(names[i], texts[j])
-            if pk and s >= _PRICE_FLOOR and (pk & nums[j] or (j + 1 < m and pk & nums[j + 1] and not texts[j + 1])):
+            # Con la foto inclinada o el papel curvo, el monto puede quedar
+            # agrupado en la fila de arriba o de abajo: se mira en las dos.
+            near = [k for k in (j - 1, j + 1) if 0 <= k < m and pk & nums[k]]
+            if pk and s >= _PRICE_FLOOR and (pk & nums[j] or any(not texts[k] for k in near)):
                 s += _PRICE_BONUS
             elif pk and s < _MIN_SIM and any(len(k) >= 3 for k in pk & nums[j]):
                 s = _MIN_SIM + _PRICE_ONLY  # nombre ilegible, pero la fila trae el total exacto
-            elif pk and s < _NAME_ONLY_MIN:
+            elif pk and s < _NAME_ONLY_MIN and not near:
                 s = 0.0
             gain[i][j] = s - _MIN_SIM
     best = [[0.0] * (m + 1) for _ in range(n + 1)]

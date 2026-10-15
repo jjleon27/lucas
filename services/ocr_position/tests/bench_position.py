@@ -139,7 +139,7 @@ M.position(M.PositionRequest(image_b64=base64.b64encode(prep(next(iter(sorted(SE
 summary = []
 for name in args.sets.split(","):
     rd, ed = SETS[name]
-    n_items = n_loc = n_ver = 0
+    n_items = n_loc = n_ver = n_infl = 0
     lat = []
     for img in sorted(rd.glob("*")):
         exp = ed / (img.stem + ".json")
@@ -168,14 +168,17 @@ for name in args.sets.split(","):
             hgt = max(out.bbox_y1 - out.bbox_y0, 0.5)
             lo, hi = out.bbox_y0 - 0.5 * hgt, out.bbox_y1 + 0.5 * hgt
             ver += any(lo <= c <= hi and (pk & ns) for ns, c in ref)
-        n_items += len(items); n_loc += loc; n_ver += ver
-        print(f"  {name:4} {img.stem[:34]:34} n {len(items):3} loc {loc:3} ver {ver:3} {dt:5.2f}s", flush=True)
+        # Banda inflada: alto de la banda > 2× la mediana de las bandas de esa boleta.
+        hs = sorted(o.bbox_y1 - o.bbox_y0 for o in r.items if o.position_y is not None)
+        infl = sum(1 for x in hs if hs and x > 2 * hs[(len(hs) - 1) // 2])
+        n_items += len(items); n_loc += loc; n_ver += ver; n_infl += infl
+        print(f"  {name:4} {img.stem[:34]:34} n {len(items):3} loc {loc:3} ver {ver:3} {dt:5.2f}s infl {infl}", flush=True)
     if not lat:
         print(f"== {name}: sin fotos")
         continue
     lat.sort()
     line = (f"== {name}: items {n_items}  located {100 * n_loc / n_items:.1f}%  verified {100 * n_ver / n_items:.1f}%  "
-            f"median {lat[len(lat) // 2]:.2f}s  worst {lat[-1]:.2f}s")
+            f"median {lat[len(lat) // 2]:.2f}s  worst {lat[-1]:.2f}s  bandas>2x {n_infl}")
     print(line, flush=True)
     summary.append(line)
 print("\n".join(summary))
