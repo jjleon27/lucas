@@ -1,15 +1,13 @@
 FROM python:3.12-slim
 
+# OCR_THREADS: hilos de onnxruntime (el código igual nunca usa más que los
+# núcleos que ve el contenedor). Sin paquetes de sistema: los modelos PP-OCR
+# vienen dentro del paquete `rapidocr` de PyPI y OpenCV es la variante
+# headless (no necesita libGL).
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    OMP_THREAD_LIMIT=1 \
     PYTHONUNBUFFERED=1 \
+    OCR_THREADS=4 \
     PORT=8000
-
-# tesseract-ocr-spa = datos de idioma español, la boleta se lee en español.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tesseract-ocr \
-    tesseract-ocr-spa \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

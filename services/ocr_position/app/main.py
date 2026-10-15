@@ -1,72 +1,80 @@
 """
 Servicio interno AISLADO — solo calcula la posición y el tamaño real de cada
-ítem de una boleta dentro de su foto, usando Tesseract (OCR clásico, gratis,
-con cajas de texto reales por línea) emparejado por ORDEN contra la lista de
-ítems que ya leyó bien el modelo de IA (ver backend/app/ocr.py,
-vision_parse_bill — esa lectura de nombres/precios no depende para nada de
-este servicio).
+ítem de una boleta dentro de su foto. Usa PP-OCR (RapidOCR + onnxruntime,
+Apache-2.0, modelos incluidos en el paquete de PyPI: detector DBNet que da
+cajas por línea robustas a fotos chicas, inclinadas o con luz despareja) y
+alinea por ORDEN, de forma global, la lista de ítems que ya leyó el modelo de
+IA (backend/app/ocr.py, vision_parse_bill — esa lectura de nombres/precios no
+depende para nada de este servicio) contra las filas de texto de la foto.
 
 No es público: Vercel solo deja llamarlo desde el backend principal vía un
 "binding" (ver vercel.json) — nunca desde internet. Si este servicio falla,
 tarda, o no encuentra un match confiable para algún ítem, esa posición queda
-en null y el frontend cae al reparto parejo que ya existía antes (ver
-`defaultBandPct` en frontend/src/app/split/page.tsx) — nunca bloquea ni
-rompe la subida de una boleta.
+en null y el frontend cae al reparto parejo (`defaultBandPct` en
+frontend/src/app/split/page.tsx) — nunca bloquea ni rompe la subida.
+
+Historia (auditoría 2026-10-14, docs/SESSION_STATE.md): antes era Tesseract
+con un torneo de escalas + CLAHE + enderezado y un emparejamiento codicioso
+hacia adelante. Medido en el eval del repo, PP-OCR en UNA sola pasada lee
+nombre+precio del mismo ítem en ~70-80 % de los ítems contra 18-40 % de
+Tesseract, y no gana nada con reescalar ni con variantes de contraste (ver
+services/ocr_position/tests/bench_position.py) — por eso no hay variantes.
 """
 from __future__ import annotations
 
 import base64
 import io
-import time
-from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
-
+import math
 import os
-
-# Tesseract usa OpenMP: con varias variantes en paralelo, cada proceso
-# levantaba un pool de hilos del tamaño de la máquina y todos competían
-# (spin-wait) por los mismos núcleos — llamadas de ~1.5s tardaban 20-500s
-# (auditoría 2026-10-14; la causa real del "23s vs 1.65s" citado abajo).
-# El paralelismo ya lo da el ThreadPoolExecutor: 1 hilo OpenMP por proceso.
-os.environ.setdefault("OMP_THREAD_LIMIT", "1")
+import re
+import threading
+import time
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from difflib import SequenceMatcher
 from typing import Optional
 
 from fastapi import FastAPI
 from pydantic import BaseModel
 from PIL import Image
-import pytesseract
-from pytesseract import Output
+
+# Hilos de onnxruntime: nunca más que los núcleos reales (con más, los hilos
+# compiten por CPU y la latencia se dispara — misma lección que con el
+# OpenMP de Tesseract). OCR_THREADS permite ajustarlo sin tocar código.
+_THREADS = max(1, min(int(os.environ.get("OCR_THREADS") or 4), os.cpu_count() or 1))
+os.environ.setdefault("OMP_NUM_THREADS", str(_THREADS))
+
+# Tope de reloj de TODO el pedido, desde que llega. El backend corta a los 7 s
+# (ocr._populate_positions) y hay que dejar margen de red. La inferencia de
+# onnxruntime no se puede interrumpir, así que el tope real lo da el tamaño de
+# la imagen (`_MAX_SIDE`): esto solo evita seguir esperando un turno que ya no
+# llega a tiempo cuando hay pedidos concurrentes.
+_REQUEST_BUDGET_S = 5.5
+# Lado máximo con el que se corre el OCR (el backend ya manda ≤2000 px). Más
+# grande no lee mejor y la latencia crece con el área.
+_MAX_SIDE = int(os.environ.get("OCR_MAX_SIDE") or 2000)
+_DET_MAX_SIDE = int(os.environ.get("OCR_DET_MAX_SIDE") or 1280)
 
 app = FastAPI()
-
-# La resolución que Tesseract necesita para leer letra chica de boleta con
-# fiabilidad VARÍA de foto en foto (calidad de cámara, compresión, tamaño de
-# letra real, cuánto se recortó) — no hay un tamaño "bueno" único. Probado
-# en vivo: una foto de 253×450px sin agrandar da GARABATO total ("Una Vara
-# za" en vez de "Coca Cola Light"), pero agrandarla de más una foto que YA
-# venía a buena resolución (1200×1600) también la EMPEORA (introduce
-# borroneo que confunde a Tesseract en líneas repetidas parecidas). Por eso
-# no se asume ningún tamaño fijo: se prueba el OCR a varias escalas
-# calculadas a partir del tamaño REAL de esta foto en particular, y se usa
-# la que efectivamente logra emparejar más ítems — nunca se adivina.
-_CANDIDATE_TARGET_LONG_SIDES = [0, 1300, 2000, 2800]  # 0 = tamaño original, sin tocar
-_MAX_UPSCALE = 4.0  # tope: una foto MUY chica no gana texto real de la nada
 
 
 class PositionRequest(BaseModel):
     image_b64: str        # foto ya orientada hacia arriba, base64 sin el prefijo "data:...,"
     items: list[str]      # nombres de ítem en el mismo orden en que aparecen en la boleta
+    # Opcional: total de cada ítem según la lectura del modelo (mismo orden que
+    # `items`). Si viene, una fila que además contiene ese número suma un bono
+    # chico en el alineamiento — desempata ítems de nombre parecido. Nunca es
+    # requisito (el OCR puede no leer el precio).
+    prices: Optional[list[Optional[float]]] = None
 
 
 class Segment(BaseModel):
     x0: float
     x1: float
-    # Alto REAL (0-100 = % del alto de la foto) de la línea Tesseract de la
-    # que vino ESTE tramo en particular — no el del ítem completo. Nombre y
-    # precio de una misma fila física suelen caer en líneas Tesseract con
-    # alturas ligeramente distintas (fuentes con descendentes, boleta
-    # doblada/arrugada); si el frontend usara un solo alto compartido por
-    # ítem, el tramo del precio podría dibujarse desalineado del texto real.
+    # Alto REAL (0-100 = % del alto de la foto) de las cajas de texto de las
+    # que vino ESTE tramo — no el del ítem completo: nombre y precio de una
+    # misma fila física pueden quedar a alturas distintas (boleta doblada o
+    # foto inclinada) y cada tramo se dibuja sobre su propio texto.
     y0: float
     y1: float
 
@@ -74,609 +82,395 @@ class Segment(BaseModel):
 class ItemPosition(BaseModel):
     name: str
     position_y: Optional[float] = None  # 0-100 (centro vertical), o null si no hay match confiable
-    # Alto REAL de la línea de texto emparejada (0-100 = % del alto de la foto).
-    # Se mantiene como fallback/compat — cubre TODOS los segmentos del ítem
-    # (min/max); el frontend debe preferir el y0/y1 propio de cada `Segment`.
+    # Rango vertical que cubre TODOS los segmentos del ítem (0-100). Se
+    # mantiene como fallback/compat; el frontend prefiere el y0/y1 de cada
+    # `Segment`.
     bbox_y0: Optional[float] = None
     bbox_y1: Optional[float] = None
-    # Uno o más tramos horizontales REALES (0-100 = % del ancho de la foto) —
+    # Uno o más tramos horizontales REALES (0-100 = % del ancho de la foto):
     # nombre+cantidad por un lado, precio por otro, cuando hay un hueco en
-    # blanco grande entre columnas (no un solo tramo que sombrearía también
-    # ese hueco, como una barra sólida). Permite que la banda de color en el
-    # frontend se dibuje solo sobre el texto real, en tantos bloques como
-    # haga falta — cada uno con su propia altura (ver `Segment.y0/y1`).
+    # blanco grande entre columnas — la banda se dibuja solo sobre el texto.
     segments: list[Segment] = []
 
 
 class PositionResponse(BaseModel):
     items: list[ItemPosition]
-    # Texto crudo (en orden de lectura) de la variante de escala/contraste
-    # que ganó el matching — se usa en backend/app/ocr.py para verificar,
-    # gratis (ya se pagó este OCR igual), si un nombre/precio que dijo el
-    # modelo de visión realmente aparece en la foto o probablemente lo
-    # inventó. No afecta nada del posicionamiento — es solo un subproducto
-    # que ya se calculaba y se estaba descartando.
+    # Texto crudo de cada fila, en orden de lectura (subproducto del OCR).
     ocr_lines: list[str] = []
 
 
-def _candidate_scales(long_side: int) -> list[float]:
-    """Escalas a probar para ESTA foto en particular, de la más barata (1.0,
-    tamaño original) a la más agrandada — calculadas, no fijas."""
-    if long_side <= 0:
-        return [1.0]
-    scales = {1.0}
-    for target in _CANDIDATE_TARGET_LONG_SIDES[1:]:
-        scales.add(min(_MAX_UPSCALE, target / long_side))
-    return sorted(s for s in scales if s >= 1.0)
+# ---------------------------------------------------------------- motor OCR
+
+_engine = None
+_engine_init_lock = threading.Lock()
+# Una inferencia a la vez: cada una ya usa todos los núcleos; dos en paralelo
+# solo se pelearían la CPU y terminarían las dos tarde.
+_worker = ThreadPoolExecutor(max_workers=1)
 
 
-def _tesseract_lines(img: Image.Image, timeout: float = 0) -> list[dict]:
-    """OCR con Tesseract sobre esta imagen TAL CUAL (sin reescalar) → lista
-    de líneas en orden de lectura (arriba a abajo), cada una con su texto y
-    su caja REAL (top/bottom/left/right, % del alto/ancho de la imagen que
-    se le pasó). Agrupa palabras en líneas usando block_num/par_num/
-    line_num, que pytesseract ya calcula."""
-    w, h = img.size
-    # --oem 1 = LSTM-only explícito. El paquete `tesseract-ocr-spa` que
-    # instala el Dockerfile solo trae datos del motor LSTM (no legacy), así
-    # que el modo automático (default) ya resuelve a esto en la práctica —
-    # se deja explícito para no depender de eso si algún día cambia la
-    # imagen base o el paquete. No cambia el resultado.
-    # timeout>0: pytesseract MATA el proceso al vencer (RuntimeError) — una
-    # variante que ya no puede llegar a tiempo no sigue quemando CPU que
-    # necesita la próxima boleta.
-    data = pytesseract.image_to_data(img, lang="spa", output_type=Output.DICT, config="--oem 1", timeout=timeout)
-    lines: dict[tuple[int, int, int], dict] = {}
-    for i in range(len(data["text"])):
-        txt = data["text"][i].strip()
-        if not txt:
-            continue
-        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-        top, height = data["top"][i], data["height"][i]
-        left, width = data["left"][i], data["width"][i]
-        entry = lines.setdefault(key, {
-            "words": [], "top": top, "bottom": top + height, "left": left, "right": left + width,
-            "word_spans": [],  # (x0%, x1%) de CADA palabra — para separar en bloques (ver _row_segments)
-        })
-        entry["words"].append(txt)
-        entry["top"] = min(entry["top"], top)
-        entry["bottom"] = max(entry["bottom"], top + height)
-        entry["left"] = min(entry["left"], left)
-        entry["right"] = max(entry["right"], left + width)
-        entry["word_spans"].append((left / w * 100, (left + width) / w * 100))
-    ordered = sorted(lines.values(), key=lambda e: e["top"])
-    return [
-        {
-            "text": " ".join(e["words"]),
-            "y0": e["top"] / h * 100, "y1": e["bottom"] / h * 100,
-            "x0": e["left"] / w * 100, "x1": e["right"] / w * 100,
-            "word_spans": e["word_spans"],
-        }
-        for e in ordered
-    ]
+def _get_engine():
+    global _engine
+    if _engine is None:
+        with _engine_init_lock:
+            if _engine is None:
+                from rapidocr import RapidOCR
+                _engine = RapidOCR(params={
+                    "Global.log_level": "error",
+                    # El backend ya manda la foto derecha (EXIF + giro manual
+                    # del usuario): el clasificador de 180° por línea solo
+                    # suma tiempo.
+                    "Global.use_cls": False,
+                    "Global.max_side_len": _MAX_SIDE,
+                    "EngineConfig.onnxruntime.intra_op_num_threads": _THREADS,
+                    "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+                    # El detector corre con el lado mayor ≤ _DET_MAX_SIDE (el
+                    # reconocedor igual lee los recortes a resolución completa).
+                    # Medido: igual de preciso que a 2000 px y ~40 % más rápido
+                    # en fotos de celular grandes.
+                    "Det.limit_type": "max",
+                    "Det.limit_side_len": _DET_MAX_SIDE,
+                })
+    return _engine
 
 
-_ROW_OVERLAP_MIN = 0.6  # fracción mínima de traslape vertical para considerar "misma fila"
-_ROW_SEARCH_WINDOW = 6  # cuántas líneas mirar a cada lado (ordenadas por altura)
-
-
-_WORD_CLUSTER_GAP = 8.0  # % del ancho de la foto — huecos más chicos se fusionan (espacio normal entre palabras); más grandes quedan separados (columna en blanco entre nombre y precio)
-
-
-def _cluster_word_spans(word_spans: list[tuple[float, float, float, float]], gap: float) -> list[dict]:
-    """Junta palabras (x0,x1,y0,y1 — cada una con el alto REAL de la línea
-    Tesseract de la que vino) en bloques contiguos por X — separa en
-    bloques DISTINTOS solo cuando el hueco entre una palabra y la siguiente
-    supera `gap`. Medido en boletas reales: el espacio normal entre
-    palabras de un mismo bloque es ~3-5% del ancho de la foto; el hueco en
-    blanco entre la columna de nombre y la de precio es ~40% — hay margen
-    de sobra para separarlos con un solo umbral fijo, sin depender del
-    idioma/formato.
-
-    Cada bloque resultante lleva su PROPIO y0/y1 (min/max de las líneas que
-    aportaron sus palabras) — no el de la línea base del ítem. Necesario
-    porque nombre y precio de una misma fila física suelen venir de líneas
-    Tesseract con alturas ligeramente distintas (por descendentes de
-    fuente, o mucho más marcado cuando la boleta está doblada/arrugada);
-    si todos los bloques comparten un solo y0/y1, el del precio puede
-    quedar dibujado en la altura del nombre, desalineado del texto real."""
-    if not word_spans:
-        return []
-    spans = sorted(word_spans)
-    clusters = [[spans[0][0], spans[0][1], spans[0][2], spans[0][3]]]
-    for x0, x1, y0, y1 in spans[1:]:
-        if x0 - clusters[-1][1] <= gap:
-            c = clusters[-1]
-            c[1] = max(c[1], x1)
-            c[2] = min(c[2], y0)
-            c[3] = max(c[3], y1)
-        else:
-            clusters.append([x0, x1, y0, y1])
-    return [{"x0": c[0], "x1": c[1], "y0": c[2], "y1": c[3]} for c in clusters]
-
-
-def _row_segments(lines: list[dict], idx: int) -> dict:
-    """Tesseract a veces separa la cantidad y/o el precio del nombre del
-    ítem en bloques de texto DISTINTOS (líneas separadas) cuando hay mucho
-    espacio en blanco entre columnas — el nombre matchea bien, pero antes
-    la caja quedaba angosta, sin la cantidad ni el valor. Se junta el texto
-    de toda la fila física: se busca, cerca en el orden de lectura,
-    cualquier otra línea que comparta CASI LA MISMA ALTURA en la foto
-    (traslape vertical ≥60%).
-
-    A diferencia de un solo bbox ancho (que sombrearía TAMBIÉN el hueco en
-    blanco de por medio, como una barra sólida gigante), se agrupan las
-    palabras individuales en BLOQUES separados por hueco real
-    (`_cluster_word_spans`) — así la banda de color en el frontend sombrea
-    literalmente el texto (nombre+cantidad por un lado, precio por otro),
-    no el espacio vacío entre columnas. Es geométrico — no depende del
-    idioma, mayúsculas, largo del nombre/valor, ni de si hay descuento u
-    otro formato — así generaliza a cualquier boleta sin reglas por caso."""
-    base = lines[idx]
-    word_spans = [(x0, x1, base["y0"], base["y1"]) for x0, x1 in base["word_spans"]]
-    lo = max(0, idx - _ROW_SEARCH_WINDOW)
-    hi = min(len(lines), idx + _ROW_SEARCH_WINDOW + 1)
-    for j in range(lo, hi):
-        if j == idx:
-            continue
-        other = lines[j]
-        top = max(base["y0"], other["y0"])
-        bottom = min(base["y1"], other["y1"])
-        inter = max(0.0, bottom - top)
-        union = max(base["y1"], other["y1"]) - min(base["y0"], other["y0"])
-        if union > 0 and inter / union >= _ROW_OVERLAP_MIN:
-            word_spans.extend((x0, x1, other["y0"], other["y1"]) for x0, x1 in other["word_spans"])
-    segments = _cluster_word_spans(word_spans, _WORD_CLUSTER_GAP)
-    return {**base, "segments": segments}
-
-
-def _match_items_to_lines(items: list[str], lines: list[dict]) -> list[Optional[dict]]:
-    """Empareja cada ítem (en el orden en que vienen) con la mejor línea de
-    Tesseract disponible, buscando siempre HACIA ADELANTE desde la última
-    línea ya usada — nunca hacia atrás, así ítems con nombres repetidos (ej.
-    7x "Promo Alto del Carmen") no terminan todos apuntando a la misma línea
-    de texto. Entre candidatos EMPATADOS en similitud (frecuente en ítems
-    repetidos), gana el más cercano — la comparación es con `>` estricto, no
-    `>=`, a propósito. La búsqueda no tiene límite de cuántas líneas puede
-    saltar — una boleta real trae fácil 15-20 líneas de encabezado antes del
-    primer ítem, así que una ventana angosta nunca llega a él."""
-    MIN_SIMILARITY = 0.35
-    results: list[Optional[dict]] = []
-    last_idx = -1
-    for name in items:
-        name_norm = name.strip().lower()
-        best_ratio, best_idx = 0.0, -1
-        for idx in range(last_idx + 1, len(lines)):
-            ratio = SequenceMatcher(None, name_norm, lines[idx]["text"].strip().lower()).ratio()
-            if ratio > best_ratio:
-                best_ratio, best_idx = ratio, idx
-        if best_idx >= 0 and best_ratio >= MIN_SIMILARITY:
-            results.append(_row_segments(lines, best_idx))
-            last_idx = best_idx
-        else:
-            results.append(None)
-    return results
-
-
-def _standard_variant(img: Image.Image) -> Image.Image:
-    """Contraste + nitidez fijos — la mejora que ya se venía usando (y
-    probando bien) para casi todas las boletas. Es la variante BASE que se
-    prueba primero (más barata, ya validada); CLAHE es solo un escalón
-    extra para cuando esta no alcanza."""
-    from PIL import ImageEnhance
-    img = ImageEnhance.Contrast(img).enhance(1.8)
-    img = ImageEnhance.Sharpness(img).enhance(2.0)
-    return img
-
-
-def _clahe_variant(img: Image.Image) -> Optional[Image.Image]:
-    """Versión con contraste LOCAL realzado (CLAHE sobre el canal L de LAB,
-    + la misma nitidez de la variante estándar) — ayuda en fotos muy
-    claras/lavadas o muy oscuras donde el contraste fijo no alcanza. No
-    siempre ayuda más que el fijo (se probó en un set de boletas reales:
-    mejora las fotos difíciles pero empeora otras que ya leían bien con el
-    fijo) — por eso solo se prueba como ESCALÓN, nunca como primera opción.
-    None si cv2 no está disponible (nunca debe romper el resto del
-    servicio)."""
+@app.on_event("startup")
+def _load_models() -> None:
+    """Carga los modelos UNA vez al arrancar el contenedor (y hace una
+    inferencia de calentamiento) — el primer pedido real no paga ese costo."""
     try:
-        import cv2
         import numpy as np
-        from PIL import ImageEnhance
-        arr = np.array(img)
-        lab = cv2.cvtColor(arr, cv2.COLOR_RGB2LAB)
-        l_ch, a_ch, b_ch = cv2.split(lab)
-        l_ch = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l_ch)
-        arr = cv2.cvtColor(cv2.merge([l_ch, a_ch, b_ch]), cv2.COLOR_LAB2RGB)
-        out = Image.fromarray(arr)
-        return ImageEnhance.Sharpness(out).enhance(2.0)
-    except Exception:
-        return None
+        _get_engine()(np.full((64, 256, 3), 255, dtype=np.uint8))
+    except Exception as exc:  # noqa: BLE001 — nunca impedir que el servicio levante
+        print(f"[ocr_position] no se pudo precargar el OCR: {exc}")
 
 
-_SKEW_MIN_DEGREES = 3.0  # bajo esto no vale la pena enderezar — ruido normal de detección en fotos ya derechas
-
-_REQUEST_BUDGET_S = 5.5  # tope de reloj de TODO el pedido (1ª pasada + escalada), desde que llega — el backend corta a los 7s (ocr._populate_positions) y hay que dejar margen de red; antes el tope de 4s solo cubría la escalada y el total pasaba de 7s, con lo que el backend no recibía nada. Lo que no llegue a tiempo se descarta; el camino rápido (1 sola pasada, el caso común) termina mucho antes.
-
-
-def _hough_skew_angle(img: Image.Image, max_angle: float = 25.0) -> float:
-    """Estimación GRUESA del ángulo (grados) en que el texto de la foto está
-    inclinado respecto al marco — 0 si está derecha. Usa líneas de Hough
-    sobre bordes (Canny + HoughLinesP), NO Tesseract (gratis, corre siempre
-    que hace falta sin sumar otra llamada a OCR): cada línea recta detectada
-    (borde de renglón de texto, línea divisoria de la boleta, etc.) aporta
-    su propio ángulo; se toma la MEDIANA de las que caen cerca de la
-    horizontal — robusta a outliers (un borde de mesa en diagonal, un logo)
-    porque en una boleta real la enorme mayoría de líneas rectas son
-    renglones de texto, todos alineados entre sí. Precisa a ~1-3°, no más
-    (ver `_detect_skew_angle` para el refinamiento fino)."""
-    import cv2
+def _ocr_boxes(img: Image.Image) -> list[dict]:
+    """Corre PP-OCR sobre la foto → cajas de texto (una por línea detectada)
+    con su texto y su cuadrilátero en píxeles."""
     import numpy as np
-    w, h = img.size
-    scale = min(1.0, 1000 / max(w, h))
-    small = img.resize((max(1, round(w * scale)), max(1, round(h * scale)))) if scale < 1.0 else img
-    gray = cv2.cvtColor(np.array(small.convert("RGB")), cv2.COLOR_RGB2GRAY)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    lines = cv2.HoughLinesP(
-        edges, 1, np.pi / 360, threshold=80,
-        minLineLength=max(1, w * scale * 0.05), maxLineGap=8,
-    )
-    if lines is None:
-        return 0.0
-    angles = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        if x2 == x1:
-            continue
-        angle = float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
-        if angle > 90:
-            angle -= 180
-        if angle < -90:
-            angle += 180
-        if abs(angle) <= max_angle:
-            angles.append(angle)
-    return float(np.median(angles)) if angles else 0.0
-
-
-def _refine_skew_angle(img: Image.Image, coarse: float, span: float = 2.5, step: float = 0.1) -> float:
-    """Afina la estimación gruesa de Hough con projection profile — para
-    cada ángulo candidato en una ventana ANGOSTA alrededor de `coarse`,
-    rota una versión binarizada de la foto y mide qué tan "picuda" (alta
-    varianza) queda la suma de píxeles de texto por fila: con texto
-    perfectamente horizontal, cada renglón cae en una banda angosta de
-    alta densidad separada por blancos, maximizando la varianza. Es el
-    método más citado para esto, pero probado en vivo en boletas reales
-    queda dominado por la SILUETA del recibo (no el texto) a partir de
-    ~8° de búsqueda — por eso acá se usa solo para REFINAR una ventana
-    angosta (±2.5° por defecto) alrededor de lo que ya entregó Hough,
-    donde ese problema no aparece, en vez de para la búsqueda completa."""
-    import cv2
-    import numpy as np
-    w, h = img.size
-    scale = min(1.0, 700 / max(w, h))
-    small = img.resize((max(1, round(w * scale)), max(1, round(h * scale)))) if scale < 1.0 else img
-    gray = cv2.cvtColor(np.array(small.convert("RGB")), cv2.COLOR_RGB2GRAY)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    bh, bw = binary.shape
-    diag = int(np.ceil(np.hypot(bw, bh)))
-    canvas = np.zeros((diag, diag), dtype=np.uint8)
-    oy, ox = (diag - bh) // 2, (diag - bw) // 2
-    canvas[oy:oy + bh, ox:ox + bw] = binary
-
-    def score(angle: float) -> float:
-        M = cv2.getRotationMatrix2D((diag / 2, diag / 2), angle, 1.0)
-        rotated = cv2.warpAffine(canvas, M, (diag, diag), flags=cv2.INTER_NEAREST, borderValue=0)
-        profile = rotated.sum(axis=1).astype(np.float64)
-        return float(np.var(profile))
-
-    candidates = np.arange(coarse - span, coarse + span + step, step)
-    scores = [score(a) for a in candidates]
-    return float(candidates[int(np.argmax(scores))])
-
-
-def _detect_skew_angle(img: Image.Image) -> float:
-    """Ángulo (grados) en que el texto de la foto está inclinado respecto
-    al marco — 0 si está derecha o no se detectó nada confiable. Combina
-    las dos técnicas anteriores: Hough para una estimación gruesa robusta
-    (inmune a la silueta del recibo, pero con ~1-3° de error — insuficiente
-    en boletas con mucho texto apretado, donde ese margen ya tuerce el
-    emparejamiento), refinada por projection profile en una ventana angosta
-    alrededor de esa estimación (ahí SÍ es preciso, porque a esa escala no
-    entra en juego el problema de la silueta). Nunca debe romper el resto
-    del servicio — 0.0 si cv2 no está disponible o algo falla."""
-    try:
-        coarse = _hough_skew_angle(img)
-        if abs(coarse) < 0.5:  # ya está prácticamente derecha — no vale la pena refinar
-            return coarse
-        return _refine_skew_angle(img, coarse)
-    except Exception:
-        return 0.0
-
-
-def _rotate_expand(img: Image.Image, angle: float):
-    """Rota la imagen ENTERA sin recortar contenido (equivalente a
-    `Image.rotate(angle, expand=True)` de PIL) pero calculado con cv2 para
-    quedarse con la matriz afín exacta — se necesita después para deshacer
-    la rotación de las coordenadas que devuelve Tesseract sobre esta imagen
-    (ver `_unrotate_lines`). Devuelve la imagen rotada, la matriz afín
-    ORIGINAL→ROTADA, y los tamaños (ancho, alto) de ambas."""
-    import cv2
-    import numpy as np
-    arr = np.array(img.convert("RGB"))
-    h, w = arr.shape[:2]
-    center = (w / 2.0, h / 2.0)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    cos, sin = abs(M[0, 0]), abs(M[0, 1])
-    new_w = int(round(h * sin + w * cos))
-    new_h = int(round(h * cos + w * sin))
-    M[0, 2] += new_w / 2.0 - center[0]
-    M[1, 2] += new_h / 2.0 - center[1]
-    rotated = cv2.warpAffine(arr, M, (new_w, new_h), borderValue=(255, 255, 255))
-    return Image.fromarray(rotated), M, (w, h), (new_w, new_h)
-
-
-def _unrotate_lines(lines: list[dict], M, orig_size: tuple[int, int], rot_size: tuple[int, int]) -> list[dict]:
-    """Convierte x0/x1/y0/y1/word_spans de cada línea — calculados por
-    Tesseract sobre la imagen ENDEREZADA para leer mejor — de vuelta a %
-    de la foto ORIGINAL, que es el marco de referencia que espera el resto
-    del pipeline (y el frontend, que dibuja sobre la foto sin rotar).
-    Deshace la rotación aplicando la transformación afín inversa a las 4
-    esquinas de cada caja y tomando el rectángulo alineado a los ejes que
-    las contiene. Ese rectángulo queda un poco más ancho que el texto real
-    (inevitable: un rectángulo sin rotar no puede calzar exacto sobre texto
-    en ángulo) — mismo trade-off que ya acepta el resto del sistema al
-    dibujar recuadros sin rotación."""
-    import cv2
-    import numpy as np
-    Minv = cv2.invertAffineTransform(M)
-    ow, oh = orig_size
-    rw, rh = rot_size
-
-    def unrotate_box(x0pct, x1pct, y0pct, y1pct):
-        corners = np.array([
-            [x0pct / 100 * rw, y0pct / 100 * rh], [x1pct / 100 * rw, y0pct / 100 * rh],
-            [x0pct / 100 * rw, y1pct / 100 * rh], [x1pct / 100 * rw, y1pct / 100 * rh],
-        ])
-        pts = np.hstack([corners, np.ones((4, 1))]) @ Minv.T
-        return (
-            pts[:, 0].min() / ow * 100, pts[:, 0].max() / ow * 100,
-            pts[:, 1].min() / oh * 100, pts[:, 1].max() / oh * 100,
-        )
-
+    arr = np.array(img.convert("RGB"))[:, :, ::-1]  # RGB → BGR (lo que espera RapidOCR)
+    res = _get_engine()(arr)
+    if res is None or res.boxes is None or res.txts is None:
+        return []
     out = []
-    for line in lines:
-        x0, x1, y0, y1 = unrotate_box(line["x0"], line["x1"], line["y0"], line["y1"])
-        word_spans = []
-        for wx0, wx1 in line["word_spans"]:
-            wx0o, wx1o, _, _ = unrotate_box(wx0, wx1, line["y0"], line["y1"])
-            word_spans.append((wx0o, wx1o))
-        out.append({**line, "x0": x0, "x1": x1, "y0": y0, "y1": y1, "word_spans": word_spans})
+    for quad, txt in zip(res.boxes, res.txts):
+        txt = (txt or "").strip()
+        if txt:
+            out.append({"text": txt, "quad": [(float(x), float(y)) for x, y in quad]})
     return out
 
 
-def _run_scale(
-    base_img: Image.Image, items: list[str], scale: float,
-    transform: Optional[tuple] = None, deadline: Optional[float] = None,
-) -> tuple[list[Optional[dict]], int, list[dict]]:
-    w, h = base_img.size
-    im = base_img if scale == 1.0 else base_img.resize(
-        (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS,
-    )
-    timeout = 0.0
-    if deadline is not None:
-        timeout = deadline - time.time()
-        if timeout <= 0.2:
-            return [None] * len(items), 0, []
+# ---------------------------------------------------------------- texto
+
+def _fold(s: str) -> str:
+    """Minúsculas sin tildes ni marcas (NFKD + casefold): 'Café' == 'CAFE'."""
+    s = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in s if not unicodedata.combining(c)).casefold()
+
+
+def _script(c: str) -> str:
+    """Escritura de una letra ('LATIN', 'CJK', 'CYRILLIC', ...) según su
+    nombre Unicode — aproximación suficiente sin dependencias."""
     try:
-        lines = _tesseract_lines(im, timeout=timeout)
-    except RuntimeError:  # pytesseract: proceso cortado por timeout
-        return [None] * len(items), 0, []
-    if transform is not None:
-        M, orig_size = transform
-        lines = _unrotate_lines(lines, M, orig_size, im.size)
-    matches = _match_items_to_lines(items, lines)
-    return matches, sum(1 for m in matches if m is not None), lines
+        return unicodedata.name(c).split(" ")[0]
+    except ValueError:
+        return ""
 
 
-def _best_of(
-    results: list[tuple[list[Optional[dict]], int, list[dict]]],
-    start: tuple[list[Optional[dict]], int, list[dict]],
-) -> tuple[list[Optional[dict]], int, list[dict]]:
-    """Se queda con el mejor resultado — mismo criterio (`>` estricto,
-    primero gana en empate) que si se hubiera recorrido `results` en orden
-    de forma secuencial, sin importar en qué orden TERMINARON de calcularse
-    (paralelo o no) — así paralelizar nunca cambia cuál gana. Arrastra
-    también las líneas de OCR de la variante ganadora (`ocr_lines` en la
-    respuesta)."""
-    matches, count, lines = start
-    for m, c, l in results:
-        if c > count:
-            count, matches, lines = c, m, l
-    return matches, count, lines
+def _script_filter(items: list[str]):
+    """El reconocedor es multilingüe y a veces cuela una letra de otra
+    escritura (p. ej. un carácter chino en una boleta en español). Se
+    descartan las letras cuya escritura no aparece en NINGÚN nombre de ítem —
+    regla general: en una boleta japonesa los ítems traen kanji y se
+    conservan."""
+    scripts = {_script(c) for name in items for c in _fold(name) if c.isalpha()}
+    if not scripts:
+        return lambda s: s
+
+    def keep(s: str) -> str:
+        return "".join(c for c in s if not c.isalpha() or _script(_fold(c)[:1] or c) in scripts)
+    return keep
 
 
-def _match_best_effort(items: list[str], img: Image.Image, deadline: Optional[float] = None) -> tuple[list[Optional[dict]], list[dict]]:
-    """Corre el OCR + emparejamiento a varias escalas (ver
-    `_candidate_scales`) con la variante de contraste ESTÁNDAR (ya probada)
-    y, solo si con eso no alcanza a emparejar todos los ítems, escala a
-    probar de nuevo con contraste realzado (CLAHE) — se queda con la
-    combinación de escala+contraste que efectivamente logra emparejar más
-    ítems con confianza. Así se adapta sola a la calidad y tamaño real de
-    CADA foto en vez de asumir una resolución o un contraste que funcione
-    siempre (no existe: probado en vivo que una resolución o un contraste
-    fijo arregla una boleta y rompe otra que ya estaba bien).
+def _letters(s: str) -> str:
+    """Solo los tokens que tienen alguna letra (descarta cantidades, precios
+    en cualquier formato, códigos de artículo) — independiente de idioma y
+    moneda. Así 'te' vs '1 TE 1.500' compara 'te' con 'te'."""
+    toks = [t for t in _fold(s).split() if any(c.isalpha() for c in t)]
+    return " ".join(re.sub(r"[\W_]+", "", t) for t in toks).strip()
 
-    La escala más barata (1.0, sin reescalar) SIEMPRE se corre sola primero
-    — si con eso ya emparejó todo (el caso común: 7 de 9 boletas del set de
-    prueba), se corta ahí, exactamente 1 sola llamada a Tesseract, igual de
-    rápido que si no existiera ninguna otra escala/variante. Solo en el
-    caso difícil (no alcanzó el 100%) se lanzan en PARALELO el resto de
-    escalas estándar + todas las escalas de CLAHE — como esas llamadas son
-    independientes entre sí y ya de por sí se iban a correr todas en serie
-    (nunca había early-stop en este caso), paralelizarlas no cambia qué
-    resultado gana (ver `_best_of`), solo el tiempo de reloj: el peor caso
-    pasa de la SUMA de todas las llamadas a la más LENTA de ellas — EN TEORÍA.
 
-    En la práctica (medido 2026-09-18, misma boleta difícil de 22 ítems,
-    misma máquina, sin cambiar una línea de código): la MISMA llamada dio
-    23.07s una vez y 1.65s la siguiente — 14× de diferencia, pura
-    contención de CPU (8 procesos de Tesseract compitiendo por núcleos
-    reales, que en un contenedor puede haber muchos menos que
-    `max_workers`). "Paralelo" no es gratis cuando no hay núcleo libre para
-    cada hilo — en el peor caso, en vez de la más LENTA, se acerca a la
-    SUMA con overhead de más. Por eso `_REQUEST_BUDGET_S`: un
-    presupuesto de tiempo real para esta fase — se toma lo mejor que haya
-    TERMINADO dentro del presupuesto, no lo que falte. Devolver el mejor
-    resultado parcial a tiempo es estrictamente mejor que devolver el
-    resultado perfecto tarde (el caller igual tiene su propio timeout de
-    red — sin este presupuesto interno, ese timeout externo tira TODO el
-    trabajo ya hecho a la basura, sin aprovechar nada).
+def _similarity(name: str, text: str) -> float:
+    """Parecido entre el nombre de un ítem y el texto de una fila, 0-1.
+    Toma el mejor entre la razón global y la COBERTURA del texto más corto
+    dentro del más largo (el modelo suele expandir abreviaturas — 'CERV
+    KUNST' vs 'Cerveza Kunstmann' — o la fila trae palabras de más), con una
+    penalización suave cuando uno es mucho más corto que el otro."""
+    a, b = name, text
+    if not a or not b:
+        return 0.0
+    r = SequenceMatcher(None, a, b, autojunk=False).ratio()
+    s, l = (a, b) if len(a) <= len(b) else (b, a)
+    if len(s) >= 3:
+        matched = sum(m.size for m in SequenceMatcher(None, s, l, autojunk=False).get_matching_blocks())
+        r = max(r, 0.9 * matched / len(s) * min(1.0, (len(s) / len(l)) ** 0.25))
+    return r
 
-    También en ese mismo caso difícil (nunca en el camino rápido) se prueba
-    una variante con la foto ENDEREZADA: una foto sacada en ángulo (no solo
-    boleta doblada — el cuadro entero inclinado) hace que Tesseract agrupe
-    mal las líneas de texto (su propio análisis de layout asume texto
-    aprox. horizontal), lo que rompe tanto el armado de "misma fila
-    física" (`_row_segments`) como el orden de lectura que asume el
-    emparejamiento — ninguna heurística downstream puede recuperar texto
-    que Tesseract ya agrupó mal en el paso anterior. Se detecta el ángulo
-    (`_detect_skew_angle`, sin costo de OCR) y, si supera el umbral mínimo,
-    se prueba TAMBIÉN esa variante — compite en el mismo torneo que las
-    demás (`_best_of`, gana solo si empareja estrictamente más ítems),
-    nunca se asume que enderezar ayuda."""
-    std_img = _standard_variant(img)
-    w, h = std_img.size
-    scales = _candidate_scales(max(w, h))
 
-    if deadline is None:
-        deadline = time.time() + _REQUEST_BUDGET_S
-    matches, count, lines = _run_scale(std_img, items, scales[0], deadline=deadline)
-    if count == len(items) or len(scales) == 1 or time.time() >= deadline - 0.3:
-        return matches, lines
+def _numbers(text: str) -> set[str]:
+    """Todos los números de la fila como cadenas de dígitos, sin separadores
+    de miles/decimales ('1.500', '1,500', '15.00' → '1500')."""
+    out = set()
+    for m in re.finditer(r"\d[\d.,' ]*\d|\d", text):
+        d = re.sub(r"\D", "", m.group())
+        out.add(d.lstrip("0") or "0")
+        for part in m.group().split():
+            dd = re.sub(r"\D", "", part)
+            if dd:
+                out.add(dd.lstrip("0") or "0")
+    return out
 
-    enhanced = _clahe_variant(img)
 
-    skew_angle = _detect_skew_angle(std_img)
-    deskew_transform = None
-    deskewed_std = deskewed_enhanced = None
-    if abs(skew_angle) >= _SKEW_MIN_DEGREES:
-        deskewed_std, M, orig_size, _ = _rotate_expand(std_img, skew_angle)
-        deskew_transform = (M, orig_size)
-        if enhanced is not None:
-            deskewed_enhanced, _, _, _ = _rotate_expand(enhanced, skew_angle)
-
-    # Una sola lista ordenada — el orden importa para el desempate de
-    # `_best_of` (>estricto, primero gana), así que se conserva el mismo
-    # orden de siempre: escalas estándar, luego CLAHE, luego enderezado.
-    # Tantos procesos Tesseract como núcleos reales (con OMP_THREAD_LIMIT=1
-    # cada uno usa uno) — más solo agrega contención.
-    ex = ThreadPoolExecutor(max_workers=max(1, os.cpu_count() or 2))
+def _price_keys(v: Optional[float]) -> set[str]:
+    """Formas en dígitos en que puede aparecer impreso un monto (entero o con
+    2 decimales), sin depender de la moneda ni del separador."""
+    if v is None:
+        return set()
     try:
-        jobs = [(std_img, s, None) for s in scales[1:]]
-        if enhanced is not None:
-            jobs += [(enhanced, s, None) for s in scales]
-        if deskewed_std is not None:
-            jobs.append((deskewed_std, 1.0, deskew_transform))
-        if deskewed_enhanced is not None:
-            jobs.append((deskewed_enhanced, 1.0, deskew_transform))
-        # Se ENVÍAN primero las enderezadas (si la foto vino torcida es la
-        # variante que gana, y es la que más tarde quedaba sin terminar), pero
-        # se EVALÚAN en el orden de siempre para no cambiar el desempate.
-        send_order = sorted(range(len(jobs)), key=lambda i: jobs[i][2] is None)
-        fut_by_idx = {i: ex.submit(_run_scale, jobs[i][0], items, jobs[i][1], jobs[i][2], deadline) for i in send_order}
-        futures = [fut_by_idx[i] for i in range(len(jobs))]
+        a = abs(float(v))
+    except (TypeError, ValueError):
+        return set()
+    if not math.isfinite(a) or a == 0:
+        return set()
+    keys = {f"{a:.2f}".replace(".", "").lstrip("0")}
+    if a == int(a):
+        keys.add(str(int(a)))
+    return keys
 
-        done, pending = _futures_wait(futures, timeout=max(0.0, deadline - time.time()))
-        if pending:
-            print(f"[ocr_position] presupuesto de {_REQUEST_BUDGET_S}s agotado — "
-                  f"{len(pending)}/{len(futures)} variante(s) sin terminar, usando lo mejor que haya llegado a tiempo")
-        for f in futures:
-            if f not in done:
-                continue
-            m, c, l = f.result()
-            if c > count:
-                matches, count, lines = m, c, l
-    finally:
-        # No esperar a los hilos abandonados (shutdown(wait=True), el
-        # default, bloquearía igual hasta que terminen todos — justo lo que
-        # el presupuesto de arriba existe para evitar). Siguen corriendo
-        # solos hasta terminar por su cuenta; no bloquean esta respuesta.
-        # cancel_futures: las variantes que ni empezaron no arrancan después
-        # de responder; las que corren se cortan solas por su timeout.
-        ex.shutdown(wait=False, cancel_futures=True)
-    return matches, lines
+
+# ---------------------------------------------------------------- filas
+
+def _skew(boxes: list[dict]) -> float:
+    """Inclinación (radianes) del texto de la foto: mediana del ángulo del
+    borde superior de las cajas alargadas. DBNet devuelve cuadriláteros que
+    siguen al texto, así que esto sale gratis y sin otra pasada."""
+    angles = []
+    for b in boxes:
+        (x0, y0), (x1, y1) = b["quad"][0], b["quad"][1]
+        w = math.hypot(x1 - x0, y1 - y0)
+        h = math.hypot(b["quad"][3][0] - x0, b["quad"][3][1] - y0)
+        if w > 2 * h and x1 > x0:
+            angles.append(math.atan2(y1 - y0, x1 - x0))
+    angles.sort()
+    return angles[len(angles) // 2] if angles else 0.0
+
+
+def _rows(boxes: list[dict], w: int, h: int) -> list[dict]:
+    """Agrupa las cajas en FILAS físicas (nombre, cantidad y precio de un
+    mismo renglón suelen ser cajas separadas por el hueco entre columnas).
+    Se agrupa por el centro vertical en el marco ENDEREZADO (se deshace la
+    inclinación medida en `_skew`), así una foto torcida no mezcla
+    renglones. Cada fila guarda el tramo de cada caja (en % de la foto
+    original) para dibujar los segmentos."""
+    ang = _skew(boxes)
+    cos, sin = math.cos(ang), math.sin(ang)
+    prepared = []
+    for b in boxes:
+        xs = [p[0] for p in b["quad"]]
+        ys = [p[1] for p in b["quad"]]
+        cx, cy = sum(xs) / 4, sum(ys) / 4
+        q = b["quad"]
+        bh = (math.hypot(q[3][0] - q[0][0], q[3][1] - q[0][1]) + math.hypot(q[2][0] - q[1][0], q[2][1] - q[1][1])) / 2
+        prepared.append({
+            "text": b["text"],
+            "c": -cx * sin + cy * cos,     # centro vertical sin inclinación
+            "u": cx * cos + cy * sin,      # posición horizontal sin inclinación
+            "h": max(bh, 1.0),
+            "span": (min(xs) / w * 100, max(xs) / w * 100, min(ys) / h * 100, max(ys) / h * 100),
+        })
+    prepared.sort(key=lambda p: p["c"])
+    rows: list[dict] = []
+    for p in prepared:
+        # La fila más cercana entre las últimas; misma fila si los centros
+        # difieren menos de medio alto de la caja MÁS BAJA — una caja mal
+        # detectada que abarca dos renglones no puede fusionarlos.
+        near = min(rows[-4:], key=lambda r: abs(r["c"] - p["c"]), default=None)
+        if near is not None and abs(near["c"] - p["c"]) < 0.5 * min(near["h"], p["h"]):
+            near["parts"].append(p)
+            near["c"] = sum(x["c"] for x in near["parts"]) / len(near["parts"])
+            near["h"] = min(near["h"], p["h"])
+        else:
+            rows.append({"c": p["c"], "h": p["h"], "parts": [p]})
+    rows.sort(key=lambda r: r["c"])
+    out = []
+    for r in rows:
+        parts = sorted(r["parts"], key=lambda p: p["u"])
+        spans = [p["span"] for p in parts]
+        out.append({
+            "text": " ".join(p["text"] for p in parts),
+            "y0": min(s[2] for s in spans), "y1": max(s[3] for s in spans),
+            "spans": spans,
+        })
+    return out
+
+
+_SEGMENT_GAP = 8.0  # % del ancho — un hueco mayor entre cajas de la misma fila separa tramos (columna en blanco entre nombre y precio)
+
+
+def _segments(spans: list[tuple[float, float, float, float]]) -> list[dict]:
+    """Junta las cajas de una fila en tramos contiguos por X; separa solo
+    cuando el hueco supera `_SEGMENT_GAP`. Cada tramo lleva su propio y0/y1."""
+    spans = sorted(spans)
+    out = [list(spans[0])]
+    for x0, x1, y0, y1 in spans[1:]:
+        c = out[-1]
+        if x0 - c[1] <= _SEGMENT_GAP:
+            c[1], c[2], c[3] = max(c[1], x1), min(c[2], y0), max(c[3], y1)
+        else:
+            out.append([x0, x1, y0, y1])
+    return [{"x0": c[0], "x1": c[1], "y0": c[2], "y1": c[3]} for c in out]
+
+
+# ---------------------------------------------------------------- alineación
+
+_MIN_SIM = 0.45      # parecido mínimo para aceptar una fila (sobre tokens con letras, sin tildes)
+_PRICE_BONUS = 0.15  # bono si la fila (o la siguiente) trae el total del ítem — solo si ya se parecen
+_PRICE_FLOOR = 0.30  # el bono nunca convierte en match una fila que no se parece al nombre
+# Nombre ilegible (foto gastada, escrita a mano, otro alfabeto) pero la fila
+# trae EXACTAMENTE el total del ítem (≥3 dígitos, para no anclar en un "1"):
+# cuenta como un match débil — el orden global evita confundirlo con totales.
+_PRICE_ONLY = 0.05
+
+
+def _align(items: list[str], rows: list[dict], prices: Optional[list] = None) -> list[Optional[int]]:
+    """Alineación GLOBAL monótona (programación dinámica tipo
+    Needleman-Wunsch): asigna a cada ítem a lo más una fila, respetando el
+    orden de lectura, maximizando Σ(parecido − umbral). Los ítems pueden
+    quedar sin fila y las filas sin ítem (encabezados, 'cantidad × precio',
+    descuentos, totales). A diferencia del emparejamiento codicioso, un ítem
+    mal emparejado no arrastra a todos los siguientes, y los nombres
+    repetidos caen en filas sucesivas."""
+    n, m = len(items), len(rows)
+    if not n or not m:
+        return [None] * n
+    names = [_letters(t) or _fold(t).strip() for t in items]
+    texts = [_letters(r["text"]) for r in rows]
+    nums = [_numbers(r["text"]) for r in rows]
+    gain = [[0.0] * m for _ in range(n)]
+    for i in range(n):
+        pk = _price_keys(prices[i]) if prices and i < len(prices) else set()
+        for j in range(m):
+            s = _similarity(names[i], texts[j])
+            if pk and s >= _PRICE_FLOOR and (pk & nums[j] or (j + 1 < m and pk & nums[j + 1] and not texts[j + 1])):
+                s += _PRICE_BONUS
+            elif pk and s < _MIN_SIM and any(len(k) >= 3 for k in pk & nums[j]):
+                s = _MIN_SIM + _PRICE_ONLY  # nombre ilegible, pero la fila trae el total exacto
+            gain[i][j] = s - _MIN_SIM
+    best = [[0.0] * (m + 1) for _ in range(n + 1)]
+    back = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        bi, bp, gi = best[i], best[i - 1], gain[i - 1]
+        for j in range(m + 1):
+            v, b = bp[j], 1                       # ítem i sin fila
+            if j and bi[j - 1] > v:
+                v, b = bi[j - 1], 2               # fila j sin ítem
+            if j and gi[j - 1] > 0 and bp[j - 1] + gi[j - 1] > v:
+                v, b = bp[j - 1] + gi[j - 1], 3   # ítem i ↔ fila j
+            bi[j], back[i][j] = v, b
+    out: list[Optional[int]] = [None] * n
+    i, j = n, m
+    while i > 0:
+        b = back[i][j]
+        if b == 3:
+            out[i - 1] = j - 1
+            i, j = i - 1, j - 1
+        elif b == 2:
+            j -= 1
+        else:
+            i -= 1
+    return out
+
+
+def _locate(items: list[str], img: Image.Image, prices: Optional[list] = None) -> tuple[list[Optional[dict]], list[dict]]:
+    """OCR + filas + alineación → por ítem, la fila asignada con sus tramos
+    (o None), y todas las filas (para `ocr_lines`)."""
+    w, h = img.size
+    boxes = _ocr_boxes(img)
+    keep = _script_filter(items)
+    for b in boxes:
+        b["text"] = keep(b["text"]).strip()
+    rows = _rows([b for b in boxes if b["text"]], w, h)
+    matches = []
+    for k in _align(items, rows, prices):
+        if k is None:
+            matches.append(None)
+        else:
+            r = rows[k]
+            matches.append({**r, "segments": _segments(r["spans"])})
+    return matches, rows
 
 
 @app.post("/position", response_model=PositionResponse)
 def position(req: PositionRequest) -> PositionResponse:
-    matches: list[Optional[dict]]
-    lines: list[dict] = []
+    started = time.time()
+    matches: list[Optional[dict]] = [None] * len(req.items)
+    rows: list[dict] = []
     try:
-        img_bytes = base64.b64decode(req.image_b64)
-        deadline = time.time() + _REQUEST_BUDGET_S  # desde que llega el pedido, no desde la escalada
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        matches, lines = _match_best_effort(req.items, img, deadline)
-    except Exception:
-        matches = [None] * len(req.items)
+        img = Image.open(io.BytesIO(base64.b64decode(req.image_b64))).convert("RGB")
+        if max(img.size) > _MAX_SIDE:
+            s = _MAX_SIDE / max(img.size)
+            img = img.resize((max(1, round(img.width * s)), max(1, round(img.height * s))), Image.LANCZOS)
+        # Se espera el resultado solo mientras quede presupuesto: si no llega
+        # (foto enorme, CPU lenta u otro pedido en curso) se responde sin
+        # posiciones — el frontend cae al reparto parejo — en vez de dejar
+        # que el backend agote sus 7 s. Si ni empezó, se cancela.
+        fut = _worker.submit(_locate, req.items, img, req.prices)
+        try:
+            matches, rows = fut.result(timeout=max(0.0, _REQUEST_BUDGET_S - (time.time() - started)))
+        except FuturesTimeout:
+            fut.cancel()
+            print(f"[ocr_position] presupuesto de {_REQUEST_BUDGET_S}s agotado — sin posiciones para este pedido")
+    except Exception as exc:  # noqa: BLE001 — best-effort, nunca rompe la subida
+        print(f"[ocr_position] error: {exc}")
     items_out: list[ItemPosition] = []
     for name, m in zip(req.items, matches):
         if m is None:
             items_out.append(ItemPosition(name=name))
-        else:
-            segs = m["segments"]
-            # bbox_y0/y1 a nivel ítem = rango que cubre TODOS sus segmentos —
-            # se mantiene solo como fallback/compat; el frontend debe preferir
-            # el y0/y1 propio de cada segmento (ver `Segment`).
-            bbox_y0 = min((s["y0"] for s in segs), default=m["y0"])
-            bbox_y1 = max((s["y1"] for s in segs), default=m["y1"])
-            items_out.append(ItemPosition(
-                name=name,
-                position_y=round((m["y0"] + m["y1"]) / 2, 1),
-                bbox_y0=round(bbox_y0, 1), bbox_y1=round(bbox_y1, 1),
-                segments=[
-                    Segment(x0=round(s["x0"], 1), x1=round(s["x1"], 1), y0=round(s["y0"], 1), y1=round(s["y1"], 1))
-                    for s in segs
-                ],
-            ))
+            continue
+        segs = m["segments"]
+        items_out.append(ItemPosition(
+            name=name,
+            position_y=round((m["y0"] + m["y1"]) / 2, 1),
+            bbox_y0=round(min(s["y0"] for s in segs), 1),
+            bbox_y1=round(max(s["y1"] for s in segs), 1),
+            segments=[Segment(x0=round(s["x0"], 1), x1=round(s["x1"], 1), y0=round(s["y0"], 1), y1=round(s["y1"], 1)) for s in segs],
+        ))
     _clamp_adjacent_overlap(items_out)
-    return PositionResponse(items=items_out, ocr_lines=[l["text"] for l in lines])
+    return PositionResponse(items=items_out, ocr_lines=[r["text"] for r in rows])
 
 
 def _clamp_adjacent_overlap(items_out: list[ItemPosition]) -> None:
-    """Tesseract a veces devuelve la altura de UNA línea inflada — casi el
-    doble de lo normal — cuando esa línea puntual está borrosa/con poco
-    contraste y su propio análisis de layout fusiona la fila con parte de
-    la de arriba o abajo (visto en vivo: una boleta con mediana de altura
-    de línea 2.7% dio una línea puntual de 4.5%, justo la que se veía
-    invadiendo al ítem vecino). No es un problema del agrupado de fila
-    (`_row_segments`) ni de escala/contraste — es la caja que Tesseract
-    mismo calculó para esa línea en particular.
-
-    En vez de adivinar cuál de los dos bordes de esa línea está mal (no
-    hay forma de saberlo de antemano, y varía de foto en foto), se acota
-    GEOMÉTRICAMENTE después de emparejar: ningún ítem puede extender su
-    bbox/segmentos más allá del punto medio hacia el ítem SIGUIENTE en el
-    orden de lectura (mismo orden que ya usa `_match_items_to_lines`,
-    siempre hacia adelante) — así, sea cual sea la causa real de una caja
-    inflada, nunca termina pisando el espacio del ítem de al lado. Solo
-    actúa cuando hay traslape real entre dos ítems consecutivos con match;
-    ítems sin match (bbox None) o ya separados quedan intactos."""
+    """Ningún tramo puede pasar del punto medio hacia un tramo del ítem
+    SIGUIENTE (mismo orden de lectura) que esté en la misma columna: una caja
+    inflada nunca pisa al vecino. Solo se comparan tramos que se solapan en
+    X — en una foto inclinada el precio de un ítem y el nombre del siguiente
+    pueden compartir alturas sin tocarse, y recortarlos deformaría la banda.
+    El bbox del ítem se recalcula desde sus tramos."""
     for i in range(len(items_out) - 1):
         a, b = items_out[i], items_out[i + 1]
         if a.position_y is None or b.position_y is None:
             continue
-        if a.bbox_y1 is None or b.bbox_y0 is None or a.bbox_y1 <= b.bbox_y0:
-            continue  # sin traslape, no hay nada que acotar
-        midpoint = round((a.position_y + b.position_y) / 2, 1)
-        if a.bbox_y1 > midpoint:
-            a.bbox_y1 = midpoint
-            for seg in a.segments:
-                seg.y1 = min(seg.y1, midpoint)
-                seg.y0 = min(seg.y0, seg.y1)
-        if b.bbox_y0 < midpoint:
-            b.bbox_y0 = midpoint
-            for seg in b.segments:
-                seg.y0 = max(seg.y0, midpoint)
-                seg.y1 = max(seg.y1, seg.y0)
+        for sa in a.segments:
+            for sb in b.segments:
+                if min(sa.x1, sb.x1) <= max(sa.x0, sb.x0) or sa.y1 <= sb.y0:
+                    continue
+                mid = round(((sa.y0 + sa.y1) / 2 + (sb.y0 + sb.y1) / 2) / 2, 1)
+                sa.y1 = max(sa.y0, min(sa.y1, mid))
+                sb.y0 = min(sb.y1, max(sb.y0, mid))
+    for it in items_out:
+        if it.segments:
+            it.bbox_y0 = min(sg.y0 for sg in it.segments)
+            it.bbox_y1 = max(sg.y1 for sg in it.segments)
 
 
 @app.get("/health")

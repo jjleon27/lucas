@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Eval liviano del matching de posición (Tesseract) — reusa las fotos y el
+Eval liviano del matching de posición — reusa las fotos y el
 ground-truth de nombres que YA existen en backend/tests/eval/ (no hace falta
 etiquetar nada nuevo: los nombres de ítem del ground-truth de visión son
 exactamente lo que este servicio recibe como `items`).
