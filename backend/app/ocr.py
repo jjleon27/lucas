@@ -1297,7 +1297,8 @@ def _find_plausible_total(ocr_text: str, items_sum: float) -> Optional[int]:
 
 def _prep_for_position(image_bytes: bytes) -> bytes:
     """Versión LIMPIA de la foto (orientada + redimensionada, SIN contraste
-    ni nitidez) para el servicio de posición (Tesseract). Ese servicio
+    ni nitidez) para el servicio de posición (hoy PP-OCR; la historia de
+    abajo es de cuando era Tesseract). Ese servicio
     prueba sus propias variantes de contraste (ninguna vs CLAHE) combinadas
     con varias escalas — se probó (2026-09-14) subirle SIEMPRE contraste
     realzado (CLAHE) de forma fija: mejoró boletas muy lavadas pero
@@ -1836,7 +1837,8 @@ def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None,
         return LLMResponse(text="", prompt_tokens=u.input_tokens, completion_tokens=u.output_tokens,
                            model=model, provider="openai")
 
-    deadline = time.time() + 130.0  # tope global, bajo los 180s de Vercel
+    started = time.time()
+    deadline = started + 130.0  # tope global, bajo los 180s de Vercel
     hedge_at = time.time() + max(0.0, settings.bill_hedge_after_s)
     launched = 0
     finished = 0
@@ -1874,6 +1876,21 @@ def _race_structured_bill_read(image_data_url: str, *, model: str, user_id=None,
         winner = (res, data)
 
     res, data = winner
+    try:
+        # Una línea por boleta para medir en prod la p75 de latencia (y así
+        # fijar `bill_hedge_after_s` con datos) y el gasto real de tokens.
+        u = res.usage
+        details_out = getattr(u, "output_tokens_details", None)
+        details_in = getattr(u, "input_tokens_details", None)
+        print(
+            f"[ocr][bill_read] latency={time.time() - started:.2f}s copies={launched} "
+            f"hedge_after={settings.bill_hedge_after_s}s model={model} "
+            f"in={u.input_tokens} cached={getattr(details_in, 'cached_tokens', None)} "
+            f"out={u.output_tokens} reasoning={getattr(details_out, 'reasoning_tokens', None)} "
+            f"items={len(data.get('items') or []) if isinstance(data, dict) else None}"
+        )
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[ocr] bill_read log failed: {_exc}")
     try:
         _log_usage(db, user_id, _usage_of(res), "parse_bill")
         if launched == 2:
@@ -1939,14 +1956,10 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
     más tramos horizontales reales (`segments`, % del ancho de la foto —
     nombre+cantidad por un lado, precio por otro, sin sombrear el hueco en
     blanco de por medio) llamando al servicio interno aislado
-    `services/ocr_position` (Tesseract,
-    probado a varias escalas y variantes de contraste hasta encontrar la
-    que mejor lee ESTA foto en particular, + emparejamiento por orden — ver
-    ese servicio para el detalle). Le manda la foto SIN el contraste/
-    nitidez ya ajustados para el modelo de visión (`_prep_for_position` —
-    ver su docstring: un contraste fijo mejora algunas fotos y empeora
-    otras, igual que pasaba con la escala) — el servicio prueba sus propias
-    variantes a partir de esa base limpia. Es opcional por diseño: si el
+    `services/ocr_position` (PP-OCR en una pasada + alineación global por
+    orden de los nombres contra las filas de texto — ver ese servicio). Le
+    manda la foto SIN el contraste/nitidez ajustados para el modelo de
+    visión (`_prep_for_position`). Es opcional por diseño: si el
     servicio no está configurado (`OCR_POSITION_URL` sin definir, p.ej. en
     dev local), falla, tarda más del límite, o no encuentra match para
     algún ítem, esos campos simplemente quedan en None — el frontend ya cae
@@ -1962,11 +1975,18 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
     url = os.environ.get("OCR_POSITION_URL")
     if not url or not items:
         return []
+    t0 = time.time()
     try:
         b64 = base64.b64encode(_prep_for_position(image_bytes)).decode("ascii")
         resp = _position_http_client().post(
             f"{url.rstrip('/')}/position",
-            json={"image_b64": b64, "items": [it.name for it in items]},
+            json={
+                "image_b64": b64, "items": [it.name for it in items],
+                # Opcional en el servicio: una fila que además trae el total
+                # del ítem suma un bono chico en el alineamiento (desempata
+                # nombres parecidos). null si el modelo no estaba seguro.
+                "prices": [None if it.needs_review else it.line_total for it in items],
+            },
             # El servicio prueba varias escalas y, si hace falta, contraste
             # realzado, antes de rendirse con un ítem (ver
             # services/ocr_position) — puede tomar varios segundos en
@@ -1998,6 +2018,8 @@ def _populate_positions(items: list[ParsedItem], image_bytes: bytes) -> list[str
             # marcado aún si la boleta está doblada/arrugada) — ver
             # Segment.y0/y1 en services/ocr_position/app/main.py.
             it.segments = [[s["x0"], s["x1"], s["y0"], s["y1"]] for s in r.get("segments") or []]
+        located = sum(1 for it in items if it.position_y is not None)
+        print(f"[ocr][timing] positions={time.time() - t0:.2f}s located={located}/{len(items)}")
         return payload.get("ocr_lines") or []
     except Exception as _exc:  # noqa: BLE001
         print(f"[ocr] servicio de posición no disponible ({_exc}) — reparto parejo")
