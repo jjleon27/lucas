@@ -118,6 +118,54 @@ def test_parse_date_strict():
     assert ocr._parse_date_strict(None) is None
 
 
+def test_parse_date_strict_with_time_and_month_names():
+    y = date.today().year
+    assert ocr._parse_date_strict(f"03-01-{y} 16:03:42") == date(y, 1, 3)
+    assert ocr._parse_date_strict(f"03-JAN-{y}") == date(y, 1, 3)
+    assert ocr._parse_date_strict(f"3 ene {y}") == date(y, 1, 3)
+    assert ocr._parse_date_strict(f"03/Ene/{y}") == date(y, 1, 3)
+    assert ocr._parse_date_strict(f"3 de enero de {y}") == date(y, 1, 3)
+    assert ocr._parse_date_strict(f"31-feb-{y}") is None
+
+
+def _res(items, pt, charges, currency="CLP"):
+    rec = ParsedReceipt(amount=0, date=date.today(), merchant="X", category="Otros", items=[
+        ParsedItem(name=f"i{k}", price=v, quantity=1, line_total=float(v)) for k, v in enumerate(items)
+    ])
+    return ocr.ParseResult(transactions=[rec], currency=currency, printed_total=pt, charges=charges)
+
+
+def test_effective_charges_only_when_arithmetic_proves_them():
+    tax = {"label": "Tax", "kind": "tax", "amount": 3.6}
+    tip = {"label": "Tip", "kind": "tip", "amount": 8.0}
+    # impuesto + propina agregados aparte y el total los incluye -> ambos
+    assert ocr.effective_charges(_res([30, 10], 51.6, [tax, tip], "USD")) == [tax, tip]
+    # solo el impuesto cuadra -> solo el impuesto
+    assert ocr.effective_charges(_res([30, 10], 43.6, [tax, tip], "USD")) == [tax]
+    # IVA incluido (ítems ya suman el total) -> nada
+    iva = {"label": "IVA", "kind": "tax", "amount": 1900}
+    assert ocr.effective_charges(_res([8000, 3900], 11900, [iva])) == []
+    # nada cuadra (ítem mal leído) -> no sumar a ciegas
+    assert ocr.effective_charges(_res([8000, 3000], 11900, [iva])) == []
+
+
+def test_effective_charges_without_printed_total_never_adds_tax():
+    iva = {"label": "IVA", "kind": "tax", "amount": 1900}
+    tip = {"label": "Propina", "kind": "tip", "amount": 1190}
+    assert ocr.effective_charges(_res([11900], None, [iva])) == []
+    assert ocr.effective_charges(_res([11900], None, [iva, tip])) == [tip]
+
+
+def test_effective_charges_never_more_than_one_tip():
+    tips = [{"label": f"Propina {p}%", "kind": "tip", "amount": a} for p, a in ((10, 1910), (12, 2292), (15, 2865))]
+    # opciones sugeridas sin total que las pruebe -> ninguna
+    assert ocr.effective_charges(_res([19100], None, tips)) == []
+    # el total impreso incluye una de ellas -> solo esa
+    assert ocr.effective_charges(_res([19100], 21392, tips)) == [tips[1]]
+    # el total no incluye ninguna -> ninguna
+    assert ocr.effective_charges(_res([19100], 19100, tips)) == []
+
+
 def test_charges_currency_and_proportional_finalize(client, auth_headers, monkeypatch):
     """Boleta tipo EE.UU.: impuesto sumado aparte + propina cobrada. La moneda
     detectada reemplaza el default, el impuesto queda como cargo aparte y al

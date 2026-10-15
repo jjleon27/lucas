@@ -287,11 +287,46 @@ def _parse_date(s: str) -> date:
     return date.today()
 
 
+_MONTH_ABBR = {
+    # Abreviaturas de 3 letras (es + en) para fechas tipo "23-JUN-2026",
+    # "23 jun 2026", "23/Jun/2026" (vouchers, POS en inglés).
+    **{m[:3]: n for m, n in _MONTH_NUM.items()},
+    "jan": 1, "apr": 4, "aug": 8, "dec": 12, "sep": 9, "set": 9,
+}
+_DATE_TEXT_MONTH_RE = re.compile(r"\b(\d{1,2})[\s./-]+(?:de\s+)?([a-záéíóú]{3,10})\.?[\s./-]+(?:de(?:l)?\s+)?(\d{2,4})\b", re.I)
+_DATE_NUMERIC_RE = re.compile(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{2,4}")
+
+
 def _parse_date_strict(s: Optional[str]) -> Optional[date]:
-    """Como `_parse_date` pero ISO primero y None (no "hoy") si no se entiende."""
+    """Como `_parse_date` pero ISO primero y None (no "hoy") si no se entiende.
+    Acepta fecha + hora ("23-06-2026 16:03:42") y meses en texto
+    ("23-JUN-2026", "23 de junio de 2026")."""
     if not s:
         return None
     s = s.strip()
+    today = date.today()
+
+    def recent(d: date) -> Optional[date]:
+        # Una boleta para dividir es reciente: un año imposible es mala lectura.
+        return d if today - timedelta(days=3 * 366) <= d <= today + timedelta(days=1) else None
+
+    m = _DATE_TEXT_MONTH_RE.search(s)
+    if m:
+        word = _fold_accents(m.group(2).lower())
+        mo = _MONTH_NUM.get(word) or _MONTH_ABBR.get(word[:3])
+        if mo:
+            y = int(m.group(3))
+            y += 2000 if y < 100 else 0
+            try:
+                return recent(date(y, mo, int(m.group(1))))
+            except ValueError:
+                return None
+    if not re.match(r"\d{4}-\d{2}-\d{2}", s):
+        # Formatos no ISO con hora u otro texto alrededor: quedarse con el
+        # primer token que parece fecha.
+        m = _DATE_NUMERIC_RE.search(s)
+        if m:
+            s = m.group(0)
     for fmt in (
         "%Y-%m-%d", "%Y/%m/%d",
         "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
@@ -301,12 +336,12 @@ def _parse_date_strict(s: Optional[str]) -> Optional[date]:
             d = datetime.strptime(s[:10] if fmt.startswith("%Y") else s, fmt).date()
         except ValueError:
             continue
-        # Una boleta para dividir es reciente: un año imposible es mala lectura.
-        today = date.today()
-        if today - timedelta(days=3 * 366) <= d <= today + timedelta(days=1):
-            return d
-        return None
+        return recent(d)
     return None
+
+
+def _fold_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 
 
 def _parse_spanish_date(m: re.Match) -> date:
@@ -2140,19 +2175,36 @@ def vision_parse_bill(
 def effective_charges(res: "ParseResult") -> list:
     """Cargos leídos fuera de los ítems que de verdad hay que sumar.
 
-    Chequeo aritmético general: si los ítems YA suman el total impreso, los
-    "cargos" leídos estaban incluidos en los precios (IVA incluido, desglose
-    informativo, propina sugerida no cobrada) — sumarlos cobraría doble. No
-    elige entre lecturas ni dispara reintentos: solo evita el doble cobro."""
+    Regla general: un cargo se suma solo si la aritmética lo prueba, es
+    decir, si ítems + cargos ≈ total impreso (tolerancia: la unidad mínima de
+    la moneda o 0,5 %). Así no se cobra doble lo que ya venía incluido en los
+    precios (IVA incluido, "el IVA de esta boleta es $X", propina sugerida no
+    cobrada). Nunca más de una propina: si hay varias son opciones sugeridas
+    y se toma solo la que cuadra con el total. Sin total impreso no hay
+    prueba: no se suma impuesto/servicio (cobrar de menos se corrige en la
+    UI; cobrar de más en silencio no) y solo se precarga una propina si es
+    la única leída. Si nada cuadra, no se suma nada — la UI ya muestra el
+    descuadre contra el total impreso."""
     charges = list(res.charges or [])
-    pt = res.printed_total
-    if not charges or not pt or not res.transactions:
+    if not charges or not res.transactions:
         return charges
+    tips = [c for c in charges if c.get("kind") == "tip"]
+    other = [c for c in charges if c.get("kind") != "tip"]
+    pt = res.printed_total
+    if not pt:
+        return tips if len(tips) == 1 else []
     items_sum = sum(float(it.line_total or 0) for it in (res.transactions[0].items or []))
     zero_dec = (res.currency or "CLP") in {"CLP", "JPY", "KRW", "PYG", "VND", "ISK", "UGX", "XAF", "XOF", "COP"}
-    if abs(items_sum - pt) <= max(abs(pt) * 0.005, 1 if zero_dec else 0.01):
-        return []
-    return charges
+    tol = max(abs(pt) * 0.005, 1 if zero_dec else 0.01)
+
+    def total(cs: list) -> float:
+        return items_sum + sum(float(c.get("amount") or 0) for c in cs)
+
+    candidates = [[], other] + [[t] for t in tips] + [other + [t] for t in tips]
+    for cs in candidates:
+        if abs(total(cs) - pt) <= tol:
+            return cs
+    return []
 
 
 # ---------- Public entry point ----------

@@ -136,7 +136,12 @@ const setMoneyCurrency = (cur: string | undefined) => {
 };
 // Redondeo a la unidad mínima de la moneda activa (1 peso, 1 centavo).
 const roundMoney = (n: number) => { const f = 10 ** moneyDigits; return Math.round(n * f) / f; };
-const clp = (n: number) => moneyFmt.format(roundMoney(n));
+// Negativos con el signo antes del símbolo ("-$750", como se escribe en
+// boletas y descuentos), no "$-750" como da Intl en algunos locales.
+const clp = (n: number) => {
+  const v = roundMoney(n);
+  return v < 0 ? `-${moneyFmt.format(-v)}` : moneyFmt.format(v);
+};
 // Una unidad mínima de la moneda activa (1 peso / 0,01 €): tolerancia de cuadre.
 const moneyEps = () => 1 / 10 ** moneyDigits;
 // Monedas ofrecidas para corregir la detectada en la boleta (+ la actual si no está).
